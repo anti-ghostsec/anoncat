@@ -21,6 +21,7 @@ pub mod keyval;
 mod map;
 pub mod maps;
 mod pool;
+mod prewarm;
 mod ser;
 mod stream;
 #[cfg(test)]
@@ -80,6 +81,13 @@ impl Database {
 			.collect();
 
 		engine.set_cf_index(cf_index);
+
+		if server.config.rocksdb_prewarm
+			&& !server.config.rocksdb_read_only
+			&& !server.config.rocksdb_secondary
+		{
+			prewarm::spawn(maps.values().cloned().collect());
+		}
 
 		Ok(Arc::new(Self { maps, indexed, engine, _ctx: ctx }))
 	}

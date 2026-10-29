@@ -1,0 +1,3 @@
+# wbuf6 with the startup prewarm turned off.
+rocksdb_max_write_buffer_number = 6
+rocksdb_prewarm = false

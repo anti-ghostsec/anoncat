@@ -51,7 +51,7 @@ allow_federation = false
 trusted_servers = []
 allow_registration = true
 registration_token = "{TOKEN}"
-log = "warn"
+log = "info"
 """
 
 
@@ -259,6 +259,15 @@ def run(profile, tag=""):
     proc, startup_ms = start_server(RUN_DB, profile_text)
     res = {"profile": profile, "startup_ms": round(startup_ms)}
     try:
+        # The prewarm runs in the background after start; the cold numbers are
+        # what a client sees once it is done.
+        if "rocksdb_prewarm = false" not in profile_text:
+            t = time.perf_counter()
+            while "Database prewarm finished" not in open(os.path.join(ROOT, "server.log")).read():
+                if time.perf_counter() - t > 300:
+                    sys.exit("prewarm did not finish")
+                time.sleep(0.1)
+            res["prewarm_ms"] = round((time.perf_counter() - t) * 1000)
         # Cold: first touch of each kind of data after start.
         res["cold_members_big_ms"] = round(timed("GET", f"/_matrix/client/v3/rooms/{q(big)}/members", heavy))
         res["cold_scrollback_big_ms"] = round(paginate(big, heavy))

@@ -1991,6 +1991,19 @@
 #
 #rocksdb_max_write_buffer_number = 2
 
+# Read the database into the block cache in the background at startup.
+#
+# Right after a restart, the first request that touches a room reads its
+# state off the disk one seek at a time; on a spinning disk the first
+# message sent into a room can take half a second. The prewarm reads
+# each column once, in order, as long sequential reads, smallest columns
+# first, and skips any column that would not fit in what is left of its
+# cache, so it never evicts what it already loaded. The server answers
+# requests while it runs. Size `db_cache_capacity_mb` to the hot part of
+# the database for this to cover it.
+#
+#rocksdb_prewarm = true
+
 # Enables direct-io to increase database performance via unbuffered I/O.
 #
 # For more details about direct I/O and RockDB, see:
