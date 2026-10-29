@@ -3,10 +3,10 @@
 
 Every RENEW seconds it:
   1. renews the NAT-PMP port mapping on Proton's gateway (leases last 60s),
-  2. if the exit IP or forwarded port changed, points deSEC DNS at them:
-       A    anoncat.dedyn.io                -> Proton exit IP
-       AAAA anoncat.dedyn.io                -> removed (NAT-PMP forwards IPv4 only)
-       SRV  _matrix-fed._tcp / _matrix._tcp  -> anoncat.dedyn.io:<port>
+  2. if the exit IP or forwarded port changed, points Dynu DNS at them:
+       A    anoncat.gleeze.com               -> Proton exit IP
+       AAAA anoncat.gleeze.com               -> off (NAT-PMP forwards IPv4 only)
+       SRV  _matrix-fed._tcp / _matrix._tcp  -> anoncat.gleeze.com:<port>
   3. writes the current address to STATE_FILE for other tools.
 
 DNS only ever receives the address Proton's gateway reports, never one
@@ -17,6 +17,7 @@ Usage:
   anoncat-netd.py            run forever
   anoncat-netd.py --once     one renewal + DNS check, then exit
   anoncat-netd.py --dry-run  like --once, but print the DNS change instead of sending it
+  anoncat-netd.py --show     print the domain's current Dynu settings and records
 """
 
 import json
@@ -27,11 +28,14 @@ import sys
 import time
 import urllib.request
 
-DOMAIN = os.environ.get("ANONCAT_DOMAIN", "anoncat.dedyn.io")
+DOMAIN = os.environ.get("ANONCAT_DOMAIN", "anoncat.gleeze.com")
 GATEWAY = os.environ.get("ANONCAT_GATEWAY", "10.2.0.1")
-TOKEN_FILE = os.environ.get("ANONCAT_DESEC_TOKEN_FILE", os.path.expanduser("~/.config/anoncat/desec-token"))
+KEY_FILE = os.environ.get("ANONCAT_DYNU_KEY_FILE", os.path.expanduser("~/.config/anoncat/dynu-key"))
 STATE_FILE = os.environ.get("ANONCAT_STATE_FILE", os.path.expanduser("~/.config/anoncat/address.json"))
-API = "https://desec.io/api/v1"
+API = "https://api.dynu.com/v2"
+TTL = 60
+# The second name is the pre-v1.8 one, still the only one some older servers look up.
+SRV_NAMES = ("_matrix-fed._tcp", "_matrix._tcp")
 RENEW = 45
 LEASE = 60
 
@@ -65,28 +69,41 @@ def forward():
     return ip, ports.pop()
 
 
-def desec(method, path, body=None):
-    with open(TOKEN_FILE) as f:
-        token = f.read().strip()
+def dynu(method, path, body=None):
+    with open(KEY_FILE) as f:
+        key = f.read().strip()
     req = urllib.request.Request(
         API + path,
         method=method,
         data=None if body is None else json.dumps(body).encode(),
-        headers={"Authorization": f"Token {token}", "Content-Type": "application/json"},
+        headers={"API-Key": key, "Content-Type": "application/json", "Accept": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=20) as r:
         raw = r.read()
     return json.loads(raw) if raw else None
 
 
-def rrsets(ip, port, ttl):
-    return [
-        {"subname": "", "type": "A", "ttl": ttl, "records": [ip]},
-        {"subname": "", "type": "AAAA", "ttl": ttl, "records": []},
-        {"subname": "_matrix-fed._tcp", "type": "SRV", "ttl": ttl, "records": [f"0 5 {port} {DOMAIN}."]},
-        # The pre-v1.8 name, still the only one some older servers look up.
-        {"subname": "_matrix._tcp", "type": "SRV", "ttl": ttl, "records": [f"0 5 {port} {DOMAIN}."]},
-    ]
+def domain():
+    return next(d for d in dynu("GET", "/dns")["domains"] if d["name"] == DOMAIN)
+
+
+def set_dns(ip, port):
+    dom = domain()
+    # The domain object carries the A/AAAA settings: send it back with ours.
+    dom.update({"ipv4Address": ip, "ipv4": True, "ipv6": False, "ttl": TTL})
+    dynu("POST", f"/dns/{dom['id']}", dom)
+    existing = {
+        r["nodeName"]: r
+        for r in dynu("GET", f"/dns/{dom['id']}/record")["dnsRecords"]
+        if r["recordType"] == "SRV" and r["nodeName"] in SRV_NAMES
+    }
+    for name in SRV_NAMES:
+        rec = {"nodeName": name, "recordType": "SRV", "ttl": TTL, "state": True,
+               "host": DOMAIN, "priority": 0, "weight": 5, "port": port}
+        if name in existing:
+            dynu("POST", f"/dns/{dom['id']}/record/{existing[name]['id']}", rec)
+        else:
+            dynu("POST", f"/dns/{dom['id']}/record", rec)
 
 
 def load_state():
@@ -111,16 +128,24 @@ def step(dry_run=False):
     if state.get("ip") == ip and state.get("port") == port:
         return
     if dry_run:
-        log(f"would set DNS: {json.dumps(rrsets(ip, port, 60))}")
+        log(f"would set DNS: A {DOMAIN} {ip}, no AAAA, SRV {', '.join(SRV_NAMES)} -> {DOMAIN}:{port}")
         return
-    ttl = desec("GET", f"/domains/{DOMAIN}/")["minimum_ttl"]
-    desec("PATCH", f"/domains/{DOMAIN}/rrsets/", rrsets(ip, port, ttl))
+    set_dns(ip, port)
     save_state({"ip": ip, "port": port, "since": int(time.time())})
     log(f"DNS now {DOMAIN} -> {ip}:{port} (was {state.get('ip')}:{state.get('port')})")
 
 
+def show():
+    dom = domain()
+    print(json.dumps({k: v for k, v in dom.items() if k != "token"}, indent=2))
+    print(json.dumps(dynu("GET", f"/dns/{dom['id']}/record")["dnsRecords"], indent=2))
+
+
 def main():
     args = sys.argv[1:]
+    if args == ["--show"]:
+        show()
+        return
     if args and args[0] in ("--once", "--dry-run"):
         step(dry_run=args[0] == "--dry-run")
         return
