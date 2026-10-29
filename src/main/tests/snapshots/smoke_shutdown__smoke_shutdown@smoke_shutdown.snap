@@ -1,0 +1,8 @@
+---
+source: src/main/tests/smoke_shutdown.rs
+description: Smoke Shutdown
+expression: result
+---
+Ok(
+    (),
+)

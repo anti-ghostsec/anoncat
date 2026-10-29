@@ -1,0 +1,605 @@
+use std::{
+	future::Ready,
+	panic::{AssertUnwindSafe, catch_unwind},
+	pin::Pin,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+	task::{Context, Waker},
+	time::Duration,
+};
+
+use futures::{
+	StreamExt,
+	future::{OptionFuture, ready, try_join},
+};
+use itertools::Itertools;
+use tokio::{spawn, sync::Barrier};
+use url::Url;
+
+use crate::{
+	Error, Result, checked,
+	utils::{
+		IterStream, MutexMap, budget,
+		debug::str_truncated,
+		future::OptionFutureExt,
+		increment,
+		math::usize_from_f64,
+		set::{
+			difference_sorted_stream2, intersection, intersection_sorted,
+			intersection_sorted_stream2,
+		},
+		stream::TryTools,
+		sys::page_size,
+		time::pretty,
+		two_phase_counter::Counter,
+		url::{hostname_matches_domain, is_loopback},
+	},
+};
+
+type CounterCallback = Box<dyn Fn(u64) -> Result + Send + Sync>;
+
+#[test]
+fn increment_none() {
+	let bytes: [u8; 8] = increment(None);
+	let res = u64::from_be_bytes(bytes);
+
+	assert_eq!(res, 1);
+}
+
+#[test]
+fn increment_fault() {
+	let start: u8 = 127;
+	let bytes: [u8; 1] = start.to_be_bytes();
+	let bytes: [u8; 8] = increment(Some(&bytes));
+	let res = u64::from_be_bytes(bytes);
+
+	assert_eq!(res, 1);
+}
+
+#[test]
+fn increment_norm() {
+	let start: u64 = 1_234_567;
+	let bytes: [u8; 8] = start.to_be_bytes();
+	let bytes: [u8; 8] = increment(Some(&bytes));
+	let res = u64::from_be_bytes(bytes);
+
+	assert_eq!(res, 1_234_568);
+}
+
+#[test]
+fn increment_wrap() {
+	let start = u64::MAX;
+	let bytes: [u8; 8] = start.to_be_bytes();
+	let bytes: [u8; 8] = increment(Some(&bytes));
+	let res = u64::from_be_bytes(bytes);
+
+	assert_eq!(res, 0);
+}
+
+#[test]
+fn checked_add() {
+	let a = 1234;
+	let res = checked!(a + 1).unwrap();
+	assert_eq!(res, 1235);
+}
+
+#[test]
+#[should_panic(expected = "overflow")]
+fn checked_add_overflow() {
+	let a = u64::MAX;
+	let res = checked!(a + 1).expect("overflow");
+	assert_eq!(res, 0);
+}
+
+#[test]
+fn usize_from_f64_truncates() {
+	assert_eq!(usize_from_f64(42.75).unwrap(), 42);
+	assert_eq!(usize_from_f64(-0.0).unwrap(), 0);
+}
+
+#[test]
+fn usize_from_f64_rejects_invalid_values() {
+	for value in [-1.0, -0.25, f64::NEG_INFINITY, f64::NAN, f64::INFINITY] {
+		assert!(matches!(usize_from_f64(value), Err(Error::Arithmetic(_))), "accepted {value:?}");
+	}
+}
+
+#[test]
+fn usize_from_f64_enforces_exclusive_bound() {
+	let exponent = i32::try_from(usize::BITS).expect("usize width fits i32");
+	let bound = 2.0_f64.powi(exponent);
+	let spacing = 1_usize << usize::BITS.saturating_sub(f64::MANTISSA_DIGITS);
+	let preceding = usize::MAX - (spacing - 1);
+
+	assert_eq!(usize_from_f64(bound.next_down()).unwrap(), preceding);
+	assert!(matches!(usize_from_f64(bound), Err(Error::Arithmetic(_))));
+	assert!(matches!(usize_from_f64(bound.next_up()), Err(Error::Arithmetic(_))));
+}
+
+#[test]
+fn pretty_zero_pads_the_fraction() {
+	assert_eq!(pretty(Duration::from_secs(12 * 60 + 3)), "12.05 minutes");
+}
+
+#[test]
+fn pretty_bounds_subsecond_fractions() {
+	assert_eq!(pretty(Duration::from_micros(1_500)), "1.50 milliseconds");
+	assert_eq!(pretty(Duration::from_nanos(2_250)), "2.25 microseconds");
+	assert_eq!(pretty(Duration::from_millis(250)), "250.00 milliseconds");
+	assert_eq!(pretty(Duration::from_micros(2)), "2.00 microseconds");
+	assert_eq!(pretty(Duration::from_micros(999)), "999.00 microseconds");
+	assert_eq!(pretty(Duration::from_millis(1)), "1.00 milliseconds");
+	assert_eq!(pretty(Duration::from_millis(999)), "999.00 milliseconds");
+	assert_eq!(pretty(Duration::from_secs(1)), "1.00 seconds");
+}
+
+#[test]
+fn str_truncated_rounds_inside_middle_scalar() {
+	assert_eq!(format!("{:?}", str_truncated("aéz", 2)), "\"aé\"...");
+}
+
+#[test]
+fn str_truncated_rounds_inside_final_scalar() {
+	assert_eq!(format!("{:?}", str_truncated("aé", 2)), "\"aé\"...");
+}
+
+#[tokio::test]
+async fn mutex_map_cleanup() {
+	let map = MutexMap::<String, ()>::new();
+
+	let lock = map.lock("foo").await;
+	assert!(!map.is_empty(), "map must not be empty");
+
+	drop(lock);
+	assert!(map.is_empty(), "map must be empty");
+}
+
+#[tokio::test]
+async fn mutex_map_contend() {
+	let map = Arc::new(MutexMap::<String, ()>::new());
+	let seq = Arc::new([Barrier::new(2), Barrier::new(2)]);
+	let str = "foo".to_owned();
+
+	let seq_ = seq.clone();
+	let map_ = map.clone();
+	let str_ = str.clone();
+	let join_a = spawn(async move {
+		let _lock = map_.lock(&str_).await;
+
+		assert!(!map_.is_empty(), "A0 must not be empty");
+		seq_[0].wait().await;
+		assert!(map_.contains(&str_), "A1 must contain key");
+	});
+
+	let seq_ = seq.clone();
+	let map_ = map.clone();
+	let str_ = str.clone();
+	let join_b = spawn(async move {
+		let _lock = map_.lock(&str_).await;
+
+		assert!(!map_.is_empty(), "B0 must not be empty");
+		seq_[1].wait().await;
+		assert!(map_.contains(&str_), "B1 must contain key");
+	});
+
+	seq[0].wait().await;
+	assert!(map.contains(&str), "Must contain key");
+	seq[1].wait().await;
+
+	try_join(join_b, join_a).await.expect("joined");
+	assert!(map.is_empty(), "Must be empty");
+}
+
+#[tokio::test]
+async fn mutex_map_cancel() {
+	let map = MutexMap::<String, ()>::new();
+
+	let lock = map.lock("foo").await;
+	let contender = poll_pending(map.lock("foo")).expect("must contend");
+
+	drop(lock);
+	drop(contender);
+	assert!(map.is_empty(), "map must be empty");
+}
+
+fn poll_pending<F: Future>(future: F) -> Option<Pin<Box<F>>> {
+	let mut future = Box::pin(future); // pinned for the poll, owned for the caller's drop
+
+	future
+		.as_mut()
+		.poll(&mut Context::from_waker(Waker::noop()))
+		.is_pending()
+		.then_some(future)
+}
+
+#[tokio::test]
+async fn mutex_map_keys() {
+	let map = MutexMap::<String, ()>::new();
+	let sorted_keys = || map.keys().sorted_unstable().collect::<Vec<_>>();
+
+	let foo = map.lock("foo").await;
+	let bar = map.lock("bar").await;
+	let contender = poll_pending(map.lock("foo")).expect("must contend");
+
+	assert_eq!(sorted_keys(), ["bar", "foo"], "a contended key must be listed once");
+	assert_eq!(map.keys().len(), map.len(), "the copy must count each entry once");
+
+	drop(foo);
+	assert_eq!(sorted_keys(), ["bar", "foo"], "a key with a contender must stay listed");
+	assert!(map.try_lock("foo").is_err(), "the contender must own the released key");
+
+	drop(contender);
+	assert_eq!(sorted_keys(), ["bar"], "a dropped contender must release its key");
+
+	drop(bar);
+	assert_eq!(map.keys().len(), 0, "an empty map must list no keys");
+}
+
+#[tokio::test]
+async fn mutex_map_lock_all_locks_each_key_once() {
+	let map = MutexMap::<String, ()>::new();
+	let keys = ["foo", "bar", "foo"].map(str::to_owned);
+
+	let all = poll_pending(map.lock_all::<_, Vec<_>>(keys));
+
+	assert!(all.is_none(), "a repeated key must not wait for itself");
+
+	let guards: Vec<_> = map
+		.lock_all(["foo", "bar"].map(str::to_owned))
+		.await;
+
+	assert_eq!(guards.len(), 2, "each key must be locked once");
+	assert!(map.try_lock("foo").is_err(), "foo must be held");
+	assert!(map.try_lock("bar").is_err(), "bar must be held");
+
+	drop(guards);
+	assert!(map.is_empty(), "map must be empty");
+}
+
+#[tokio::test]
+async fn mutex_map_lock_all_takes_keys_in_order() {
+	let map = MutexMap::<String, ()>::new();
+
+	let foo = map.lock("foo").await;
+	let all = poll_pending(map.lock_all::<_, Vec<_>>(["foo", "bar"].map(str::to_owned)))
+		.expect("must wait for foo");
+
+	assert!(map.try_lock("bar").is_err(), "bar must be taken before foo");
+
+	drop(foo);
+	assert_eq!(all.await.len(), 2, "both keys must be locked");
+	assert!(map.is_empty(), "map must be empty");
+}
+
+#[tokio::test]
+async fn mutex_map_try_cleanup() {
+	let map = MutexMap::<String, ()>::new();
+
+	let lock = map.lock("foo").await;
+	assert!(map.try_lock("foo").is_err(), "must contend");
+	assert!(map.try_try_lock("foo").is_err(), "must contend");
+
+	drop(lock);
+	assert!(map.is_empty(), "map must be empty");
+}
+
+#[test]
+fn set_intersection_none() {
+	let a: [&str; 0] = [];
+	let b: [&str; 0] = [];
+	let i = [a.iter(), b.iter()];
+	let r = intersection(i.into_iter());
+	assert_eq!(r.count(), 0);
+
+	let a: [&str; 0] = [];
+	let b = ["abc", "def"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection(i.into_iter());
+	assert_eq!(r.count(), 0);
+	let i = [b.iter(), a.iter()];
+	let r = intersection(i.into_iter());
+	assert_eq!(r.count(), 0);
+	let i = [a.iter()];
+	let r = intersection(i.into_iter());
+	assert_eq!(r.count(), 0);
+
+	let a = ["foo", "bar", "baz"];
+	let b = ["def", "hij", "klm", "nop"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection(i.into_iter());
+	assert_eq!(r.count(), 0);
+}
+
+#[test]
+#[expect(clippy::iter_on_single_items, clippy::many_single_char_names)]
+fn set_intersection_all() {
+	let a = ["foo"];
+	let b = ["foo"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection(i.into_iter());
+	assert!(r.eq(["foo"].iter()));
+
+	let a = ["foo", "bar"];
+	let b = ["bar", "foo"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection(i.into_iter());
+	assert!(r.eq(["foo", "bar"].iter()));
+	let i = [b.iter()];
+	let r = intersection(i.into_iter());
+	assert!(r.eq(["bar", "foo"].iter()));
+
+	let a = ["foo", "bar", "baz"];
+	let b = ["baz", "foo", "bar"];
+	let c = ["bar", "baz", "foo"];
+	let i = [a.iter(), b.iter(), c.iter()];
+	let r = intersection(i.into_iter());
+	assert!(r.eq(["foo", "bar", "baz"].iter()));
+}
+
+#[test]
+#[expect(clippy::iter_on_single_items, clippy::many_single_char_names)]
+fn set_intersection_some() {
+	let a = ["foo"];
+	let b = ["bar", "foo"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection(i.into_iter());
+	assert!(r.eq(["foo"].iter()));
+	let i = [b.iter(), a.iter()];
+	let r = intersection(i.into_iter());
+	assert!(r.eq(["foo"].iter()));
+
+	let a = ["abcdef", "foo", "hijkl", "abc"];
+	let b = ["hij", "bar", "baz", "abc", "foo"];
+	let c = ["abc", "xyz", "foo", "ghi"];
+	let i = [a.iter(), b.iter(), c.iter()];
+	let r = intersection(i.into_iter());
+	assert!(r.eq(["foo", "abc"].iter()));
+}
+
+#[test]
+#[expect(clippy::iter_on_single_items, clippy::many_single_char_names)]
+fn set_intersection_sorted_some() {
+	let a = ["bar"];
+	let b = ["bar", "foo"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection_sorted(i.into_iter());
+	assert!(r.eq(["bar"].iter()));
+	let i = [b.iter(), a.iter()];
+	let r = intersection_sorted(i.into_iter());
+	assert!(r.eq(["bar"].iter()));
+
+	let a = ["aaa", "ccc", "eee", "ggg"];
+	let b = ["aaa", "bbb", "ccc", "ddd", "eee"];
+	let c = ["bbb", "ccc", "eee", "fff"];
+	let i = [a.iter(), b.iter(), c.iter()];
+	let r = intersection_sorted(i.into_iter());
+	assert!(r.eq(["ccc", "eee"].iter()));
+}
+
+#[test]
+#[expect(clippy::iter_on_single_items, clippy::many_single_char_names)]
+fn set_intersection_sorted_all() {
+	let a = ["foo"];
+	let b = ["foo"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection_sorted(i.into_iter());
+	assert!(r.eq(["foo"].iter()));
+
+	let a = ["bar", "foo"];
+	let b = ["bar", "foo"];
+	let i = [a.iter(), b.iter()];
+	let r = intersection_sorted(i.into_iter());
+	assert!(r.eq(["bar", "foo"].iter()));
+	let i = [b.iter()];
+	let r = intersection_sorted(i.into_iter());
+	assert!(r.eq(["bar", "foo"].iter()));
+
+	let a = ["bar", "baz", "foo"];
+	let b = ["bar", "baz", "foo"];
+	let c = ["bar", "baz", "foo"];
+	let i = [a.iter(), b.iter(), c.iter()];
+	let r = intersection_sorted(i.into_iter());
+	assert!(r.eq(["bar", "baz", "foo"].iter()));
+}
+
+#[tokio::test]
+async fn set_intersection_sorted_stream2() {
+	let a = ["bar"];
+	let b = ["bar", "foo"];
+	let r = intersection_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["bar"]);
+
+	let r = intersection_sorted_stream2(b.iter().stream(), a.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["bar"]);
+
+	let a = ["aaa", "ccc", "xxx", "yyy"];
+	let b = ["hhh", "iii", "jjj", "zzz"];
+	let r = intersection_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert!(r.is_empty(), "{r:?}");
+
+	let a = ["aaa", "ccc", "eee", "ggg"];
+	let b = ["aaa", "bbb", "ccc", "ddd", "eee"];
+	let r = intersection_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["aaa", "ccc", "eee"]);
+
+	let a = ["aaa", "ccc", "eee", "ggg", "hhh", "iii"];
+	let b = ["bbb", "ccc", "ddd", "fff", "ggg", "iii"];
+	let r = intersection_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["ccc", "ggg", "iii"]);
+}
+
+#[tokio::test]
+async fn set_difference_sorted_stream2() {
+	let a = ["bar", "foo"];
+	let b = ["bar"];
+	let r = difference_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["foo"]);
+
+	let r = difference_sorted_stream2(b.iter().stream(), a.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert!(r.is_empty(), "{r:?}");
+
+	let a = ["aaa", "ccc", "xxx", "yyy"];
+	let b = ["hhh", "iii", "jjj", "zzz"];
+	let r = difference_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["aaa", "ccc", "xxx", "yyy"]);
+
+	let a = ["aaa", "ccc", "eee", "ggg"];
+	let b = ["aaa", "bbb", "ccc", "ddd", "eee"];
+	let r = difference_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["ggg"]);
+
+	let a = ["aaa", "ccc", "eee", "ggg", "hhh", "iii"];
+	let b = ["bbb", "ccc", "ddd", "fff", "ggg", "iii"];
+	let r = difference_sorted_stream2(a.iter().stream(), b.iter().stream())
+		.collect::<Vec<&str>>()
+		.await;
+
+	assert_eq!(r, &["aaa", "eee", "hhh"]);
+}
+
+#[test]
+fn page_size_is_nonzero() {
+	let val = page_size().expect("Failed to get system page size");
+	println!("{val:?}");
+
+	assert!(val != 0, "page size was zero");
+}
+
+#[test]
+fn two_phase_counter_recovers_from_panicking_commit() {
+	let refuse = Arc::new(AtomicBool::new(false));
+	let refuse_in_commit = refuse.clone();
+	let commit: CounterCallback = Box::new(move |count| {
+		assert!(
+			!refuse_in_commit.load(Ordering::Relaxed),
+			"commit refused sequence number {count}"
+		);
+
+		Ok(())
+	});
+
+	let release: CounterCallback = Box::new(|_| Ok(()));
+	let counter = Counter::new(0, commit, release);
+	let first = counter.next().expect("first sequence number");
+
+	assert_eq!(*first, 1, "the first sequence number dispatched is one");
+	drop(first);
+
+	refuse.store(true, Ordering::Relaxed);
+	catch_unwind(AssertUnwindSafe(|| drop(counter.next())))
+		.expect_err("a panicking commit callback unwinds out of the counter");
+
+	refuse.store(false, Ordering::Relaxed);
+	let second = counter
+		.next()
+		.expect("the counter outlives a poisoned lock");
+
+	assert_eq!(*second, 2, "the failed dispatch consumed no sequence number");
+	assert_eq!(counter.current(), 1, "the retirement value trails the pending permit");
+}
+
+#[test]
+fn hostname_domain_matching_is_case_insensitive_and_label_bounded() {
+	for (hostname, domain, expected) in [
+		("example.com", "example.com", true),
+		("EXAMPLE.COM", ".example.com", true),
+		("sub.example.com", "example.com", true),
+		("sub.example.com", ".EXAMPLE.COM", true),
+		("notexample.com", "example.com", false),
+		("example.org", "example.com", false),
+		("example.com.", ".", true),
+		("example.com", ".", false),
+		("example.com", "", false),
+	] {
+		assert_eq!(
+			hostname_matches_domain(hostname, domain),
+			expected,
+			"hostname {hostname}, domain {domain}",
+		);
+	}
+}
+
+#[test]
+fn loopback_hosts_are_localhost_and_loopback_addresses() {
+	for (url, expected) in [
+		("http://localhost/cb", true),
+		("http://LOCALHOST:3001/cb", true),
+		("http://127.0.0.1/cb", true),
+		("http://127.0.0.2:8080/cb", true),
+		("http://[::1]/cb", true),
+		("http://[::1]:3001/cb", true),
+		("custom://LocalHost/cb", true),
+		("http://localhost.example.com/cb", false),
+		("http://example.com/cb", false),
+		("http://10.0.0.1/cb", false),
+		("http://[::2]/cb", false),
+		("com.example.app:/cb", false),
+	] {
+		let url = Url::parse(url).expect("valid url");
+
+		assert_eq!(is_loopback(&url), expected, "url {url}");
+	}
+}
+
+#[tokio::test]
+async fn option_future_unwrap_or_else_async() {
+	let present: OptionFuture<_> = Some(ready(1)).into();
+
+	assert_eq!(present.unwrap_or_else_async(|| ready(2)).await, 1);
+
+	let absent: OptionFuture<_> = None::<Ready<i32>>.into();
+
+	assert_eq!(absent.unwrap_or_else_async(|| ready(2)).await, 2);
+}
+
+#[test]
+fn budget_skips_items_past_the_limit() {
+	let kept: Vec<_> = budget([11, 4, 7, 6], 10, |&size| size)
+		.filter_map(Result::ok)
+		.collect();
+
+	assert_eq!(kept, [4, 6]);
+}
+
+#[tokio::test]
+async fn try_unzip_partial_keeps_every_pair_and_error() {
+	let items = [Ok((1, 'a')), Err(Error::Arithmetic("unread".into())), Ok((2, 'b'))];
+	let ((numbers, letters), errors): ((Vec<_>, Vec<_>), Vec<_>) = items
+		.into_iter()
+		.stream()
+		.try_unzip_partial()
+		.await;
+
+	assert_eq!(numbers, [1, 2]);
+	assert_eq!(letters, ['a', 'b']);
+	assert!(matches!(errors.as_slice(), [Error::Arithmetic(_)]));
+}

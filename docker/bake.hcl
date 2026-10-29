@@ -1,0 +1,2639 @@
+
+variable "GITHUB_ACTOR" {}
+variable "GITHUB_REPOSITORY" {}
+variable "GITHUB_REF" {}
+variable "GITHUB_REF_NAME" {}
+variable "GITHUB_REF_SHA" {
+    default = "HEAD"
+}
+
+variable "acct" {
+    default = "${GITHUB_ACTOR}"
+}
+variable "repo" {
+    default = "${GITHUB_REPOSITORY}"
+}
+variable "docker_repo" {
+    default = "${repo}"
+}
+
+variable "git_ref" {
+    default = "${GITHUB_REF}"
+}
+variable "git_ref_sha" {
+    default = "${GITHUB_REF_SHA}"
+}
+variable "git_ref_name" {
+    default = "${GITHUB_REF_NAME}"
+}
+
+cargo_feat_sets = {
+    none = ""
+    # Default features
+    default = "brotli_compression,bzip2_compression,console,direct_tls,element_hacks,gzip_compression,io_uring,jemalloc,jemalloc_conf,ldap,lz4_compression,mas,media_thumbnail,oidc,release_max_log_level,sentry_telemetry,synapse_admin,systemd,url_preview,zstd_compression"
+    # Default features sans release_max_log_level
+    logging = "brotli_compression,bzip2_compression,console,direct_tls,element_hacks,gzip_compression,io_uring,jemalloc,jemalloc_conf,ldap,lz4_compression,mas,media_thumbnail,oidc,sentry_telemetry,synapse_admin,systemd,url_preview,zstd_compression"
+    # All features
+    all = "brotli_compression,bzip2_compression,console,direct_tls,element_hacks,gzip_compression,io_uring,jemalloc,jemalloc_conf,jemalloc_prof,jemalloc_stats,ldap,lz4_compression,mas,media_thumbnail,oidc,perf_measurements,release_max_log_level,sentry_telemetry,synapse_admin,systemd,tokio_console,tuwunel_mods,url_preview,zstd_compression"
+}
+variable "cargo_features_always" {
+    default = "direct_tls"
+}
+variable "feat_sets" {
+    default = "[\"none\", \"default\", \"all\"]"
+}
+
+variable "cargo_profiles" {
+    default = "[\"test\", \"release\"]"
+}
+
+variable "install_prefix" {
+    default = "/usr"
+}
+
+variable "rust_msrv" {
+    default = "stable"
+}
+variable "rust_nightly" {
+    default = "nightly"
+}
+variable "rust_toolchains" {
+    default = "[\"nightly\", \"msrv\"]"
+}
+variable "rust_targets" {
+    default = "[\"x86_64-unknown-linux-gnu\"]"
+}
+
+variable "llvm_cc" {
+    default = "/usr/bin/clang"
+}
+variable "llvm_cxx" {
+    default = "/usr/bin/clang++"
+}
+variable "llvm_ar" {
+    default = "/usr/bin/llvm-ar"
+}
+variable "llvm_ranlib" {
+    default = "/usr/bin/llvm-ranlib"
+}
+variable "lld_threads" {
+    default = 2
+}
+variable "lto_jobs" {
+    default = 2
+}
+variable "lto_cache_dir" {
+    default = "/var/cache/tuwunel/thinlto"
+}
+variable "lto_cache_policy" {
+    default = "cache_size=0%:cache_size_bytes=10g:prune_after=168h"
+}
+# Concurrent links per builder, counted across every build step at once; the
+# LTO profiles take at most lto_linker_jobs of the same slots.
+variable "linker_jobs" {
+    default = 24
+}
+variable "lto_linker_jobs" {
+    default = 6
+}
+variable "linker_lock_dir" {
+    default = "/var/cache/tuwunel/linker"
+}
+variable "linker_wrap_dir" {
+    default = "/usr/local/libexec/tuwunel/linker"
+}
+
+variable "sys_names" {
+    default = "[\"debian\"]"
+}
+variable "sys_versions" {
+    default = "[\"testing-slim\"]"
+}
+variable "sys_targets" {
+    default = "[\"x86_64-v1-linux-gnu\"]"
+}
+
+# RocksDB options
+variable "rocksdb_portable" {
+    default = "1"
+}
+variable "rocksdb_opt_level" {
+    default = "3"
+}
+variable "rocksdb_build_type" {
+    default = "Release"
+}
+variable "rocksdb_make_verbose" {
+    default = "ON"
+}
+variable "rocksdb_numa" {
+    default = "0"
+}
+
+# Complement options
+variable "complement_count" {
+    default = 1
+}
+variable "complement_debug" {
+    default = 0
+}
+variable "complement_run" {
+    default = ".*"
+}
+variable "complement_skip" {
+    default = ""
+}
+
+# Nix binary cache options. Pulling is public and always on; pushing needs
+# CACHIX_AUTH_TOKEN in the environment, which bake.sh detects to set
+# cachix_push.
+variable "nix_substituter" {
+    default = "https://cache.tuwunel.chat https://tuwunel.cachix.org"
+}
+variable "nix_public_key" {
+    default = "cache.tuwunel.chat-1:ZafUaXiRMozDa9N2SWim6EdzH0EEjWjwfvlTxXvcjLA= tuwunel.cachix.org-1:VRecUeDcaPxtYDA6bnMF3snPM7VYX8K605z4uuG2nWc="
+}
+variable "cachix_cache" {
+    default = "tuwunel"
+}
+variable "cachix_push" {
+    default = "0"
+}
+variable "attic_endpoint" {
+    default = "https://cache.tuwunel.chat"
+}
+variable "attic_cache" {
+    default = "tuwunel"
+}
+variable "attic_push" {
+    default = "0"
+}
+
+# Package metadata inputs
+variable "package_name" {
+    default = "tuwunel"
+}
+variable "package_authors" {
+    default = "Jason Volk <jason@zemos.net>"
+}
+variable "package_version" {
+    default = "1.0"
+}
+variable "package_revision" {
+    default = ""
+}
+variable "package_last_modified" {
+    default = ""
+}
+
+# Compression options
+variable "zstd_image_compress_level" {
+    default = 11
+}
+variable "gz_image_compress_level" {
+    default = 7
+}
+variable "cache_compress_level" {
+    default = 3
+}
+
+# Options for output verbosity
+variable "BUILDKIT_PROGRESS" {}
+variable "CARGO_TERM_VERBOSE" {
+    default = false
+}
+
+variable "docker_dir" {
+    default = "."
+}
+
+variable "rustdoc_base_path" {
+	default = ""
+}
+
+variable "meta_stats" {
+	default = "no"
+}
+variable "time_passes" {
+	default = "no"
+}
+variable "time_llvm_passes" {
+	default = "no"
+}
+variable "print_llvm_passes" {
+	default = "no"
+}
+variable "llvm_time_trace" {
+	default = "no"
+}
+variable "print_type_sizes" {
+	default = "no"
+}
+variable "print_mono_items" {
+	default = "no"
+}
+variable "mono_stats_dir" {
+	default = ""
+}
+
+#
+# Rustflags
+#
+
+rustflags = [
+    "-C link-arg=--verbose",
+]
+
+static_rustflags = [
+    "-C relocation-model=static",
+    "-C target-feature=+crt-static",
+    "-C link-arg=-Wno-unused-command-line-argument",
+]
+
+static_libs = [
+    "-C link-arg=-l:libstdc++.a",
+    "-C link-arg=-l:libc.a",
+    "-C link-arg=-l:libm.a",
+]
+
+dynamic_rustflags = [
+    "-C relocation-model=pic",
+    "-C target-feature=-crt-static",
+    "-C link-arg=-Wl,--as-needed",
+]
+
+dynamic_libs = [
+    "-C link-arg=-lstdc++",
+    "-C link-arg=-lc",
+    "-C link-arg=-lm",
+]
+
+nightly_rustflags = [
+    "--cfg tokio_unstable",
+    "--allow=unstable-features",
+    "-Z enforce-type-length-limit",
+    # The next-generation trait solver became the nightly default in
+    # nightly-2026-08-22 (rust-lang/rust#160895). It overflows the recursion limit
+    # in tuwunel_service and tuwunel_api, ICEs clippy's large_futures lint on
+    # tuwunel_core, and ICEs MIR validation at every async_noinline site. Selecting
+    # "coherence" restores the solver every prior release used, leaving the new one
+    # where it has long been the default. Drop this once those are fixed upstream.
+    "-Z next-solver=coherence",
+]
+
+dynamic_nightly_rustflags = [
+    "-Z share-generics=yes",
+]
+
+static_nightly_rustflags = [
+    "-Z tls-model=local-exec",
+]
+
+native_rustflags = [
+    "-C target-cpu=native",
+    "-Z tune-cpu=native",
+    "-Z inline-mir=true",
+    "-Z mir-opt-level=3",
+]
+
+override_rustflags = [
+    "-C relocation-model=pic",
+    "-C target-feature=-crt-static",
+    "-C link-arg=-Wl,--no-gc-sections",
+]
+
+macro_rustflags = [
+    "-C relocation-model=pic",
+    "-C target-feature=-crt-static",
+]
+
+stats_rustflags = [
+    meta_stats != "no"?         "-Z meta-stats":                              "",
+    time_passes != "no"?        "-Z time-passes":                             "",
+    time_passes != "no"?        "-Z time-passes-format=json":                 "",
+    time_llvm_passes != "no"?   "-Z time-llvm-passes":                        "",
+    print_llvm_passes != "no"?  "-Z print-llvm-passes":                       "",
+    llvm_time_trace != "no"?    "-Z llvm-time-trace":                         "",
+    print_type_sizes != "no"?   "-Z print-type-sizes":                        "",
+    print_mono_items != "no"?   "-Z print-mono-items=${print_mono_items}":    "",
+    mono_stats_dir != ""?       "-Z dump-mono-stats=${mono_stats_dir}":       "",
+    mono_stats_dir != ""?       "-Z dump-mono-stats-format=json":             "",
+]
+
+#
+# Cargo flags
+#
+
+native_cargo_flags = [
+    "-Z build-std",
+]
+
+#
+# Default
+#
+
+group "default" {
+    targets = [
+        "lints",
+        "tests",
+    ]
+}
+
+group "lints" {
+    targets = [
+        "audit",
+        "check",
+        "clippy",
+        "fmt",
+        "lychee",
+    ]
+}
+
+group "tests" {
+    targets = [
+        "doc",
+        "integration",
+        "matrix-compliance",
+        "mas",
+        "playwright",
+        "smoke",
+        "unit",
+    ]
+}
+
+group "matrix-compliance" {
+    targets = [
+        "complement",
+        "complement-crypto",
+    ]
+}
+
+#
+# Common matrices
+#
+
+cargo_rust_feat_sys = {
+    cargo_profile = jsondecode(cargo_profiles)
+    rust_toolchain = jsondecode(rust_toolchains)
+    rust_target = jsondecode(rust_targets)
+    feat_set = jsondecode(feat_sets)
+    sys_name = jsondecode(sys_names)
+    sys_version = jsondecode(sys_versions)
+    sys_target = jsondecode(sys_targets)
+}
+
+rust_feat_sys = {
+    rust_toolchain = jsondecode(rust_toolchains)
+    rust_target = jsondecode(rust_targets)
+    feat_set = jsondecode(feat_sets)
+    sys_name = jsondecode(sys_names)
+    sys_version = jsondecode(sys_versions)
+    sys_target = jsondecode(sys_targets)
+}
+
+#
+# Publish
+#
+
+group "publish" {
+    targets = [
+        "dockerhub",
+        "github",
+    ]
+}
+
+target "ghcr_io" {
+    name = elem("github", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        "ghcr.io/${repo}:${git_ref_name}-${cargo_profile}-${feat_set}-${sys_target}",
+    ]
+    output = ["type=registry,oci-mediatypes=true,compression=zstd,compression-level=${zstd_image_compress_level},force-compression=true,mode=min"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("docker", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+}
+
+target "docker_io" {
+    name = elem("dockerhub", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        "docker.io/${docker_repo}:${git_ref_name}-${cargo_profile}-${feat_set}-${sys_target}",
+    ]
+    output = ["type=registry,oci-mediatypes=true,compression=zstd,compression-level=${zstd_image_compress_level},force-compression=true,mode=min"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("docker", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+}
+
+#
+# Complement tests
+#
+
+group "complement" {
+    targets = [
+        "complement-tester",
+        "complement-testee",
+        #"complement-tester-valgrind",
+        #"complement-testee-valgrind",
+    ]
+}
+
+complement_args = {
+    complement_count = "${complement_count}"
+    complement_debug = "${complement_debug}"
+    complement_run = "${complement_run}"
+    complement_skip = "${complement_skip}"
+}
+
+target "complement-testee-valgrind" {
+    name = elem("complement-testee-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-testee-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "complement-testee-valgrind"
+    entitlements = ["network.host"]
+    dockerfile = "${docker_dir}/Dockerfile.complement"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("smoke-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("complement-testee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:smoke-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        complement-tester = elem("target:complement-tester-valgrind", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        # Leave the valgrind testee on the default policy and unpinned: it is
+        # already serialized by valgrind, and a realtime class would only
+        # interfere.
+        sched_policy = ""
+        sched_cpus = ""
+    }
+}
+
+target "complement-testee" {
+    name = elem("complement-testee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-testee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "complement-testee"
+    output = ["type=docker,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    entitlements = ["network.host"]
+    dockerfile = "${docker_dir}/Dockerfile.complement"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        complement-tester = elem("target:complement-tester", [sys_name, sys_version, sys_target])
+        complement-config = elem("target:complement-config", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        RUST_BACKTRACE = "full"
+
+        # An optimized testee (any non-debug profile) runs the suite as a
+        # timing-sensitive job under --fifo; the debug testee is an ordinary
+        # test under --rr. Realtime needs CAP_SYS_NICE, which the Complement
+        # runner grants the testee container; sched_wrap.sh degrades otherwise.
+        # The bench testee holds only the performance cores, as the unit and
+        # integ benches do.
+        sched_policy = (cargo_profile == "test"? "--rr": "--fifo")
+        sched_prio = (cargo_profile == "test"? 1: 2)
+        sched_cpus = (cargo_profile == "bench"? "pcores": "")
+    }
+}
+
+target "complement-tester-valgrind" {
+    name = elem("complement-tester-valgrind", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-tester-valgrind", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    entitlements = ["network.host"]
+    matrix = sys
+    inherits = [
+        elem("complement-tester", [sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:complement-tester", [sys_name, sys_version, sys_target])
+    }
+}
+
+target "complement-tester" {
+    name = elem("complement-tester", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-tester", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "complement-tester"
+    output = ["type=docker,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    entitlements = ["network.host"]
+    matrix = sys
+    inherits = [
+        elem("complement-base", [sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        complement-config = elem("target:complement-config", [sys_name, sys_version, sys_target])
+        input = elem("target:complement-base", [sys_name, sys_version, sys_target])
+    }
+}
+
+target "complement-base" {
+    name = elem("complement-base", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-base", [sys_name, sys_version, sys_target], "latest")
+    ]
+    target = "complement-base"
+    matrix = sys
+    inherits = [
+        elem("complement-config", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:builder", [sys_name, sys_version, sys_target])
+    }
+    args = complement_args
+}
+
+target "complement-config" {
+    name = elem("complement-config", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-config", [sys_name, sys_version, sys_target], "latest")
+    ]
+    target = "complement-config"
+    dockerfile = "${docker_dir}/Dockerfile.complement"
+    matrix = sys
+    inherits = [
+        elem("source", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        source = elem("target:source", [sys_name, sys_version, sys_target])
+    }
+}
+
+#
+# MAS provisioning smoke test (mas-cli driven against tuwunel)
+#
+
+group "mas" {
+    targets = [
+        "mas-testee",
+    ]
+}
+
+# Tuwunel SUT for the MAS smoke test. Long elem'd tag for matrix
+# disambiguation plus a stable short alias for local `docker run`. The runner
+# (docker/lib/mas-runner.sh) references the long elem name, as complement-runner.sh
+# does, so concurrent matrix cells never collide.
+target "mas-testee" {
+    name = elem("mas-testee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("mas-testee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+        "tuwunel-mas-testee:latest",
+    ]
+    target = "mas-testee"
+    output = ["type=docker,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.mas"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+#
+# Complement Crypto tests (E2EE suite driven against tuwunel)
+#
+
+group "complement-crypto" {
+    targets = [
+        "complement-crypto-tester",
+    ]
+}
+
+variable "complement_crypto_count" {
+    default = 1
+}
+variable "complement_crypto_run" {
+    default = ".*"
+}
+variable "complement_crypto_skip" {
+    default = ""
+}
+
+complement_crypto_args = {
+    complement_crypto_count = "${complement_crypto_count}"
+    complement_crypto_run   = "${complement_crypto_run}"
+    complement_crypto_skip  = "${complement_crypto_skip}"
+}
+
+target "complement-crypto-tester" {
+    name = elem("complement-crypto-tester", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-crypto-tester", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "complement-crypto-tester"
+    output = ["type=docker,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    entitlements = ["network.host"]
+    dockerfile = "${docker_dir}/Dockerfile.complement-crypto"
+    matrix = sys
+    inherits = [
+        elem("complement-crypto-base", [sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:complement-crypto-base", [sys_name, sys_version, sys_target])
+    }
+    args = complement_crypto_args
+}
+
+target "complement-crypto-base" {
+    name = elem("complement-crypto-base", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-crypto-base", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "complement-crypto-base"
+    dockerfile = "${docker_dir}/Dockerfile.complement-crypto"
+    matrix = sys
+    inherits = [
+        elem("complement-crypto-deps", [sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:complement-crypto-deps", [sys_name, sys_version, sys_target])
+    }
+    args = complement_crypto_args
+}
+
+target "complement-crypto-deps" {
+    name = elem("complement-crypto-deps", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("complement-crypto-deps", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "complement-crypto-deps"
+    dockerfile = "${docker_dir}/Dockerfile.complement-crypto"
+    matrix = sys
+    inherits = [
+        elem("rust", ["nightly", "x86_64-unknown-linux-gnu", sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:rust", ["nightly", "x86_64-unknown-linux-gnu", sys_name, sys_version, sys_target])
+    }
+    args = complement_crypto_args
+}
+
+#
+# Playwright tests (element-web suite driven against tuwunel)
+#
+
+group "playwright" {
+    targets = [
+        "playwright-testee",
+        "playwright-tester",
+    ]
+}
+
+# element-web tracking ref. master == latest stable release tip (e.g.
+# v1.12.18); moves ~monthly with releases instead of multiple times per
+# day like develop, so the playwright-base layer cache stays warm
+# between bumps and we automatically test against what real users run.
+variable "element_web_ref" {
+    default = "master"
+}
+
+variable "playwright_run" {
+    default = ".*"
+}
+variable "playwright_skip" {
+    default = ""
+}
+variable "playwright_shard" {
+    default = "1/1"
+}
+variable "playwright_count" {
+    default = "1"
+}
+variable "playwright_workers" {
+    default = "1"
+}
+variable "playwright_retries" {
+    default = "0"
+}
+
+playwright_args = {
+    element_web_ref    = "${element_web_ref}"
+    playwright_run     = "${playwright_run}"
+    playwright_skip    = "${playwright_skip}"
+    playwright_shard   = "${playwright_shard}"
+    playwright_count   = "${playwright_count}"
+    playwright_workers = "${playwright_workers}"
+    playwright_retries = "${playwright_retries}"
+}
+
+# Tuwunel SUT for the Playwright suite. Long elem'd tag for matrix
+# disambiguation plus a stable short alias the testcontainer can target by
+# default via TUWUNEL_TESTEE_IMAGE.
+target "playwright-testee" {
+    name = elem("playwright-testee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("playwright-testee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+        "tuwunel-playwright-testee:latest",
+    ]
+    target = "playwright-testee"
+    output = ["type=docker,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.playwright"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+# element-web build + playwright runtime. No tuwunel matrix; only sys.
+target "playwright-base" {
+    name = elem("playwright-base", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("playwright-base", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "playwright-base"
+    dockerfile = "${docker_dir}/Dockerfile.playwright"
+    matrix = sys
+    inherits = [
+        elem("source", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        source = elem("target:source", [sys_name, sys_version, sys_target])
+    }
+    args = playwright_args
+}
+
+# Spec runner. Inherits playwright-base; matrix only on sys.
+target "playwright-tester" {
+    name = elem("playwright-tester", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("playwright-tester", [sys_name, sys_version, sys_target], "latest"),
+        "tuwunel-playwright-tester:latest",
+    ]
+    target = "playwright-tester"
+    output = ["type=docker,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.playwright"
+    matrix = sys
+    inherits = [
+        elem("playwright-base", [sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:playwright-base", [sys_name, sys_version, sys_target])
+        source = elem("target:source", [sys_name, sys_version, sys_target])
+    }
+    args = playwright_args
+}
+
+#
+# Integration tests
+#
+
+group "integration" {
+    targets = [
+        "integ",
+        "rust-sdk-integ",
+    ]
+}
+
+variable "valgrind_max_workers" {
+    default = 16
+}
+
+variable "valgrind_worker_threads" {
+    default = 8
+}
+
+variable "valgrind_build_jobs" {
+    default = "default"
+}
+
+variable "valgrind_flags" {
+    default = "--error-exitcode=1 --exit-on-first-error=yes --undef-value-errors=no --leak-check=no"
+}
+
+variable "valgrind_testee_args" {
+    default = "-Odb_pool_max_workers=${valgrind_max_workers}"
+}
+
+target "rust-sdk-valgrind" {
+    name = elem("rust-sdk-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rust-sdk-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("rust-sdk-integ", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target])
+        install = elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        VALGRINDFLAGS = "${valgrind_flags}"
+        mrsdk_testee = "valgrind ${valgrind_flags} /usr/bin/tuwunel ${valgrind_testee_args}"
+        mrsdk_test_args = ""
+        mrsdk_startup_delay = "30s"
+        mrsdk_skip_list =<<EOF
+            --skip test_delayed_invite_response_and_sent_message_decryption
+            --skip test_history_share_on_invite
+            --skip test_history_sharing_session_merging
+            --skip test_transitive_history_share_with_withhelds
+            --skip test_latest_event_few_rooms
+            --skip test_latest_thread_event_is_redecrypted_and_updated
+            --skip test_event_with_context
+            --skip test_repeated_join_leave
+EOF
+    }
+}
+
+target "rust-sdk-integ" {
+    name = elem("rust-sdk-integ", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rust-sdk-integ", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=docker,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    target = "rust-sdk-integration"
+    dockerfile = "${docker_dir}/Dockerfile.matrix-rust-sdk"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target]),
+        elem("integ", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target])
+        install = elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        mrsdk_target_share = "/usr/src/matrix-rust-sdk/target/${sys_name}/${sys_version}/${rust_target}/${rust_toolchain}/_shared_cache"
+
+        mrsdk_testee = "/usr/bin/tuwunel"
+        mrsdk_test_args = "--no-fail-fast"
+
+        mrsdk_skip_list =<<EOF
+            --skip test_delayed_invite_response_and_sent_message_decryption
+            --skip test_history_share_on_invite
+            --skip test_history_sharing_session_merging
+            --skip test_transitive_history_share_with_withhelds
+            --skip test_latest_event_few_rooms
+            --skip test_latest_thread_event_is_redecrypted_and_updated
+            --skip test_event_with_context
+            --skip test_repeated_join_leave
+EOF
+    }
+}
+
+target "integ-valgrind" {
+    name = elem("integ-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("integ-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("integ", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        VALGRIND_MAX_WORKERS = "${valgrind_max_workers}"
+        VALGRINDFLAGS = "${valgrind_flags}"
+        cargo_cmd = "valgrind test"
+        cargo_flags = "-j ${valgrind_build_jobs}"
+        cargo_args = "--test=*"
+
+        # valgrind already serializes; keep it off the realtime class and the
+        # bench pinning integ now grants
+        sched_policy = ""
+        sched_cpus = ""
+
+        # valgrind runs many times slower than the deadline integ sets
+        cargo_test_timeout = ""
+
+        # tokio workers per server boot, independent of the host's cores
+        tokio_worker_threads = "${valgrind_worker_threads}"
+    }
+}
+
+target "integ" {
+    name = elem("integ", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    # raise RLIMIT_RTPRIO so the realtime sched_policy in args is grantable (build RUN lacks CAP_SYS_NICE)
+    ulimits = ["rtprio=49"]
+    tags = [
+        elem_tag("integ", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = (cargo_profile == "bench"? "bench": "test")
+        cargo_args = (cargo_profile == "bench"?
+            "--no-fail-fast --bench=*": "--no-fail-fast --test=*"
+        )
+
+        # A hung test binary fails at this deadline instead of holding the
+        # runner until the job ceiling; the slowest take well under a minute.
+        # Benches have no measured baseline yet and stay uncapped.
+        cargo_test_timeout = (cargo_profile == "bench"? "": "10m")
+
+        # The realtime class is for running the test and bench binaries, never
+        # for compiling them: scope it to cargo's runner. Benches hold only the
+        # performance cores so the efficiency cores keep the host responsive.
+        sched_policy = (cargo_profile == "bench"? "--fifo": "--rr")
+        sched_prio = (cargo_profile == "bench"? 3: 1)
+        sched_scope = "runner"
+        sched_cpus = (cargo_profile == "bench"? "pcores": "")
+    }
+}
+
+#
+# Smoke tests
+#
+
+group "smoke" {
+    targets = [
+        "smoke-version",
+        "smoke-startup",
+        #"smoke-nix",
+        #"smoke-valgrind",
+        #"smoke-perf",
+    ]
+}
+
+target "smoke-nix" {
+    name = elem("smoke-nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("smoke-nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=cacheonly,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.nix"
+    target = "smoke-nix"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+}
+
+target "smoke-valgrind" {
+    name = elem("smoke-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("smoke-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "smoke-valgrind"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("install-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("tests-smoke", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:install-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "smoke-perf" {
+    name = elem("smoke-perf", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("smoke-perf", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "smoke-perf"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("install-perf", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("tests-smoke", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:install-perf", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "smoke-startup" {
+    name = elem("smoke-startup", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("smoke-startup", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest")
+    ]
+    target = "smoke-startup"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("tests-smoke", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+}
+
+target "smoke-version" {
+    name = elem("smoke-version", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("smoke-version", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "smoke-version"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("tests-smoke", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+}
+
+target "tests-smoke" {
+    name = elem("tests-smoke", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("tests-smoke", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "smoke-startup"
+    output = ["type=cacheonly,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.smoketest"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+#
+# Unit tests
+#
+
+target "unit-valgrind" {
+    name = elem("unit-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("unit-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "cargo"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("unit", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:unit", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        VALGRINDFLAGS = "${valgrind_flags}"
+        cargo_cmd = "valgrind test"
+        cargo_args = "--lib --bins"
+
+        # valgrind already serializes; keep it off the realtime class and the
+        # bench pinning unit now grants
+        sched_policy = ""
+        sched_cpus = ""
+
+        # valgrind runs many times slower than the deadline unit sets
+        cargo_test_timeout = ""
+    }
+}
+
+target "unit" {
+    name = elem("unit", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    # raise RLIMIT_RTPRIO so the realtime sched_policy in args is grantable (build RUN lacks CAP_SYS_NICE)
+    ulimits = ["rtprio=49"]
+    tags = [
+        elem_tag("unit", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "cargo"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = (cargo_profile == "bench"? "bench": "test")
+        cargo_args = (cargo_profile == "bench"?
+            "--no-fail-fast --lib": "--no-fail-fast --lib --bins"
+        )
+
+        # A hung test binary fails at this deadline instead of holding the
+        # runner until the job ceiling; the slowest take well under a minute.
+        # Benches have no measured baseline yet and stay uncapped.
+        cargo_test_timeout = (cargo_profile == "bench"? "": "10m")
+
+        # The realtime class is for running the test and bench binaries, never
+        # for compiling them: scope it to cargo's runner. Benches hold only the
+        # performance cores so the efficiency cores keep the host responsive.
+        sched_policy = (cargo_profile == "bench"? "--fifo": "--rr")
+        sched_prio = (cargo_profile == "bench"? 3: 1)
+        sched_scope = "runner"
+        sched_cpus = (cargo_profile == "bench"? "pcores": "")
+    }
+}
+
+target "doc" {
+    name = elem("doc", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    # raise RLIMIT_RTPRIO so the realtime sched_policy in args is grantable (build RUN lacks CAP_SYS_NICE)
+    ulimits = ["rtprio=49"]
+    tags = [
+        elem_tag("doc", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "cargo"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = "test"
+        cargo_args = "--doc --no-fail-fast"
+        RUSTDOCFLAGS = "-D warnings"
+
+        sched_policy = "--rr"
+        sched_prio = 1
+    }
+}
+
+#
+# Installation
+#
+
+group "installs" {
+    targets = [
+        "install",
+        "static",
+        "docker",
+        "oci",
+    ]
+}
+
+install_labels = {
+    "org.opencontainers.image.authors" = "${package_authors}"
+    "org.opencontainers.image.created" = "${package_last_modified}"
+    "org.opencontainers.image.description" = "Matrix Chat Server in Rust"
+    "org.opencontainers.image.documentation" = "https://matrix-construct.github.io/tuwunel/"
+    "org.opencontainers.image.licenses" = "Apache-2.0"
+    "org.opencontainers.image.revision" = "${package_revision}"
+    "org.opencontainers.image.source" = "https://github.com/matrix-construct/tuwunel"
+    "org.opencontainers.image.title" = "${package_name}"
+    "org.opencontainers.image.url" = "https://github.com/matrix-construct/tuwunel"
+    "org.opencontainers.image.vendor" = "matrix-construct"
+    "org.opencontainers.image.version" = "${package_version}"
+}
+
+install_annotations = [
+    "org.opencontainers.image.authors=${package_authors}",
+    "org.opencontainers.image.created=${package_last_modified}",
+    "org.opencontainers.image.description=Matrix Chat Server in Rust",
+    "org.opencontainers.image.documentation=https://matrix-construct.github.io/tuwunel/",
+    "org.opencontainers.image.licenses=Apache-2.0",
+    "org.opencontainers.image.revision=${package_revision}",
+    "org.opencontainers.image.source=https://github.com/matrix-construct/tuwunel",
+    "org.opencontainers.image.title=${package_name}",
+    "org.opencontainers.image.url=https://github.com/matrix-construct/tuwunel",
+    "org.opencontainers.image.vendor=matrix-construct",
+    "org.opencontainers.image.version=${package_version}",
+]
+
+target "oci" {
+    name = elem("oci", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("oci", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=oci,dest=tuwunel-oci.tar.zst,compression=zstd,compression-level=${zstd_image_compress_level},force-compression=true,mode=min"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("docker", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+}
+
+target "docker" {
+    name = elem("docker", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("docker", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=docker,compression=zstd,compression-level=${zstd_image_compress_level},force-compression=true,mode=min"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("static", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = (
+            static_toolchain(rust_toolchain)
+            || cargo_profile == "release"
+            || cargo_profile == "release-debuginfo"
+            || cargo_profile == "release-native"?
+                elem("target:static", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]):
+                elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        )
+    }
+    dockerfile-inline =<<EOF
+        FROM scratch AS install
+        COPY --from=input . .
+        EXPOSE 8008 8448
+        ENTRYPOINT ["tuwunel"]
+        HEALTHCHECK --interval=30s --timeout=15s --start-period=1800s CMD ["tuwunel", "--health-check"]
+EOF
+}
+
+target "static" {
+    name = elem("static", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("static", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=docker,compression=zstd,mode=min,compression-level=${zstd_image_compress_level}"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    }
+    dockerfile-inline =<<EOF
+        FROM scratch AS install
+        COPY --from=input /usr/bin/tuwunel /usr/bin/tuwunel
+        COPY --from=input /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+EOF
+}
+
+target "install-valgrind" {
+    name = elem("install-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("install-valgrind", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("valgrind", [feat_set, sys_name, sys_version, sys_target]),
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:valgrind", [feat_set, sys_name, sys_version, sys_target])
+        bins = elem("target:build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "install-perf" {
+    name = elem("install-perf", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("install-perf", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("perf", [feat_set, sys_name, sys_version, sys_target]),
+        elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:perf", [feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "install" {
+    name = elem("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    labels = install_labels
+    annotations = install_annotations
+    output = ["type=docker,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.install"
+    target = "install"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:runtime", [feat_set, sys_name, sys_version, sys_target])
+        bins = elem("target:build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        #docs = elem("target:docs", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        #book = elem("target:book", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        install_prefix = install_prefix
+        assert_linkage = (
+            substr(cargo_profile, 0, 5) == "bench"?     "static":
+            substr(cargo_profile, 0, 7) == "release"?   "static":
+            static_toolchain(rust_toolchain)?           "static":
+            ""
+        )
+    }
+}
+
+#
+# Package
+#
+
+group "pkg" {
+    targets = [
+        "nix",
+        "deb",
+        "rpm",
+        "deb-install",
+        "rpm-install",
+    ]
+}
+
+target "apt-repo-install" {
+    description = "Install tuwunel from the public apt repository as documented."
+    name = elem("apt-repo-install", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("apt-repo-install", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "apt-repo-install"
+    output = ["type=cacheonly,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.apt"
+    context = "."
+    matrix = sys
+    no-cache-filter = ["apt-repo-install"]
+    inherits = [
+        elem("system", [sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:system", [sys_name, sys_version, sys_target])
+    }
+}
+
+target "rpm-install" {
+    name = elem("rpm-install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rpm-install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "rpm-install"
+    output = ["type=cacheonly,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = "docker-image://redhat/ubi9"
+        rpm = elem("target:rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "rpm" {
+    name = elem("rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "rpm"
+    output = ["type=docker,compression=zstd,mode=min"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    }
+}
+
+target "build-rpm" {
+    name = elem("build-rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("build-rpm", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "build-rpm"
+    dockerfile = "${docker_dir}/Dockerfile.cargo.rpm"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        source = elem("target:source", [sys_name, sys_version, sys_target]),
+    }
+    args = {
+        pkg_dir = "/opt/tuwunel/rpm"
+    }
+}
+
+target "deb-install" {
+    name = elem("deb-install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deb-install", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "deb-install"
+    output = ["type=cacheonly,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:base", [sys_name, sys_version, sys_target])
+        deb = elem("target:deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    }
+}
+
+target "deb" {
+    name = elem("deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "deb"
+    output = ["type=docker,compression=zstd,mode=min"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    }
+}
+
+target "build-deb" {
+    name = elem("build-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("build-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "build-deb"
+    dockerfile = "${docker_dir}/Dockerfile.cargo.deb"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-bins-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:build-bins-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        source = elem("target:source", [sys_name, sys_version, sys_target]),
+    }
+    args = {
+        pkg_dir = "/opt/tuwunel/deb"
+    }
+}
+
+target "nix" {
+    name = elem("nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=docker,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    target = "nix-pkg"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+}
+
+target "build-nix" {
+    name = elem("build-nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("build-nix", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=cacheonly,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.nix"
+    target = "build-nix"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("builder", [sys_name, sys_version, sys_target]),
+        elem("source", [sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:builder", [sys_name, sys_version, sys_target]),
+        source = elem("target:source", [sys_name, sys_version, sys_target]),
+    }
+    args = {
+        nix_substituter = nix_substituter
+        nix_public_key = nix_public_key
+        cachix_cache = cachix_cache
+        cachix_push = cachix_push
+        attic_endpoint = attic_endpoint
+        attic_cache = attic_cache
+        attic_push = attic_push
+    }
+    secret = concat(
+        cachix_push == "1"? ["type=env,id=cachix_auth_token,env=CACHIX_AUTH_TOKEN"]: [],
+        attic_push == "1"? ["type=env,id=attic_token,env=ATTIC_TOKEN"]: [],
+    )
+}
+
+#
+# Workspace builds
+#
+
+target "book" {
+    name = elem("book", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("book", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "book"
+    output = ["type=docker,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    dockerfile-inline =<<EOF
+        FROM input AS book
+        RUN ["mdbook", "build", "-d", "/book", "/usr/src/tuwunel"]
+EOF
+}
+
+target "docs" {
+    name = elem("docs", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("docs", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=docker,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    args = {
+        cargo_cmd = "doc"
+        cargo_args = "--no-deps --document-private-items"
+        RUSTDOCFLAGS = (substr(rust_toolchain, 0, 7) == "nightly"?
+            "-Z unstable-options --static-root-path=${rustdoc_base_path}/static.files/": ""
+        )
+    }
+}
+
+target "build-bins" {
+    name = elem("build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:deps-build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        source = elem("target:source-rust", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = "build"
+        cargo_args = "--bins"
+        cargo_target_prune = "bins"
+    }
+}
+
+target "build-bins-deb" {
+    name = elem("build-bins-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("build-bins-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:deps-build-bins-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        CARGO_BUILD_RUSTFLAGS = debian_package_rustflags(cargo_profile, rust_toolchain, feat_set, sys_target)
+    }
+}
+
+target "build-tests" {
+    name = elem("build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:deps-build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        source = elem("target:source-rust", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = (cargo_profile == "bench"? "bench": "test")
+        cargo_args = (cargo_profile == "bench"? "--no-run --benches": "--no-run --tests")
+    }
+}
+
+target "build" {
+    name = elem("build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:deps-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        source = elem("target:source-rust", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = "build"
+        cargo_args = "--all-targets"
+    }
+}
+
+target "clippy" {
+    name = elem("clippy", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("clippy", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-clippy", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:deps-clippy", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        source = elem("target:source-rust", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = "clippy"
+        cargo_args = "--all-targets --no-deps -- -D warnings -A unstable-features"
+        cargo_target_prune = "all"
+    }
+}
+
+target "check" {
+    name = elem("check", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("check", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-check", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:deps-check", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        source = elem("target:source-rust", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_cmd = "check"
+        cargo_args = "--all-targets"
+        cargo_target_prune = "all"
+    }
+}
+
+target "lychee" {
+    name = elem("lychee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("lychee", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "lychee"
+    dockerfile = "${docker_dir}/Dockerfile.cargo.lychee"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "audit" {
+    name = elem("audit", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("audit", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "audit"
+    dockerfile = "${docker_dir}/Dockerfile.cargo.audit"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "typos" {
+    name = elem("typos", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("typos", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "typos"
+    dockerfile = "${docker_dir}/Dockerfile.cargo.typos"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "fmt" {
+    name = elem("fmt", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("fmt", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "fmt"
+    dockerfile = "${docker_dir}/Dockerfile.cargo.fmt"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+        elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        fmt_args = "-- --color=always"
+    }
+}
+
+target "cargo" {
+    name = elem("cargo", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    target = "cargo"
+    output = ["type=cacheonly,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        source = elem("target:source-rust", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_args = ""
+        color_args = "--color=always"
+    }
+}
+
+#
+# Dependency builds
+#
+
+group "deps" {
+    targets = [
+        "deps-check",
+        "deps-clippy",
+        "deps-build",
+        "deps-build-tests",
+        "deps-build-bins",
+    ]
+}
+
+target "deps-build-bins" {
+    name = elem("deps-build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deps-build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    args = {
+        cargo_cmd = "chef cook --bins"
+    }
+}
+
+target "deps-build-bins-deb" {
+    name = elem("deps-build-bins-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deps-build-bins-deb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-build-bins", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    args = {
+        CARGO_BUILD_RUSTFLAGS = debian_package_rustflags(cargo_profile, rust_toolchain, feat_set, sys_target)
+    }
+}
+
+target "deps-build-tests" {
+    name = elem("deps-build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deps-build-tests", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    args = {
+        cargo_cmd = (cargo_profile == "bench"? "chef cook --benches": "chef cook --tests")
+    }
+}
+
+target "deps-build" {
+    name = elem("deps-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deps-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    args = {
+        cargo_cmd = "chef cook --all-targets"
+    }
+}
+
+target "deps-clippy" {
+    name = elem("deps-clippy", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deps-clippy", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    args = {
+        cargo_cmd = "chef cook --all-targets --clippy"
+    }
+}
+
+target "deps-check" {
+    name = elem("deps-check", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deps-check", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    args = {
+        cargo_cmd = "chef cook --all-targets --check"
+    }
+}
+
+variable "cargo_tgt_dir_base" {
+    default = "/usr/src/tuwunel/target"
+}
+
+target "deps-base" {
+    name = elem("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("deps-base", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest")
+    ]
+    target = "cook"
+    output = ["type=cacheonly,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.cargo"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("kitchen", [feat_set, sys_name, sys_version, sys_target]),
+        elem("rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target]),
+        elem("recipe", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:kitchen", [feat_set, sys_name, sys_version, sys_target])
+        recipe = elem("target:recipe", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        rocksdb = elem("target:rocksdb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_profile = cargo_profile
+        cargo_cmd = "chef cook --all-targets --no-build"
+        color_args = ""
+
+        cargo_flags = (
+            cargo_profile == "release-native"?
+                join(" ", native_cargo_flags):
+                ""
+        )
+
+        # Base path
+        CARGO_TARGET_DIR = "${cargo_tgt_dir_base}"
+        LTO_CACHE_DIR = lto_cache_dir
+        LINKER_JOBS = lto_profile(cargo_profile)? lto_linker_jobs: linker_jobs
+        LINKER_LOCK_DIR = linker_lock_dir
+        LINKER_WRAP_DIR = linker_wrap_dir
+        # cased name of profile subdir within target complex
+        cargo_target_profile = (
+            (cargo_profile == "dev" || cargo_profile == "test")? "debug":
+            (cargo_profile == "release" || cargo_profile == "bench")? "release":
+            cargo_profile
+        )
+
+        CARGO_PROFILE_TEST_DEBUG = "false"
+        CARGO_PROFILE_TEST_INCREMENTAL = "false"
+        CARGO_PROFILE_BENCH_DEBUG = "false"
+        CARGO_PROFILE_BENCH_LTO = "thin"
+        CARGO_PROFILE_RELEASE_LTO = "thin"
+        CARGO_PROFILE_RELEASE_DEBUGINFO_DEBUG = "limited"
+        CARGO_PROFILE_RELEASE_DEBUGINFO_LTO = "off"
+        CARGO_PROFILE_RELEASE_NATIVE_LTO = "thin"
+
+        CC = llvm_cc
+        CXX = llvm_cxx
+        AR = llvm_ar
+        RANLIB = llvm_ranlib
+
+        CARGO_BUILD_RUSTFLAGS = (
+            cargo_profile == "release-native"?
+                join(" ", [
+                    join(" ", rustflags),
+                    join(" ", nightly_rustflags),
+                    join(" ", static_rustflags),
+                    join(" ", static_nightly_rustflags),
+                    join(" ", native_rustflags),
+                    linker_rustflags(cargo_profile),
+                    interprocedural_rustflags(cargo_profile),
+                    static_library_rustflags(feat_set, sys_target),
+                    join(" ", static_libs),
+                    sys_target_triple(sys_target) == "aarch64-linux-gnu"?
+                        "-C link-arg=-l:libgcc.a": "",
+                ]):
+
+            (cargo_profile == "release" || cargo_profile == "bench") && substr(rust_toolchain, 0, 7) == "nightly"?
+                join(" ", [
+                    join(" ", rustflags),
+                    join(" ", nightly_rustflags),
+                    join(" ", static_rustflags),
+                    join(" ", static_nightly_rustflags),
+                    linker_rustflags(cargo_profile),
+                    interprocedural_rustflags(cargo_profile),
+                    sys_target_triple(sys_target) == "x86_64-linux-gnu"?
+                        "-C target-cpu=${sys_target_isa(sys_target)}": "",
+                    static_library_rustflags(feat_set, sys_target),
+                    join(" ", static_libs),
+                    sys_target_triple(sys_target) == "aarch64-linux-gnu"?
+                        "-C link-arg=-l:libgcc.a": "",
+                ]):
+
+            cargo_profile == "release" || cargo_profile == "release-debuginfo" || cargo_profile == "bench"?
+                join(" ", [
+                    join(" ", rustflags),
+                    join(" ", static_rustflags),
+                    linker_rustflags(cargo_profile),
+                    interprocedural_rustflags(cargo_profile),
+                    sys_target_triple(sys_target) == "x86_64-linux-gnu"?
+                        "-C target-cpu=${sys_target_isa(sys_target)}": "",
+                    static_library_rustflags(feat_set, sys_target),
+                    join(" ", static_libs),
+                    sys_target_triple(sys_target) == "aarch64-linux-gnu"?
+                        "-C link-arg=-l:libgcc.a": "",
+                ]):
+
+            static_toolchain(rust_toolchain)?
+                join(" ", [
+                    join(" ", rustflags),
+                    join(" ", static_rustflags),
+                    linker_rustflags(cargo_profile),
+                    interprocedural_rustflags(cargo_profile),
+                    sys_target_triple(sys_target) == "x86_64-linux-gnu"?
+                        "-C target-cpu=${sys_target_isa(sys_target)}": "",
+                    static_library_rustflags(feat_set, sys_target),
+                    join(" ", static_libs),
+                    sys_target_triple(sys_target) == "aarch64-linux-gnu"?
+                        "-C link-arg=-l:libgcc.a": "",
+                ]):
+
+            substr(rust_toolchain, 0, 7) == "nightly"?
+                join(" ", [
+                    join(" ", rustflags),
+                    join(" ", stats_rustflags),
+                    join(" ", nightly_rustflags),
+                    join(" ", dynamic_rustflags),
+                    join(" ", dynamic_nightly_rustflags),
+                    linker_rustflags(cargo_profile),
+                    sys_target_triple(sys_target) == "x86_64-linux-gnu"?
+                        "-C target-cpu=${sys_target_isa(sys_target)}": "",
+                    contains(split(",", cargo_feat_sets[feat_set]), "bzip2_compression")?
+                        "-C link-arg=-lbz2": "",
+                    contains(split(",", cargo_feat_sets[feat_set]), "lz4_compression")?
+                        "-C link-arg=-llz4": "",
+                    contains(split(",", cargo_feat_sets[feat_set]), "zstd_compression")?
+                        "-C link-arg=-lzstd": "",
+                    contains(split(",", cargo_feat_sets[feat_set]), "io_uring")?
+                        "-C link-arg=-luring": "",
+                    join(" ", dynamic_libs),
+                ]):
+
+            join(" ", [
+                join(" ", rustflags),
+                linker_rustflags(cargo_profile),
+            ])
+        )
+    }
+}
+
+function "static_library_rustflags" {
+    params = [features, target]
+    result = join(" ", [
+        "-C link-arg=-L/usr/lib/gcc/${sys_target_triple(target)}/15", #FIXME
+        contains(split(",", cargo_feat_sets[features]), "bzip2_compression")?
+            "-C link-arg=-l:libbz2.a": "",
+        contains(split(",", cargo_feat_sets[features]), "lz4_compression")?
+            "-C link-arg=-l:liblz4.a": "",
+        contains(split(",", cargo_feat_sets[features]), "zstd_compression")?
+            "-C link-arg=-l:libzstd.a": "",
+        contains(split(",", cargo_feat_sets[features]), "io_uring")?
+            "-C link-arg=-l:liburing.a": "",
+    ])
+}
+
+function "debian_package_rustflags" {
+    params = [profile, toolchain, features, target]
+    result = join(" ", [
+        join(" ", rustflags),
+        substr(toolchain, 0, 7) == "nightly"? join(" ", nightly_rustflags): "",
+        join(" ", dynamic_rustflags),
+        substr(toolchain, 0, 7) == "nightly"? join(" ", dynamic_nightly_rustflags): "",
+        linker_rustflags(profile),
+        interprocedural_rustflags(profile),
+        sys_target_triple(target) == "x86_64-linux-gnu"?
+            "-C target-cpu=${sys_target_isa(target)}": "",
+        static_library_rustflags(features, target),
+        "-C link-arg=-l:libstdc++.a",
+        "-C link-arg=-lc",
+        "-C link-arg=-lm",
+        sys_target_triple(target) == "aarch64-linux-gnu"?
+            "-C link-arg=-l:libgcc.a": "",
+    ])
+}
+
+function "lto_profile" {
+    params = [profile]
+    result = contains(["release-native", "release", "bench"], profile)
+}
+
+# Every link goes through linker_wrap.sh, reached by the real linker's name so
+# rustc infers the same flavor it would for that linker.
+function "linker_rustflags" {
+    params = [profile]
+    result = "-C linker=${linker_wrap_dir}/${lto_profile(profile)? basename(llvm_cc): "cc"}"
+}
+
+function "interprocedural_rustflags" {
+    params = [profile]
+    result = (
+        lto_profile(profile)?
+            join(" ", [
+                "-C linker-plugin-lto",
+                "-C link-arg=-fuse-ld=lld",
+                "-C link-arg=-Wl,--threads=${lld_threads}",
+                "-C link-arg=-Wl,--thinlto-jobs=${lto_jobs}",
+                "-C link-arg=-Wl,--thinlto-cache-dir=${lto_cache_dir}",
+                "-C link-arg=-Wl,--thinlto-cache-policy=${lto_cache_policy}",
+            ]): ""
+    )
+}
+
+#
+# Special-cased dependency builds
+#
+
+target "rocksdb" {
+    name = elem("rocksdb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rocksdb", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "rocksdb"
+    output = ["type=cacheonly,compression=zstd,mode=min,compression-level=${cache_compress_level}"]
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("rocksdb-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+}
+
+target "rocksdb-build" {
+    name = elem("rocksdb-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rocksdb-build", [cargo_profile, rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest")
+    ]
+    target = "rocksdb-build"
+    matrix = cargo_rust_feat_sys
+    inherits = [
+        elem("rocksdb-fetch", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        rocksdb-fetch = elem("target:rocksdb-fetch", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        input = elem("target:kitchen", [feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        CC = llvm_cc
+        CXX = llvm_cxx
+        AR = llvm_ar
+        RANLIB = llvm_ranlib
+        rocksdb_bz2 = contains(split(",", cargo_feat_sets[feat_set]), "bzip2_compression")? 1: 0
+        rocksdb_lz4 = contains(split(",", cargo_feat_sets[feat_set]), "lz4_compression")? 1: 0
+        rocksdb_zstd = contains(split(",", cargo_feat_sets[feat_set]), "zstd_compression")? 1: 0
+        rocksdb_jemalloc = contains(split(",", cargo_feat_sets[feat_set]), "jemalloc")? 1: 0
+        rocksdb_iouring = contains(split(",", cargo_feat_sets[feat_set]), "io_uring")? 1: 0
+        rocksdb_numa = rocksdb_numa
+        rocksdb_shared = 0
+        rocksdb_opt_level = rocksdb_opt_level
+        rocksdb_build_type = rocksdb_build_type
+        # Bitcode only where the Rust side links with linker-plugin-lto; any
+        # other link would run ThinLTO over all of RocksDB, every test binary.
+        rocksdb_lto = lto_profile(cargo_profile)? "-flto=thin": ""
+        rocksdb_cxx_flags = (
+            cargo_profile == "release-native" && sys_target_triple(sys_target) == "aarch64-linux-gnu"?
+                "-ftls-model=local-exec -mno-outline-atomics":
+            cargo_profile == "release-native"?
+                "-ftls-model=local-exec":
+            sys_target_triple(sys_target) == "aarch64-linux-gnu"?
+                "-ftls-model=initial-exec -mno-outline-atomics":
+            sys_target_triple(sys_target) == "x86_64-linux-gnu" && sys_target != "x86_64-v1-linux-gnu"?
+                "-ftls-model=initial-exec -mpclmul":
+                "-ftls-model=initial-exec"
+        )
+        rocksdb_portable = (
+            cargo_profile == "release-native"?
+                "0":
+            sys_target_triple(sys_target) == "x86_64-linux-gnu"?
+                "${sys_target_isa(sys_target)}":
+                rocksdb_portable
+        )
+    }
+}
+
+target "rocksdb-fetch" {
+    name = elem("rocksdb-fetch", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rocksdb-fetch", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "rocksdb-fetch"
+    dockerfile = "${docker_dir}/Dockerfile.rocksdb"
+    matrix = rust_feat_sys
+    inherits = [
+        elem("kitchen", [feat_set, sys_name, sys_version, sys_target]),
+        elem("recipe", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:kitchen", [feat_set, sys_name, sys_version, sys_target])
+        recipe = elem("target:recipe", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+###############################################################################
+#
+# Project source and dependency acquisition
+#
+
+group "sources" {
+    targets = [
+        "source",
+        "ingredients",
+        "recipe",
+    ]
+}
+
+target "recipe" {
+    name = elem("recipe", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("recipe", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest")
+    ]
+    target =  "recipe"
+    matrix = rust_feat_sys
+    inherits = [
+        elem("preparing", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:preparing", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        preparing = elem("target:preparing", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "preparing" {
+    name = elem("preparing", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("preparing", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest")
+    ]
+    target =  "preparing"
+    matrix = rust_feat_sys
+    inherits = [
+        elem("ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+        ingredients = elem("target:ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "ingredients" {
+    name = elem("ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("ingredients", [rust_toolchain, rust_target, feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    output = ["type=cacheonly,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    target =  "ingredients"
+    dockerfile = "${docker_dir}/Dockerfile.source"
+    matrix = rust_feat_sys
+    inherits = [
+        elem("source", [sys_name, sys_version, sys_target]),
+        elem("kitchen", [feat_set, sys_name, sys_version, sys_target]),
+        elem("rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target]),
+    ]
+    contexts = {
+        input = elem("target:kitchen", [feat_set, sys_name, sys_version, sys_target])
+        rust = elem("target:rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target])
+        source = elem("target:source", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        cargo_features = join(",", [
+            cargo_feat_sets[feat_set],
+            cargo_features_always,
+        ])
+        cargo_spec_features = (
+            feat_set == "all"?
+                "--all-features": "--no-default-features"
+        )
+        RUST_BACKTRACE = "full"
+        ROCKSDB_LIB_DIR="/usr/lib/${sys_target_triple(sys_target)}"
+        ROCKSDB_INCLUDE_DIR="/usr/lib/${sys_target_triple(sys_target)}/include"
+        JEMALLOC_OVERRIDE="/usr/lib/${sys_target_triple(sys_target)}/libjemalloc.a"
+        ZSTD_SYS_USE_PKG_CONFIG = (
+            contains(split(",", cargo_feat_sets[feat_set]), "zstd_compression")? 1: 0
+        )
+    }
+}
+
+# Source subset needed to build and test the workspace.
+target "source-rust" {
+    name = elem("source-rust", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("source-rust", [sys_name, sys_version, sys_target], "latest")
+    ]
+    target =  "source-rust"
+    dockerfile = "${docker_dir}/Dockerfile.source"
+    matrix = sys
+    contexts = {
+        source = elem("target:source", [sys_name, sys_version, sys_target])
+    }
+}
+
+target "source" {
+    name = elem("source", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("source", [sys_name, sys_version, sys_target], "latest")
+    ]
+    target =  "source"
+    dockerfile = "${docker_dir}/Dockerfile.source"
+    matrix = sys
+    inherits = [
+        elem("builder", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:builder", [sys_name, sys_version, sys_target])
+    }
+}
+
+###############################################################################
+#
+# Build Systems
+#
+
+#
+# Rust toolchain
+#
+
+rustup_components = [
+    "clippy",
+    "rustfmt",
+]
+
+nightly_rustup_components = [
+    "rust-src",
+]
+
+cargo_installs = [
+    "cargo-audit",
+    #"cargo-arch",
+    "cargo-chef",
+    "cargo-deb",
+    "cargo-generate-rpm",
+    "cargo-valgrind",
+    "lychee",
+    "mdbook",
+    "typos-cli",
+]
+
+rust_tool_sys = {
+    rust_toolchain = jsondecode(rust_toolchains)
+    rust_target = jsondecode(rust_targets)
+    sys_name = jsondecode(sys_names)
+    sys_version = jsondecode(sys_versions)
+    sys_target = jsondecode(sys_targets)
+}
+
+target "rust" {
+    name = elem("rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rust", [rust_toolchain, rust_target, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "rust"
+    matrix = rust_tool_sys
+    inherits = [
+        elem("rustup", [rust_target, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:rustup", [rust_target, sys_name, sys_version, sys_target])
+    }
+    args = {
+        rust_toolchain = (
+            rust_toolchain == "msrv"?
+                rust_msrv:
+            rust_toolchain == "nightly"?
+                rust_nightly:
+                rust_toolchain
+        )
+
+        rustup_components = join(" ", [
+            join(" ", rustup_components),
+            rust_toolchain == "nightly"?
+                join(" ", nightly_rustup_components): "",
+        ])
+
+        cargo_installs = join(" ", cargo_installs)
+
+        CARGO_TERM_VERBOSE = CARGO_TERM_VERBOSE
+        RUSTUP_HOME = "/opt/rust/rustup/${sys_name}/${sys_target_triple(sys_target)}"
+        CARGO_HOME = "/opt/rust/cargo/${sys_name}/${sys_target_triple(sys_target)}"
+    }
+}
+
+rust_sys = {
+    rust_target = jsondecode(rust_targets)
+    sys_name = jsondecode(sys_names)
+    sys_version = jsondecode(sys_versions)
+    sys_target = jsondecode(sys_targets)
+}
+
+target "rustup" {
+    name = elem("rustup", [rust_target, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("rustup", [rust_target, sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "rustup"
+    dockerfile = "${docker_dir}/Dockerfile.rust"
+    matrix = rust_sys
+    inherits = [
+        elem("builder", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:builder", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        rust_target = rust_target
+        CARGO_TARGET = rust_target
+        RUST_HOME = "/opt/rust"
+    }
+}
+
+#
+# Base build environment
+#
+
+feat_sys = {
+    feat_set = jsondecode(feat_sets)
+    sys_name = jsondecode(sys_names)
+    sys_version = jsondecode(sys_versions)
+    sys_target = jsondecode(sys_targets)
+}
+
+kitchen_packages = [
+    "clang",
+    "cmake",
+    "curl",
+    "dpkg-dev",
+    "gawk",
+    "git",
+    "golang-go",
+    "gzip",
+    "jq",
+    "libc6-dev",
+    "libclang-dev",
+    "libnuma-dev",
+    "libssl-dev",
+    "libsqlite3-dev",
+    "llvm",
+    "make",
+    "nix-bin",
+    "openssl",
+    "pkg-config",
+    "pkgconf",
+    "valgrind",
+    "xz-utils",
+]
+
+target "kitchen" {
+    description = "Base build environment; sans Rust"
+    name = elem("kitchen", [feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("kitchen", [feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = feat_sys
+    inherits = [
+        elem("builder", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:builder", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        packages = join(" ", [
+            contains(split(",", cargo_feat_sets[feat_set]), "bzip2_compression")? "libbz2-dev": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "io_uring")? "liburing-dev": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "jemalloc")? "libjemalloc-dev": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "lz4_compression")? "liblz4-dev": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "zstd_compression")? "libzstd-dev": "",
+        ])
+    }
+}
+
+target "builder" {
+    description = "Base build environment; sans Rust"
+    name = elem("builder", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("builder", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = sys
+    inherits = [
+        elem("base", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:base", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        packages = join(" ", [
+            join(" ", kitchen_packages),
+        ])
+    }
+}
+
+###############################################################################
+#
+# Base Systems
+#
+
+group "systems" {
+    targets = [
+        "runtime",
+        "valgrind",
+        "perf",
+    ]
+}
+
+sys = {
+    sys_name = jsondecode(sys_names)
+    sys_version = jsondecode(sys_versions)
+    sys_target = jsondecode(sys_targets)
+}
+
+target "perf" {
+    description = "Base runtime environment with linux-perf installed."
+    name = elem("perf", [feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("perf", [feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = feat_sys
+    inherits = [
+        elem("runtime", [feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:runtime", [feat_set, sys_name, sys_version, sys_target])
+    }
+}
+
+target "valgrind" {
+    description = "Base runtime environment with valgrind installed."
+    name = elem("valgrind", [feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("valgrind", [feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = feat_sys
+    inherits = [
+        elem("runtime", [feat_set, sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:runtime", [feat_set, sys_name, sys_version, sys_target])
+    }
+    args = {
+        packages = join(" ", [
+            "valgrind",
+        ])
+    }
+}
+
+target "runtime" {
+    description = "Base runtime environment for executing the application."
+    name = elem("runtime", [feat_set, sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("runtime", [feat_set, sys_name, sys_version, sys_target], "latest"),
+    ]
+    matrix = feat_sys
+    variable "cargo_feat_set" {
+        default = cargo_feat_sets[feat_set]
+    }
+    variable "cargo_features" {
+        default = split(",", cargo_feat_set)
+    }
+    inherits = [
+        elem("base", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:base", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        packages = join(" ", [
+            contains(split(",", cargo_feat_sets[feat_set]), "bzip2_compression")? "bzip2": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "io_uring")? "liburing2": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "jemalloc")? "libjemalloc2": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "lz4_compression")? "liblz4-1": "",
+            contains(split(",", cargo_feat_sets[feat_set]), "zstd_compression")? "libzstd1": "",
+        ])
+    }
+}
+
+base_pkgs = [
+    "adduser",
+    "ca-certificates",
+    # procps owns /usr/bin/kill, which the reload documented for containers
+    # in docs/deploying/configuration-reload.md invokes.
+    "procps",
+]
+
+target "base" {
+    description = "Base runtime environment with essential runtime packages"
+    name = elem("base", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("base", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "runtime"
+    matrix = sys
+    inherits = [
+        elem("system", [sys_name, sys_version, sys_target])
+    ]
+    contexts = {
+        input = elem("target:system", [sys_name, sys_version, sys_target])
+    }
+    args = {
+        DEBIAN_FRONTEND="noninteractive"
+        var_lib_apt = "/var/lib/apt/${sys_name}/${sys_version}/${sys_target_triple(sys_target)}"
+        var_cache = "/var/cache/${sys_name}/${sys_version}/${sys_target_triple(sys_target)}"
+        packages = join(" ", base_pkgs)
+    }
+}
+
+#
+# Base System
+#
+
+target "system" {
+    description = "Base system. Root of all our layers."
+    name = elem("system", [sys_name, sys_version, sys_target])
+    tags = [
+        elem_tag("system", [sys_name, sys_version, sys_target], "latest"),
+    ]
+    target = "system"
+    output = ["type=cacheonly,compression=zstd,mode=max,compression-level=${cache_compress_level}"]
+    dockerfile = "${docker_dir}/Dockerfile.system"
+    context = "."
+    matrix = sys
+    platforms = (
+        sys_target_triple(sys_target) == "x86_64-linux-gnu"?
+            ["linux/amd64/${sys_target_ver(sys_target)}"]:
+        sys_target_triple(sys_target) == "aarch64-linux-gnu"?
+            ["linux/arm64"]:
+            ["local"]
+    )
+    args = {
+        sys_name = sys_name
+        sys_version = sys_version
+        sys_target = sys_target
+        sys_triple = sys_target_triple(sys_target)
+        sys_isa = sys_target_isa(sys_target)
+    }
+}
+
+###############################################################################
+#
+# Utils
+#
+
+# The pinned msrv and the moving stable channel link static in every profile,
+# with the stable-legal flag set.
+function "static_toolchain" {
+    params = [rust_toolchain]
+    result = rust_toolchain == "msrv" || substr(rust_toolchain, 0, 6) == "stable"
+}
+
+function "sys_target_isa" {
+    params = [sys_target]
+    result = (
+        sys_target_ver(sys_target) != "v1"?
+            join("-",
+            [
+                replace(split("-", sys_target)[0], "_", "-"),
+                sys_target_ver(sys_target)
+            ]):
+            replace(split("-", sys_target)[0], "_", "-")
+    )
+}
+
+function "sys_target_triple" {
+    params = [sys_target]
+    result = join("-", [
+        split("-", sys_target)[0],
+        split("-", sys_target)[2],
+        split("-", sys_target)[3],
+    ])
+}
+
+function "sys_target_ver" {
+    params = [sys_target]
+    result = split("-", sys_target)[1]
+}
+
+function "elem_tag" {
+    params = [prefix, matrix, tag]
+    result = join(":", [elem(prefix, matrix), tag])
+}
+
+function "elem" {
+    params = [prefix, matrix]
+    result = join("--", [prefix, join("--", matrix)])
+}

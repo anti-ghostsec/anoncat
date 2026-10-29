@@ -1,0 +1,406 @@
+name: Publish
+
+on:
+  workflow_call:
+    secrets:
+      ghcr_token:
+      dockerhub_token:
+      apt_ssh_key:
+    inputs:
+      cargo_profiles:
+        type: string
+        description: Cargo profiles
+      feat_sets:
+        type: string
+        description: Cargo feature groups
+      rust_toolchains:
+        type: string
+        description: Rust toolchains
+      sys_names:
+        type: string
+        description: System names
+      sys_versions:
+        type: string
+        description: System versions
+      rust_targets:
+        type: string
+        description: Rust targets
+      sys_targets:
+        type: string
+        description: System targets
+      machines:
+        type: string
+        description: Hardware platform vector
+      excludes:
+        type: string
+        default: '[]'
+        description: Matrix exclusions
+      includes:
+        type: string
+        default: '[]'
+        description: Matrix inclusions
+      checkout:
+        type: string
+        default: ${{github.sha}}
+      docker_repo:
+        type: string
+        description: DockerHub Repository
+      docker_acct:
+        type: string
+        description: DockerHub account name
+      apt_ssh_dest:
+        type: string
+        description: Apt repository ssh destination
+      apt_ssh_hostkey:
+        type: string
+        description: Apt repository ssh host key
+      release_url:
+        type: string
+        description: For release assets
+      pages_url:
+        type: string
+        description: For pages deployment
+
+jobs:
+  documents:
+    if: >
+      !failure() && !cancelled()
+      && (github.ref == 'refs/heads/main' || contains(github.ref, 'refs/tags/v'))
+      && !contains(github.ref, '-draft')
+
+    name: Documents
+    runs-on: ['X64', 'het']
+    permissions:
+      contents: read
+      id-token: write
+      pages: write
+
+    environment:
+      name: github-pages
+      url: ${{inputs.pages_url}}
+
+    steps:
+      - id: book
+        name: Fetch Book
+        uses: actions/download-artifact@v8
+        with:
+          name: release-default-x86_64-v1-linux-gnu-book
+          path: pages
+
+      - id: docs
+        name: Fetch Docs
+        uses: actions/download-artifact@v8
+        with:
+          name: release-default-x86_64-v1-linux-gnu-docs
+          path: pages/book
+
+      - id: store
+        name: Store Pages
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: pages/book
+          name: github-pages-${{github.run_attempt}}
+
+      - id: deploy
+        name: Deploy Pages
+        uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-${{github.run_attempt}}
+
+  containers:
+    if: >
+      !failure() && !cancelled()
+      && inputs.machines
+      && inputs.docker_repo != ''
+      && (github.ref == 'refs/heads/main' || contains(github.ref, 'refs/tags/v'))
+
+    name: Containers
+    runs-on: ${{matrix.machine}}
+    permissions: write-all
+    strategy:
+      fail-fast: true
+      matrix:
+        bake_target: ${{fromJSON('["docker_io", "ghcr_io"]')}}
+        cargo_profile: ${{fromJSON(inputs.cargo_profiles)}}
+        rust_toolchain: ${{fromJSON(inputs.rust_toolchains)}}
+        feat_set: ${{fromJSON(inputs.feat_sets)}}
+        sys_name: ${{fromJSON(inputs.sys_names)}}
+        sys_version: ${{fromJSON(inputs.sys_versions)}}
+        rust_target: ${{fromJSON(inputs.rust_targets)}}
+        sys_target: ${{fromJSON(inputs.sys_targets)}}
+        machine: ${{fromJSON(inputs.machines)}}
+        exclude: ${{fromJSON(inputs.excludes)}}
+        include: ${{fromJSON(inputs.includes)}}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{inputs.checkout || github.sha}}
+          fetch-depth: 1
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: GitHub Login
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.ghcr_token }}
+
+      - name: DockerHub Login
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ inputs.docker_acct }}
+          password: ${{ secrets.dockerhub_token }}
+
+      - name: Bake
+        env:
+          bake_target: ${{matrix.bake_target}}
+          cargo_profile: ${{matrix.cargo_profile}}
+          rust_toolchain: ${{matrix.rust_toolchain}}
+          rust_target: ${{matrix.rust_target}}
+          feat_set: ${{matrix.feat_set}}
+          sys_name: ${{matrix.sys_name}}
+          sys_version: ${{matrix.sys_version}}
+          sys_target: ${{matrix.sys_target}}
+          machine: ${{matrix.machine}}
+          git_checkout: ${{inputs.checkout}}
+          acct: ${{github.actor}}
+          repo: ${{github.repository}}
+          docker_repo: ${{inputs.docker_repo}}
+
+        run: |
+          docker/bake.sh "${{matrix.bake_target}}"
+
+  bundles:
+    if: >
+      !failure() && !cancelled()
+      && inputs.machines
+      && inputs.docker_repo != ''
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["release"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["default"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["msrv"]')[0])
+      && (github.ref == 'refs/heads/main' || contains(github.ref, 'refs/tags/v'))
+
+    name: Bundles
+    needs: [containers]
+    runs-on: 'het'
+    permissions: write-all
+    strategy:
+      fail-fast: true
+      matrix:
+        bake_target: ${{fromJSON('["docker_io", "ghcr_io"]')}}
+        cargo_profile: ${{fromJSON('["release"]')}}
+        feat_set: ${{fromJSON('["default"]')}}
+        rust_toolchain: ${{fromJSON('["msrv"]')}}
+        sys_name: ${{fromJSON(inputs.sys_names)}}
+        sys_version: ${{fromJSON(inputs.sys_versions)}}
+        rust_target: ${{fromJSON(inputs.rust_targets)}}
+        sys_target: ${{fromJSON(inputs.sys_targets)}}
+        machine: ${{fromJSON(inputs.machines)}}
+        exclude: ${{fromJSON(inputs.excludes)}}
+        include: ${{fromJSON(inputs.includes)}}
+
+    steps:
+      - name: GitHub Login
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.ghcr_token }}
+
+      - name: DockerHub Login
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ inputs.docker_acct }}
+          password: ${{ secrets.dockerhub_token }}
+
+      - name: Release Branch
+        if: >
+          !failure() && !cancelled()
+          && (github.ref == 'refs/heads/main' || contains(github.ref, 'refs/tags/v'))
+
+        env:
+          acct: ${{github.actor}}
+          ghcr_repo: ${{github.repository}}
+          docker_repo: ${{inputs.docker_repo}}
+          registry: ${{matrix.bake_target}}
+          cargo_profile: ${{matrix.cargo_profile}}
+          feat_set: ${{matrix.feat_set}}
+          sys_target: ${{matrix.sys_target}}
+          ref_name: ${{github.ref_name}}
+
+        run: |
+          registry="$(echo -n $registry | sed s/_/./)"
+          if test "$registry" = "ghcr.io"; then
+            repo="$ghcr_repo"
+          else
+            repo="$docker_repo"
+          fi
+
+          docker manifest create "${registry}/${repo}:${ref_name}" \
+            --amend "${registry}/${repo}:${ref_name}-${cargo_profile}-${feat_set}-${sys_target}"
+
+      - name: Release Preview
+        if: >
+          !failure() && !cancelled()
+          && contains(github.ref, 'refs/tags/v')
+          && !contains(github.ref, '-draft')
+
+        env:
+          acct: ${{github.actor}}
+          ghcr_repo: ${{github.repository}}
+          docker_repo: ${{inputs.docker_repo}}
+          registry: ${{matrix.bake_target}}
+          cargo_profile: ${{matrix.cargo_profile}}
+          feat_set: ${{matrix.feat_set}}
+          sys_target: ${{matrix.sys_target}}
+          ref_name: ${{github.ref_name}}
+
+        run: |
+          registry="$(echo -n $registry | sed s/_/./)"
+          if test "$registry" = "ghcr.io"; then
+            repo="$ghcr_repo"
+          else
+            repo="$docker_repo"
+          fi
+
+          docker manifest create "${registry}/${repo}:preview" \
+            --amend "${registry}/${repo}:${ref_name}-${cargo_profile}-${feat_set}-${sys_target}"
+
+      - name: Release Latest
+        if: >
+          !failure() && !cancelled()
+          && contains(github.ref, 'refs/tags/v')
+          && !contains(github.ref, '-draft')
+          && !contains(github.ref, '-pre')
+          && !contains(github.ref, '-rc')
+
+        env:
+          acct: ${{github.actor}}
+          ghcr_repo: ${{github.repository}}
+          docker_repo: ${{inputs.docker_repo}}
+          registry: ${{matrix.bake_target}}
+          cargo_profile: ${{matrix.cargo_profile}}
+          feat_set: ${{matrix.feat_set}}
+          sys_target: ${{matrix.sys_target}}
+          ref_name: ${{github.ref_name}}
+
+        run: |
+          registry="$(echo -n $registry | sed s/_/./)"
+          if test "$registry" = "ghcr.io"; then
+            repo="$ghcr_repo"
+          else
+            repo="$docker_repo"
+          fi
+
+          docker manifest create "${registry}/${repo}:latest" \
+            --amend "${registry}/${repo}:${ref_name}-${cargo_profile}-${feat_set}-${sys_target}"
+
+  apt:
+    if: >
+      !failure() && !cancelled()
+      && inputs.apt_ssh_dest != ''
+      && contains(github.ref, 'refs/tags/v')
+      && !contains(github.ref, '-draft')
+      && !contains(github.ref, '-pre')
+      && !contains(github.ref, '-rc')
+
+    name: Apt Repository
+    runs-on: 'het'
+    timeout-minutes: 10
+    steps:
+      - name: Publish Release
+        env:
+          ref_name: ${{github.ref_name}}
+          ssh_dest: ${{inputs.apt_ssh_dest}}
+          ssh_hostkey: ${{inputs.apt_ssh_hostkey}}
+          deploy_key: ${{secrets.apt_ssh_key}}
+
+        run: |
+          if [ -z "$deploy_key" ]; then
+            echo "apt_ssh_key secret is not set; skipping"
+            exit 0
+          fi
+          key="$(mktemp)"
+          hosts="$(mktemp)"
+          trap 'shred -u "$key"; rm -f "$hosts"' EXIT
+          printf '%s\n' "$deploy_key" > "$key"
+          printf '%s\n' "$ssh_hostkey" > "$hosts"
+          ssh -i "$key" -o UserKnownHostsFile="$hosts" -o IdentitiesOnly=yes \
+            -o BatchMode=yes -o ConnectTimeout=30 \
+            "$ssh_dest" "$ref_name"
+
+  delivery:
+    if: >
+      !cancelled()
+      && needs.bundles.result == 'success'
+      && needs.documents.result != 'failure'
+      && inputs.machines
+      && inputs.docker_repo != ''
+      && (github.ref == 'refs/heads/main' || contains(github.ref, 'refs/tags/v'))
+
+    name: Delivery
+    needs: [bundles, documents, apt]
+    runs-on: 'het'
+    permissions: write-all
+    steps:
+      - name: GitHub Login
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.ghcr_token }}
+
+      - name: DockerHub Login
+        uses: docker/login-action@v4
+        with:
+          registry: docker.io
+          username: ${{ inputs.docker_acct }}
+          password: ${{ secrets.dockerhub_token }}
+
+      - name: Push Branch
+        if: >
+          !failure() && !cancelled()
+          && (github.ref == 'refs/heads/main' || contains(github.ref, 'refs/tags/v'))
+
+        env:
+          ref_name: ${{github.ref_name}}
+          ghcr_repo: ${{github.repository}}
+          docker_repo: ${{inputs.docker_repo}}
+
+        run: |
+          docker manifest push -p "ghcr.io/${ghcr_repo}:${ref_name}"
+          docker manifest push -p "docker.io/${docker_repo}:${ref_name}"
+
+      - name: Push Preview
+        if: >
+          !failure() && !cancelled()
+          && contains(github.ref, 'refs/tags/v')
+          && !contains(github.ref, '-draft')
+
+        env:
+          ghcr_repo: ${{github.repository}}
+          docker_repo: ${{inputs.docker_repo}}
+
+        run: |
+          docker manifest push -p "ghcr.io/${ghcr_repo}:preview"
+          docker manifest push -p "docker.io/${docker_repo}:preview"
+
+      - name: Push Latest
+        if: >
+          !failure() && !cancelled()
+          && contains(github.ref, 'refs/tags/v')
+          && !contains(github.ref, '-draft')
+          && !contains(github.ref, '-pre')
+          && !contains(github.ref, '-rc')
+
+        env:
+          ghcr_repo: ${{github.repository}}
+          docker_repo: ${{inputs.docker_repo}}
+
+        run: |
+          docker manifest push -p "ghcr.io/${ghcr_repo}:latest"
+          docker manifest push -p "docker.io/${docker_repo}:latest"

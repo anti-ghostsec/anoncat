@@ -1,0 +1,137 @@
+[package]
+name = "tuwunel_core"
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lib]
+path = "mod.rs"
+bench = false
+crate-type = [
+	"rlib",
+#	"dylib",
+]
+
+[features]
+brotli_compression = [
+	"reqwest/brotli",
+]
+console = []
+gzip_compression = [
+	"reqwest/gzip",
+]
+jemalloc = [
+	"dep:jevmalloc",
+]
+jemalloc_conf = []
+jemalloc_prof = [
+	"jevmalloc?/profiling",
+]
+jemalloc_stats = [
+	"jevmalloc?/stats",
+]
+perf_measurements = []
+release_max_log_level = [
+	"log/max_level_trace",
+	"log/release_max_level_info",
+	"tracing/max_level_trace",
+	"tracing/release_max_level_info",
+]
+sentry_telemetry = []
+tuwunel_mods = [
+    "dep:libloading"
+]
+zstd_compression = [
+    "reqwest/zstd",
+]
+
+[dependencies]
+argon2.workspace = true
+arrayvec.workspace = true
+aws-lc-rs.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+base64.workspace = true
+bytes.workspace = true
+bytesize.workspace = true
+cargo_toml.workspace = true
+checked_ops.workspace = true
+chrono.workspace = true
+clap.workspace = true
+tuwunel-macros.workspace = true
+const-str.workspace = true
+core_affinity.workspace = true
+ctor.workspace = true
+dtor.workspace = true
+cyborgtime.workspace = true
+derive_more.workspace = true
+either.workspace = true
+figment.workspace = true
+futures.workspace = true
+http-body-util.workspace = true
+http.workspace = true
+ipaddress.workspace = true
+ipnet.workspace = true
+itertools.workspace = true
+jsonwebtoken.workspace = true
+libc.workspace = true
+libloading.workspace = true
+libloading.optional = true
+link-section.workspace = true
+log.workspace = true
+num-traits.workspace = true
+object_store.workspace = true
+pin-project-lite.workspace = true
+rand.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+ruma.workspace = true
+sanitize-filename.workspace = true
+serde_core.workspace = true
+serde_html_form.workspace = true
+serde_json.workspace = true
+serde_regex.workspace = true
+serde_yaml.workspace = true
+serde.workspace = true
+smallvec.workspace = true
+smallstr.workspace = true
+thiserror.workspace = true
+jevmalloc.optional = true
+jevmalloc.workspace = true
+tokio.workspace = true
+tokio-metrics.workspace = true
+toml.workspace = true
+toml_writer.workspace = true
+tracing-core.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+# tokio hard-errors on this feature without the cfg, so it tracks the same gate
+# as the code reading the histogram.
+[target.'cfg(tokio_unstable)'.dependencies.tokio]
+features = ["schedule-latency"]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[target.'cfg(target_os = "openbsd")'.dependencies]
+num_cpus.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+insta.workspace = true
+maplit.workspace = true
+similar.workspace = true
+
+[lints]
+workspace = true

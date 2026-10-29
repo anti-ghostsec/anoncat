@@ -1,0 +1,186 @@
+name: Linting
+
+on:
+  workflow_call:
+    inputs:
+      cargo_profiles:
+        type: string
+        description: Cargo profiles
+      feat_sets:
+        type: string
+        description: Cargo feature groups
+      rust_toolchains:
+        type: string
+        description: Rust toolchains
+      sys_names:
+        type: string
+        description: System names
+      sys_versions:
+        type: string
+        description: System versions
+      rust_targets:
+        type: string
+        description: Rust targets
+      sys_targets:
+        type: string
+        description: System targets
+      machines:
+        type: string
+        description: Hardware platform vector
+      excludes:
+        type: string
+        default: '[]'
+        description: Matrix exclusions
+      includes:
+        type: string
+        default: '[]'
+        description: Matrix inclusions
+      checkout:
+        type: string
+        default: ${{github.sha}}
+      enable_audit:
+        type: string
+        default: 'true'
+
+jobs:
+  fmt:
+    if: >
+      !failure() && !cancelled()
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["test"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["all"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["nightly"]')[0])
+      && contains(fromJSON(inputs.sys_targets), fromJSON('["x86_64-v1-linux-gnu"]')[0])
+
+    name: Format
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["fmt"]'
+      cargo_profiles: '["test"]'
+      feat_sets: '["all"]'
+      rust_toolchains: '["nightly"]'
+      rust_targets: ${{inputs.rust_targets}}
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      sys_targets: '["x86_64-v1-linux-gnu"]'
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      checkout: ${{inputs.checkout}}
+
+  typos:
+    if: >
+      !failure() && !cancelled()
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["test"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["all"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["nightly"]')[0])
+      && contains(fromJSON(inputs.sys_targets), fromJSON('["x86_64-v1-linux-gnu"]')[0])
+
+    name: Typos
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["typos"]'
+      cargo_profiles: '["test"]'
+      feat_sets: '["all"]'
+      rust_toolchains: '["nightly"]'
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: '["x86_64-v1-linux-gnu"]'
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      checkout: ${{inputs.checkout}}
+
+  audit:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_audit)
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["test"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["all"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["nightly"]')[0])
+      && contains(fromJSON(inputs.sys_targets), fromJSON('["x86_64-v1-linux-gnu"]')[0])
+
+    name: Audit
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["audit"]'
+      cargo_profiles: '["test"]'
+      feat_sets: '["all"]'
+      rust_toolchains: '["nightly"]'
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: '["x86_64-v1-linux-gnu"]'
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      checkout: ${{inputs.checkout}}
+
+  lychee:
+    if: >
+      !failure() && !cancelled()
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["test"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["all"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["nightly"]')[0])
+      && contains(fromJSON(inputs.sys_targets), fromJSON('["x86_64-v1-linux-gnu"]')[0])
+
+    name: Lychee
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["lychee"]'
+      cargo_profiles: '["test"]'
+      feat_sets: '["all"]'
+      rust_toolchains: '["nightly"]'
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: '["x86_64-v1-linux-gnu"]'
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      checkout: ${{inputs.checkout}}
+
+  check:
+    if: >
+      !failure() && !cancelled()
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["test"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["all"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["nightly"]')[0])
+      && contains(fromJSON(inputs.sys_targets), fromJSON('["x86_64-v1-linux-gnu"]')[0])
+
+    name: Check
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["check"]'
+      cargo_profiles: '["test"]'
+      feat_sets: '["all"]'
+      rust_toolchains: '["nightly"]'
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: '["x86_64-v1-linux-gnu"]'
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      checkout: ${{inputs.checkout}}
+
+  clippy:
+    if: >
+      !failure() && !cancelled()
+      && inputs.cargo_profiles
+
+    name: Clippy
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["clippy"]'
+      cargo_profiles: ${{inputs.cargo_profiles}}
+      feat_sets: ${{inputs.feat_sets}}
+      rust_toolchains: ${{inputs.rust_toolchains}}
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: ${{inputs.sys_targets}}
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      checkout: ${{inputs.checkout}}

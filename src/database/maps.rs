@@ -1,0 +1,762 @@
+//! Column family descriptors used by the homeserver database.
+//!
+//! The catalog names every configured map and supplies its RocksDB tuning
+//! profile. Database startup opens these descriptors as one coherent
+//! collection.
+
+use std::{collections::BTreeMap, sync::Arc};
+
+use rocksdb::DBCompressionType as CompressionType;
+use tuwunel_core::Result;
+
+use crate::{
+	Engine, Map,
+	engine::descriptor::{self, CacheDisp, Descriptor},
+};
+
+/// Indexes opened logical maps by column-family name.
+///
+/// Keys are static names from the descriptor catalog, and values share each
+/// opened [`Map`] through an `Arc`. Dropped or unavailable families are absent.
+pub(super) type Maps = BTreeMap<MapsKey, MapsVal>;
+
+pub(super) type Indexed = Box<[Option<MapsVal>]>;
+
+/// Names a column family in the map catalog.
+///
+/// Catalog names have static lifetime because descriptors are process-wide
+/// constants.
+pub(super) type MapsKey = &'static str;
+
+/// Holds a shared logical map opened from a catalog descriptor.
+///
+/// The shared handle keeps the map and its database engine alive for every
+/// service that uses the catalog entry.
+pub(super) type MapsVal = Arc<Map>;
+
+/// Opens every configured map in the built-in catalog.
+///
+/// The returned index contains only descriptors that are live and present in
+/// the opened database. Individual map handles share the supplied engine.
+/// The second index follows `MAPS`, with `None` for dropped or absent families.
+pub(super) fn open(engine: &Arc<Engine>) -> Result<(Maps, Indexed)> { open_list(engine, MAPS) }
+
+/// Opens maps from an explicit descriptor list.
+///
+/// Dropped descriptors and column families missing from the engine are skipped.
+/// Any failure to open a retained map aborts construction of the index.
+/// The second index follows `MAPS`, with `None` for dropped or absent families.
+#[tracing::instrument(name = "maps", level = "debug", skip_all)]
+pub(super) fn open_list(engine: &Arc<Engine>, maps: &[Descriptor]) -> Result<(Maps, Indexed)> {
+	let maps: Maps = maps
+		.iter()
+		.filter(|desc| !desc.dropped)
+		.filter(|desc| engine.has_cf(desc.name))
+		.map(|desc| Ok((desc.name, Map::open(engine, desc.name)?)))
+		.collect::<Result<_>>()?;
+
+	let indexed = MAPS
+		.iter()
+		.map(|desc| maps.get(desc.name).cloned())
+		.collect();
+
+	Ok((maps, indexed))
+}
+
+#[cfg(test)]
+pub(crate) fn descriptor(name: &str) -> &'static Descriptor {
+	MAPS.iter()
+		.find(|desc| desc.name.eq(name))
+		.expect("descriptor present")
+}
+
+/// Defines the built-in column-family catalog and its RocksDB tuning.
+///
+/// Each descriptor names one logical map and inherits a workload preset with
+/// optional per-map overrides. Dropped descriptors remain as migration
+/// tombstones but are not opened for use.
+pub(super) static MAPS: &[Descriptor] = &[
+	Descriptor {
+		name: "alias_roomid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "alias_userid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "aliasid_alias",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "authchainkey_authchain",
+		cache_disp: CacheDisp::Unique, // fork-resolve bursts would evict the shared pool
+		compression: CompressionType::None,
+		cache_shards: 32,
+		index_size: 1024,
+		block_size: 4096,
+		key_size_hint: Some(8),
+		val_size_hint: Some(256),
+		limit_size: 1024 * 1024 * 1024 * 4,
+		..descriptor::RANDOM_CACHE
+	},
+	Descriptor {
+		name: "backupid_algorithm",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "backupid_etag",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "backupkeyid_backup",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "bannedroomids",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "disabledroomids",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "email_userid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "eventid_backoff",
+		cache_disp: CacheDisp::Unique, // hot on every redelivery
+		key_size_hint: Some(64),
+		val_size_hint: Some(16),
+		ttl: 60 * 60 * 24 * 3, // dead after the max fetch-backoff window (24h)
+		limit_size: 1024 * 1024 * 256,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "eventid_originalpdu",
+		key_size_hint: Some(48),
+		val_size_hint: Some(1520),
+		block_size: 2048,
+		index_size: 512,
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "eventid_outlierpdu",
+		cache_disp: CacheDisp::SharedWith("pduid_pdu"),
+		key_size_hint: Some(48),
+		val_size_hint: Some(1488),
+		block_size: 1024,
+		index_size: 512,
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "eventid_pduid",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(48),
+		val_size_hint: Some(16),
+		block_size: 512,
+		index_size: 512,
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "eventid_policysigstate",
+		ttl: 60 * 60 * 24 * 7, // backoff/refusal hint; re-ask fails open
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "eventid_resolvedstate",
+		ttl: 60 * 60 * 24 * 7, // refetch-avoidance only; safe to evict
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "eventid_shorteventid",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(48),
+		val_size_hint: Some(8),
+		block_size: 512,
+		index_size: 512,
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "global",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "id_appserviceregistrations",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "keychangeid_devicechange",
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "keychangeid_userid",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "keyid_key",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "lazyloadedids",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "logintoken_expiresatuserid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "mediaid_file",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "mediaid_lazy",
+		ttl: 60 * 60 * 24 * 30, // raised by url_preview_cache_ttl; must outlive url_preview
+		limit_size: 1024 * 1024 * 512,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "mediaid_lazycontent",
+		cache_disp: CacheDisp::Unique, // 256 KiB rows would evict the shared pool
+		key_size_hint: Some(64),
+		val_size_hint: Some(1024 * 256),
+		file_size: 1024 * 1024 * 64,
+		write_size: 1024 * 1024 * 64,
+		compression: CompressionType::None, // media bytes are pre-compressed
+		ttl: 60 * 60 * 24 * 14,             // staging only: rows die at promotion or here
+		..descriptor::RANDOM_CACHE
+	},
+	Descriptor {
+		name: "mediaid_pending",
+		ttl: 60 * 60 * 24 * 7,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "mediaid_user",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "oauthid_session",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "oauthuniqid_oauthid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "oidc_signingkey",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "oidcclientid_registration",
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "oidccode_authsession",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "oidcdevice_userdeviceid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "oidcdevicecode_devicegrant",
+		ttl: 60 * 60 * 24,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "oidcusercode_devicecode",
+		ttl: 60 * 60 * 24,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "oidccskeybypass_userid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "oidcreqid_authrequest",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "onetimekeyid_onetimekeys",
+		..descriptor::DROPPED
+	},
+	Descriptor {
+		name: "onetimekeyid4225_otk",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "openidtoken_expiresatuserid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "pduid_pdu",
+		cache_disp: CacheDisp::SharedWith("eventid_outlierpdu"),
+		key_size_hint: Some(16),
+		val_size_hint: Some(1520),
+		block_size: 2048,
+		index_size: 512,
+		..descriptor::SEQUENTIAL
+	},
+	Descriptor {
+		name: "profilechangeid_userid",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "publicroomids",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "pushkey_deviceid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "presenceid_presence",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(32),
+		val_size_hint: Some(96),
+		block_size: 1024 * 4,
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "readreceiptid_readreceipt",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "referencedevents",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "relatesto_typed",
+		key_size_hint: Some(33),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "registrationtoken_info",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_knockedcount",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_invitedcount",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_inviteviaservers",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_joinedcount",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_maxremotepowerlevel",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_pduleaves",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_shortroomid",
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_shortstatehash",
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomid_spacehierarchy",
+		limit_size: 1024 * 1024 * 64,
+		ttl: 60 * 60 * 24 * 7, // above spacehierarchy_cache_ttl_max (18h default)
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "roomid_ts_pducount",
+		..descriptor::DROPPED
+	},
+	Descriptor {
+		name: "roomid_tscount_pducount",
+		val_size_hint: Some(8),
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "roomserverids",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomsynctoken_shortstatehash",
+		..descriptor::DROPPED
+	},
+	Descriptor {
+		name: "roomtseventid_prevwalk",
+		cache_disp: CacheDisp::Unique, // admin sweeps would evict the shared pool
+		cache_shards: 8,               // 512 KiB each, RocksDB's default minimum shard
+		block_size: 4096,              // scanned, never point-read
+		ttl: 60 * 60 * 24 * 3,         // the "up to three days" the view's docs name
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "roomuserdataid_accountdata",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuserid_invitecount",
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuserid_joined",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuserid_lastprivatereadupdate",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuserid_lastnotificationread",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuserid_leftcount",
+		val_size_hint: Some(8),
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "roomuserid_knockedcount",
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuserid_privateread",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuserid_privatereadsync",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "roomuseroncejoinedids",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "roomusertype_roomuserdataid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "senderkey_pusher",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "server_signingkeys",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "servercurrentevent_data",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "servername_destination",
+		cache_disp: CacheDisp::SharedWith("servername_override"), // one resolve writes both
+		key_size_hint: Some(48),
+		val_size_hint: Some(128),
+		ttl: 60 * 60 * 24 * 7, // dead after CachedDest::default_expire (<=36h)
+		limit_size: 1024 * 1024 * 96,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "servername_educount",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "servername_override",
+		cache_disp: CacheDisp::SharedWith("servername_destination"),
+		key_size_hint: Some(48),
+		val_size_hint: Some(128),
+		ttl: 60 * 60 * 24 * 7, // dead after CachedOverride::default_expire (<=12h)
+		limit_size: 1024 * 1024 * 96,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "servername_status",
+		cache_disp: CacheDisp::Unique, // read on every outbound attempt
+		key_size_hint: Some(48),
+		val_size_hint: Some(16),
+		ttl: 60 * 60 * 24 * 3, // dead after peer MAX_BACKOFF (24h)
+		limit_size: 1024 * 1024 * 128,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "servernameevent_data",
+		cache_disp: CacheDisp::Unique,
+		val_size_hint: Some(128),
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "serverroomids",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "servershortroomid_park",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "shorteventid_authchain",
+		..descriptor::DROPPED
+	},
+	Descriptor {
+		name: "shorteventid_eventid",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(8),
+		val_size_hint: Some(48),
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "shorteventid_shortstatehash",
+		key_size_hint: Some(8),
+		val_size_hint: Some(8),
+		block_size: 512,
+		index_size: 512,
+		..descriptor::SEQUENTIAL
+	},
+	Descriptor {
+		name: "shortstatehash_statediff",
+		key_size_hint: Some(8),
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "shortstatekey_statekey",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(8),
+		val_size_hint: Some(1024),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "softfailedeventids",
+		key_size_hint: Some(48),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "statehash_shortstatehash",
+		val_size_hint: Some(8),
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "statekey_shortstatekey",
+		cache_disp: CacheDisp::Unique,
+		key_size_hint: Some(1024),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "threadactivityid_rootid",
+		key_size_hint: Some(16),
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "threadid_userids",
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "threadrootid_latestcount",
+		key_size_hint: Some(16),
+		val_size_hint: Some(8),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "threepidsid_pending",
+		ttl: 60 * 60 * 24, // pending validation session; minutes to complete
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "timeredacted_eventid",
+		key_size_hint: Some(64),
+		..descriptor::SEQUENTIAL_SMALL
+	},
+	Descriptor {
+		name: "todeviceid_events",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "tofrom_relation",
+		key_size_hint: Some(16),
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "spentrefresh_userdeviceid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "token_userdeviceid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "tokenids",
+		block_size: 512,
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "url_preview",
+		ttl: 60 * 60 * 24 * 7, // floor; url_preview_cache_ttl raises it when higher
+		limit_size: 1024 * 1024 * 128,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "url_previews",
+		..descriptor::DROPPED
+	},
+	Descriptor {
+		name: "userdeviceid_metadata",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userdeviceconnid_conn",
+		block_size: 1024 * 16,
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userdeviceid_refresh",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userdeviceid_spentrefresh",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userdeviceid_token",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userdeviceidtoken_index",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userdeviceidalgorithm_fallback",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userdevicesessionid_threepid",
+		ttl: 60 * 60 * 24, // interactive-auth session; minutes to complete
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "userdevicesessionid_uiaainfo",
+		ttl: 60 * 60 * 24, // interactive-auth session; minutes to complete
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "userdevicetxnid_response",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userfilterid_filter",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_avatarurl",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_blurhash",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_dehydrateddevice",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_devicelistversion",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_displayname",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_email",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_erased",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_lastonetimekeyupdate",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_locked",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_masterkeyid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_oauthid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_origin",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "userid_password",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "userid_presenceid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_selfsigningkeyid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_suspended",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userid_usersigningkeyid",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "useridcount_notification",
+		limit_size: 1024 * 1024 * 256,
+		..descriptor::RANDOM_SMALL_CACHE
+	},
+	Descriptor {
+		name: "useridprofilekey_value",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userroomid_highlightcount",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "userroomid_invitestate",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userroomid_joined",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "userroomid_leftstate",
+		..descriptor::RANDOM
+	},
+	Descriptor {
+		name: "userroomid_knockedstate",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
+		name: "userroomid_notificationcount",
+		..descriptor::RANDOM
+	},
+];

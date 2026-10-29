@@ -1,0 +1,55 @@
+#![expect(refining_impl_trait)]
+
+mod manager;
+pub(crate) mod migrations;
+mod once_services;
+mod service;
+pub mod services;
+#[cfg(test)]
+mod test_utils;
+
+pub mod account_data;
+pub mod admin;
+pub mod appservice;
+pub mod client;
+pub mod config;
+pub mod deactivate;
+pub mod emergency;
+pub mod federation;
+pub mod fetcher;
+pub mod globals;
+pub mod key_backups;
+pub mod login_ratelimit;
+pub mod media;
+pub mod membership;
+pub mod oauth;
+pub mod presence;
+pub mod profile;
+pub mod pusher;
+pub mod registration_tokens;
+pub mod rendezvous;
+pub mod resolver;
+pub mod rooms;
+pub mod sending;
+pub mod sendmail;
+pub mod server_keys;
+pub mod storage;
+pub mod sync;
+pub mod tasks;
+pub mod threepid;
+pub mod transaction_ids;
+pub mod uiaa;
+pub mod users;
+
+pub(crate) use once_services::OnceServices;
+pub(crate) use service::{Args, Service};
+
+pub(crate) type SelfServices = std::sync::Arc<OnceServices>;
+
+use log as _;
+
+pub use crate::services::Services;
+
+tuwunel_core::mod_ctor! {}
+tuwunel_core::mod_dtor! {}
+tuwunel_core::rustc_flags_capture! {}

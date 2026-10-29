@@ -1,0 +1,147 @@
+use futures::{StreamExt, TryFutureExt};
+use ruma::{
+	CanonicalJsonObject, EventId, RoomId, RoomVersionId, ServerName, events::TimelineEventType,
+};
+use tuwunel_core::{
+	Err, Result, debug, debug_info, implement, trace,
+	utils::{ReadyExt, future::TryExtExt, stream::IterStream},
+	warn,
+};
+use tuwunel_matrix::{
+	Event, PduEvent, event::TypeExt, room::state::resolution::auth_check, room_version,
+};
+
+#[implement(super::Service)]
+#[cfg_attr(unabridged, tracing::instrument(
+    name = "outlier",
+    level = "debug",
+    skip_all,
+    fields(lev = %recursion_level)
+))]
+#[expect(clippy::too_many_arguments)]
+pub(super) async fn handle_outlier_pdu(
+	&self,
+	origin: &ServerName,
+	room_id: &RoomId,
+	event_id: &EventId,
+	mut pdu_json: CanonicalJsonObject,
+	room_version: &RoomVersionId,
+	recursion_level: usize,
+	auth_events_known: bool,
+) -> Result<(PduEvent, CanonicalJsonObject)> {
+	debug!(?event_id, ?auth_events_known, %recursion_level, "handle outlier");
+
+	// 1. Remove unsigned field
+	pdu_json.remove("unsigned");
+
+	// TODO: For RoomVersion6 we must check that Raw<..> is canonical do we
+	// anywhere?: https://matrix.org/docs/spec/rooms/v6#canonical-json
+	// 2. Check signatures, otherwise drop
+	// 3. check content hash, redact if doesn't match
+	let pdu_json = match self
+		.services
+		.server_keys
+		.verify_event(&pdu_json, Some(room_version))
+		.await
+	{
+		| Ok(ruma::signatures::Verified::All) => pdu_json,
+		| Ok(ruma::signatures::Verified::Signatures) => {
+			// Redact
+			debug_info!("Calculated hash does not match (redaction): {event_id}");
+			let Some(rules) = room_version.rules() else {
+				return Err!(Request(UnsupportedRoomVersion(
+					"Cannot redact event for unknown room version {room_version:?}."
+				)));
+			};
+
+			let Ok(pdu_json) = ruma::canonical_json::redact(pdu_json, &rules.redaction, None)
+			else {
+				return Err!(Request(InvalidParam("Redaction failed")));
+			};
+
+			// Skip the PDU if it is redacted and we already have it as an outlier event
+			if self.services.timeline.pdu_exists(event_id).await {
+				return Err!(Request(InvalidParam(
+					"Event was redacted and we already knew about it"
+				)));
+			}
+
+			pdu_json
+		},
+		| Err(e) => {
+			return Err!(Request(InvalidParam(debug_error!(
+				"Signature verification failed for {event_id}: {e}"
+			))));
+		},
+	};
+
+	// Now that we have checked the signature and hashes we can make mutations and
+	// convert to our PduEvent type.
+	let room_rules = room_version::rules(room_version)?;
+	let (event, pdu_json) =
+		PduEvent::from_object_federation(room_id, event_id, pdu_json, &room_rules)?;
+
+	if !auth_events_known {
+		// 4. fetch any missing auth events doing all checks listed here starting at 1.
+		//    These are not timeline events
+		// 5. Reject "due to auth events" if can't get all the auth events or some of
+		//    the auth events are also rejected "due to auth events"
+		// NOTE: Step 5 is not applied anymore because it failed too often
+		debug!("Fetching auth events");
+		// size firewall
+		Box::pin(self.fetch_auth(
+			origin,
+			room_id,
+			event.auth_events(),
+			room_version,
+			recursion_level,
+		))
+		.await;
+	}
+
+	// 6. Reject "due to auth events" if the event doesn't pass auth based on the
+	//    auth events
+	debug!("Checking based on auth events");
+
+	let is_hydra = !room_rules
+		.event_format
+		.allow_room_create_in_auth_events;
+
+	let not_create = *event.kind() != TimelineEventType::RoomCreate;
+	let hydra_create_id = (not_create && is_hydra)
+		.then(|| event.room_id().as_event_id().ok())
+		.flatten();
+
+	let auth_events: Vec<_> = event
+		.auth_events()
+		.chain(hydra_create_id.as_deref())
+		.stream()
+		.filter_map(|auth_event_id| {
+			self.event_fetch(auth_event_id)
+				.inspect_err(move |e| warn!("Missing auth_event {auth_event_id}: {e}"))
+				.ok()
+		})
+		.ready_filter_map(|auth_event| {
+			let state_key = auth_event.state_key()?;
+			let event_type = auth_event.event_type();
+
+			Some((event_type.with_state_key(state_key), auth_event))
+		})
+		.collect()
+		.await;
+
+	auth_check(&room_rules, &event, &*self.services.timeline, auth_events.as_slice())
+		.await?
+		.into_result()?;
+
+	trace!("Validation successful.");
+
+	// 7. Persist the event as an outlier.
+	self.services
+		.timeline
+		.add_pdu_outlier(event.event_id(), &pdu_json);
+
+	trace!("Added pdu as outlier.");
+
+	Ok((event, pdu_json))
+}

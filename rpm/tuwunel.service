@@ -1,0 +1,76 @@
+[Unit]
+Description=Tuwunel Matrix homeserver
+Wants=network-online.target
+After=network-online.target
+Documentation=https://tuwunel.chat/
+
+[Service]
+User=tuwunel
+Group=tuwunel
+Type=notify
+WatchdogSec=30
+
+Environment="TUWUNEL_CONFIG=/etc/tuwunel/tuwunel.toml"
+
+ExecStart=/usr/sbin/tuwunel
+
+# Type=notify-reload would report completion, but it needs systemd 253 and
+# Enterprise Linux 9 ships 252, where an unparsable Type= falls back to simple.
+ExecReload=/bin/kill -s USR1 $MAINPID
+
+ReadWritePaths=/var/lib/tuwunel /etc/tuwunel
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+
+ManagedOOMPreference=avoid
+
+DevicePolicy=closed
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+#ProcSubset=pid
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+PrivateDevices=yes
+PrivateMounts=yes
+PrivateTmp=yes
+PrivateUsers=yes
+PrivateIPC=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @resources
+SystemCallFilter=~@clock @debug @module @mount @reboot @swap @cpu-emulation @obsolete @timer @chown @setuid @privileged @keyring @ipc
+# Restore the pipe syscalls subtracted with @ipc above: a configured
+# media_video_thumbnail_command is spawned with pipes.
+SystemCallFilter=pipe pipe2
+# A denied call returns this errno instead of killing the process, so a filter
+# trip is indistinguishable from an ordinary permission error and is not logged.
+SystemCallErrorNumber=EPERM
+
+RuntimeDirectory=tuwunel
+RuntimeDirectoryMode=0750
+
+Restart=on-failure
+RestartSec=5
+
+TimeoutStopSec=2m
+TimeoutStartSec=5m
+
+StartLimitInterval=1m
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
+Alias=matrix-tuwunel.service

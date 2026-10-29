@@ -1,0 +1,90 @@
+use std::{fmt::Debug, sync::Arc};
+
+use futures::{Stream, StreamExt, TryStreamExt, future};
+use serde::{Deserialize, Serialize};
+use tuwunel_core::{Result, implement};
+
+use crate::keyval::{KeyVal, result_deserialize, serialize_key};
+
+/// Streams deserialized entries matching a serialized prefix in ascending
+/// order.
+///
+/// The scan begins at the encoded prefix and stops at the first nonmatching
+/// key. Any borrowed key or value must not be retained across another poll of
+/// the stream.
+///
+/// # Panics
+///
+/// Panics if the prefix cannot be serialized.
+#[implement(super::Map)]
+pub fn stream_prefix<'a, K, V, P>(
+	self: &'a Arc<Self>,
+	prefix: &P,
+) -> impl Stream<Item = Result<KeyVal<'_, K, V>>> + Send + use<'a, K, V, P>
+where
+	P: Serialize + ?Sized + Debug,
+	K: Deserialize<'a> + Send,
+	V: Deserialize<'a> + Send,
+{
+	self.stream_prefix_raw(prefix)
+		.map(result_deserialize::<K, V>)
+}
+
+/// Streams raw entries matching a serialized prefix in ascending order.
+///
+/// The scan begins at the encoded prefix and stops at the first nonmatching
+/// key. Yielded keys and values borrow cursor storage and must not be retained
+/// across another poll.
+///
+/// # Panics
+///
+/// Panics if the prefix cannot be serialized.
+#[implement(super::Map)]
+#[tracing::instrument(skip(self), level = "trace")]
+pub fn stream_prefix_raw<P>(
+	self: &Arc<Self>,
+	prefix: &P,
+) -> impl Stream<Item = Result<KeyVal<'_>>> + Send + use<'_, P>
+where
+	P: Serialize + ?Sized + Debug,
+{
+	let key = serialize_key(prefix).expect("failed to serialize query key");
+	self.raw_stream_from(&key)
+		.try_take_while(move |(k, _): &KeyVal<'_>| future::ok(k.starts_with(&key)))
+}
+
+/// Streams deserialized entries matching a raw prefix in ascending order.
+///
+/// The supplied bytes are used directly for the seek and prefix test. Any
+/// borrowed key or value must not be retained across another poll of the
+/// stream.
+#[implement(super::Map)]
+pub fn stream_raw_prefix<'a, K, V, P>(
+	self: &'a Arc<Self>,
+	prefix: &'a P,
+) -> impl Stream<Item = Result<KeyVal<'_, K, V>>> + Send + 'a
+where
+	P: AsRef<[u8]> + ?Sized + Debug + Sync + 'a,
+	K: Deserialize<'a> + Send + 'a,
+	V: Deserialize<'a> + Send + 'a,
+{
+	self.raw_stream_prefix(prefix)
+		.map(result_deserialize::<K, V>)
+}
+
+/// Streams raw entries matching a raw prefix in ascending order.
+///
+/// The supplied bytes are used directly for the seek and prefix test. Yielded
+/// keys and values borrow cursor storage and must not be retained across
+/// another poll.
+#[implement(super::Map)]
+pub fn raw_stream_prefix<'a, P>(
+	self: &'a Arc<Self>,
+	prefix: &'a P,
+) -> impl Stream<Item = Result<KeyVal<'_>>> + Send + 'a
+where
+	P: AsRef<[u8]> + ?Sized + Debug + Sync + 'a,
+{
+	self.raw_stream_from(prefix)
+		.try_take_while(|(k, _): &KeyVal<'_>| future::ok(k.starts_with(prefix.as_ref())))
+}

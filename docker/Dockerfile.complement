@@ -1,0 +1,224 @@
+# syntax = docker/dockerfile:1.11-labs
+
+FROM input AS key-gen
+
+WORKDIR /complement
+COPY <<EOF v3.ext
+    authorityKeyIdentifier=keyid,issuer
+    basicConstraints=CA:FALSE
+    keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+    subjectAltName = @alt_names
+    [alt_names]
+    DNS.0 = *.docker.internal
+    DNS.1 = hs1
+    DNS.2 = hs2
+    DNS.3 = hs3
+    DNS.4 = hs4
+    IP.1 = 127.0.0.1
+EOF
+RUN <<EOF
+    set -eux
+    mkdir ca
+    openssl genrsa \
+        -out private_key.pem \
+        2048
+
+    openssl req \
+        -new \
+        -sha256 \
+        -key private_key.pem \
+        -subj "/C=US/ST=CA/O=MyOrg, Inc./CN=hs1" \
+        -addext "subjectAltName = DNS:*.docker.internal DNS:hs1, DNS:hs2, DNS:hs3, DNS:hs4, IP:127.0.0.1" \
+        -out signing_request.csr
+
+    openssl x509 \
+        -req \
+        -extfile v3.ext \
+        -in signing_request.csr \
+        -key private_key.pem \
+        -out certificate.crt \
+        -days 1 \
+        -sha256
+EOF
+RUN [ -f certificate.crt ] && [ -f private_key.pem ]
+
+
+FROM scratch AS complement-config
+WORKDIR /complement
+COPY --from=key-gen /complement/* .
+COPY --from=source /usr/src/tuwunel/tests/complement/results.jsonl old_results.jsonl
+COPY <<EOF complement.toml
+    [global]
+    address = "0.0.0.0"
+    admin_room_notices = false
+    allow_device_name_federation = true
+    allow_guest_registration = true
+    allow_invalid_tls_certificates = true
+    allow_legacy_media = true
+    allow_public_room_directory_over_federation = true
+    allow_public_room_directory_without_auth = true
+    allow_registration = true
+    appservice_dir = "/complement/appservice"
+    argon2_m_cost = 64
+    argon2_t_cost = 1
+    create_admin_room = true
+    database_path = "/database"
+    db_pool_max_workers = 64
+    dns_attempts = 20
+    dns_timeout = 60
+    error_on_unknown_config_opts = true
+    federation_idle_timeout = 300
+    grant_admin_to_first_user = false
+    ip_range_denylist = []
+    log = "debug,tuwunel=trace,h2=warn,hyper=warn"
+    log_colors = false
+    log_guest_registrations = false
+    log_span_events = "NONE"
+    server_user_localpart = "_server"
+    log_thread_ids = true
+    max_fetch_prev_events = 224
+    media_compat_file_link = false
+    media_startup_check = true
+    port = [8008, 8448]
+    prune_missing_media = true
+    query_trusted_key_servers_first = false
+    query_trusted_key_servers_first_on_join = false
+    rate_limiting.login.account.burst_count = 1000
+    rate_limiting.login.failed.burst_count = 1000
+    registration_shared_secret = "complement"
+    request_conn_timeout = 60
+    request_timeout = 120
+    rocksdb_log_level = "debug"
+    rocksdb_max_log_files = 1
+    rocksdb_parallelism_threads = 2
+    rocksdb_paranoid_file_checks = true
+    rocksdb_recovery_mode = 0
+    sender_idle_timeout = 300
+    sender_retry_backoff_limit = 300
+    sender_timeout = 300
+    startup_netburst = true
+    startup_netburst_keep = -1
+    trusted_servers = []
+    url_preview_domain_contains_allowlist = ["*"]
+    url_preview_domain_explicit_denylist = ["*"]
+    well_known_conn_timeout = 60
+    well_known_timeout = 60
+    yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
+
+    [global.tls]
+    certs = "/complement/certificate.crt"
+    dual_protocol = true
+    key = "/complement/private_key.pem"
+EOF
+
+
+FROM input AS complement-testee-base
+EXPOSE 8008 8448
+RUN mkdir -p /database /var/log/tuwunel/metrics /complement/appservice
+COPY --from=complement-config * /complement/
+COPY docker/lib/provision_complement.sh /complement/provision_complement.sh
+RUN chmod a+x /complement/provision_complement.sh
+ENV TUWUNEL_CONFIG="/complement/complement.toml"
+ENV TUWUNEL_RUNTIME_METRICS_DIR="/var/log/tuwunel/metrics"
+ENV TUWUNEL_RUNTIME_USAGE_DIR="/var/log/tuwunel/metrics"
+
+
+FROM complement-testee-base AS complement-testee
+ARG sched_policy=""
+ARG sched_prio=1
+ARG sched_cpus=""
+ENV sched_policy=${sched_policy}
+ENV sched_prio=${sched_prio}
+ENV sched_cpus=${sched_cpus}
+RUN <<EOF
+    set -eux
+    apt-get update
+    apt-get install -y --no-install-recommends linux-perf
+    rm -rf /var/lib/apt/lists/*
+EOF
+# sched_wrap.sh leads the chain so its scheduling policy and CPU pinning are
+# inherited by perf_wrap.sh and the server it runs; both wrappers ship in the
+# base image.
+ENTRYPOINT exec /complement/provision_complement.sh sched_wrap.sh perf_wrap.sh \
+    tuwunel -Oserver_name=\""$SERVER_NAME\""
+
+
+FROM complement-testee-base AS complement-testee-valgrind
+ARG db_pool_max_workers=128
+ARG sched_policy=""
+ARG sched_prio=1
+ENV sched_policy=${sched_policy}
+ENV sched_prio=${sched_prio}
+ENV db_pool_max_workers=${db_pool_max_workers}
+ENTRYPOINT exec /complement/provision_complement.sh sched_wrap.sh valgrind \
+    --leak-check=no \
+    --undef-value-errors=no \
+    --exit-on-first-error=yes \
+    --error-exitcode=1 \
+    tuwunel \
+        -Oserver_name=\""$SERVER_NAME\"" \
+        -Odb_pool_max_workers=${db_pool_max_workers}
+
+
+FROM input AS complement-base
+ARG var_cache
+ARG var_lib_apt
+ARG complement_ref="c6d3169d818f4820d52a57b50b3d1453fc814717"
+ARG complement_tags="conduwuit_blacklist,complemau"
+ARG complement_tests="./tests/..."
+ARG complement_run=".*"
+ARG sched_policy="--batch"
+ARG sched_prio=0
+
+WORKDIR /usr/src
+ADD https://github.com/matrix-construct/complement.git#${complement_ref} complement
+
+WORKDIR /usr/src/complement
+ENV COMPLEMENT_BASE_IMAGE="complement-testee"
+ENV sched_policy=${sched_policy}
+ENV sched_prio=${sched_prio}
+RUN \
+--mount=type=cache,dst=/go/pkg/mod/cache,sharing=locked \
+<<EOF
+    env
+    set -eux
+    sched_wrap.sh go test -tags="$complement_tags" -list="$complement_run" $complement_tests
+EOF
+
+
+FROM input AS complement-tester
+ARG complement_verbose=0
+ARG complement_debug=0
+ARG complement_dirty=0
+ARG complement_count=1
+ARG complement_parallel=1
+ARG complement_shuffle=1337
+ARG complement_timeout="1h"
+ARG complement_run=".*"
+ARG complement_skip=""
+ARG complement_tags="conduwuit_blacklist"
+ARG complement_tests="./tests/..."
+ARG complement_base_image
+
+WORKDIR /usr/src/complement
+ENV COMPLEMENT_DEBUG=$complement_debug
+ENV complement_parallel="$complement_parallel"
+ENV complement_shuffle="$complement_shuffle"
+ENV complement_tags="$complement_tags"
+ENV complement_timeout="$complement_timeout"
+ENV complement_count="$complement_count"
+ENV complement_tests="$complement_tests"
+ENV complement_skip="$complement_skip"
+ENV complement_run="$complement_run"
+ENV COMPLEMENT_ENABLE_DIRTY_RUNS="$complement_dirty"
+ENV COMPLEMENT_ALWAYS_PRINT_SERVER_LOGS="$complement_verbose"
+ENV COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT="host.docker.internal"
+ENV COMPLEMENT_HOST_MOUNTS="/var/run/docker.sock:/var/run/docker.sock"
+ENV COMPLEMENT_POST_TEST_SCRIPT="/usr/src/complement/post_test.sh"
+ENV complement_base_image="$complement_base_image"
+COPY --from=complement-config /complement/old_results.jsonl .
+COPY docker/lib/post_test.sh post_test.sh
+RUN chmod a+x post_test.sh
+COPY docker/lib/uwu.sh uwu.sh
+RUN chmod a+x uwu.sh
+ENTRYPOINT ["/bin/bash", "/usr/src/complement/uwu.sh"]

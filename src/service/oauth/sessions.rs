@@ -1,0 +1,498 @@
+mod adopt;
+pub mod association;
+
+use std::{
+	fmt::Display,
+	iter::once,
+	sync::{Arc, Mutex},
+	time::SystemTime,
+};
+
+use derive_more::Debug;
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt};
+use ruma::{OwnedUserId, UserId};
+use serde::{Deserialize, Serialize};
+use tuwunel_core::{
+	Err, Error, Result, at, err, implement,
+	itertools::Itertools,
+	redacted_debug,
+	result::NotFound,
+	utils::{
+		MutexMap, OptionExt,
+		stream::{IterStream, ReadyExt, TryExpect, TryReadyExt},
+	},
+	warn,
+};
+use tuwunel_database::{Cbor, Database, Deserialized, Ignore, Map};
+use url::Url;
+
+pub use self::adopt::Counts;
+use super::{Provider, Providers, UserInfo, unique_id as session_unique_id};
+use crate::SelfServices;
+
+pub struct Sessions {
+	services: SelfServices,
+	association_pending: Mutex<association::Pending>,
+
+	/// Serializes probes and writes for each unique identity.
+	///
+	/// Transaction batches cannot conditionally claim an index key. Each
+	/// identity therefore has an independent critical section.
+	write_locks: MutexMap<String, ()>,
+
+	providers: Arc<Providers>,
+	db: Data,
+}
+
+struct Data {
+	oauthid_session: Arc<Map>,
+	oauthuniqid_oauthid: Arc<Map>,
+	userid_oauthid: Arc<Map>,
+	database: Arc<Database>,
+}
+
+/// Persistent state for one upstream OAuth authorization.
+///
+/// The record carries provider, redirect, PKCE, nonce, and token data across
+/// the authorization flow. Once linked, it also associates the provider
+/// identity with a Matrix user.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Session {
+	/// Identity Provider ID (the `client_id` in the configuration) associated
+	/// with this session.
+	pub idp_id: Option<String>,
+
+	/// Session ID used as the index key for this session itself.
+	pub sess_id: Option<SessionId>,
+
+	/// Token type (bearer, mac, etc).
+	pub token_type: Option<String>,
+
+	/// Access token to the provider.
+	#[debug("{}", redacted_debug!(access_token))]
+	pub access_token: Option<String>,
+
+	/// OIDC ID token returned by the provider.
+	#[debug("{}", redacted_debug!(id_token))]
+	pub id_token: Option<String>,
+
+	/// Duration in seconds the access_token is valid for.
+	pub expires_in: Option<u64>,
+
+	/// Point in time that the access_token expires.
+	pub expires_at: Option<SystemTime>,
+
+	/// Token used to refresh the access_token.
+	#[debug("{}", redacted_debug!(refresh_token))]
+	pub refresh_token: Option<String>,
+
+	/// Duration in seconds the refresh_token is valid for
+	pub refresh_token_expires_in: Option<u64>,
+
+	/// Point in time that the refresh_token expires.
+	pub refresh_token_expires_at: Option<SystemTime>,
+
+	/// Access scope actually granted (if supported).
+	pub scope: Option<String>,
+
+	/// Redirect URL
+	pub redirect_url: Option<Url>,
+
+	/// Challenge preimage
+	#[debug("{}", redacted_debug!(code_verifier))]
+	pub code_verifier: Option<String>,
+
+	/// Random string passed exclusively in the grant session cookie.
+	#[debug("{}", redacted_debug!(cookie_nonce))]
+	pub cookie_nonce: Option<String>,
+
+	/// Random single-use string passed in the provider redirect.
+	#[debug("{}", redacted_debug!(query_nonce))]
+	pub query_nonce: Option<String>,
+
+	/// Point in time the authorization grant session expires.
+	pub authorize_expires_at: Option<SystemTime>,
+
+	/// Associated User Id registration.
+	pub user_id: Option<OwnedUserId>,
+
+	/// Last userinfo response persisted here.
+	pub user_info: Option<UserInfo>,
+}
+
+/// What deleting one session left of its indexes.
+///
+/// The identity binding is keyed by a hash only the session's provider can
+/// derive, so without that provider the binding cannot be found.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Deleted {
+	/// Every index naming the session went with it.
+	Complete,
+
+	/// No configured provider derived the identity key, so a binding may remain.
+	ProviderUnresolved,
+}
+
+/// Outcome counts of one user-wide session delete.
+///
+/// Each session the user's index lists is counted under one outcome, so a
+/// session that fails is counted rather than stopping the rest.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Deletions {
+	/// Sessions removed with every index naming them.
+	pub complete: usize,
+
+	/// Sessions removed while an identity binding naming them may remain.
+	pub unresolved: usize,
+
+	/// Sessions the user's index lists without a stored record.
+	pub absent: usize,
+
+	/// Sessions kept because they or their indexes could not be read.
+	pub unreadable: usize,
+}
+
+/// Session Identifier type.
+pub type SessionId = String;
+
+/// Number of characters generated for our code_verifier. The code_verifier is a
+/// random string which must be between 43 and 128 characters.
+pub const CODE_VERIFIER_LENGTH: usize = 64;
+
+/// Number of characters we will generate for the Session ID.
+pub const SESSION_ID_LENGTH: usize = 32;
+
+#[implement(Sessions)]
+pub(super) fn build(args: &crate::Args<'_>, providers: Arc<Providers>) -> Self {
+	Self {
+		services: args.services.clone(),
+		association_pending: Default::default(),
+		write_locks: MutexMap::new(),
+		providers,
+		db: Data {
+			oauthid_session: args.db["oauthid_session"].clone(),
+			oauthuniqid_oauthid: args.db["oauthuniqid_oauthid"].clone(),
+			userid_oauthid: args.db["userid_oauthid"].clone(),
+			database: args.db.clone(),
+		},
+	}
+}
+
+/// Delete database state for the session.
+///
+/// The canonical session and every association index that still refers to it
+/// commit together. The result reports an identity binding that may remain
+/// because no configured provider derives its key. An absent session, or one
+/// whose record or indexes cannot be read, is an error, and nothing is deleted.
+#[implement(Sessions)]
+#[tracing::instrument(level = "debug", skip(self))]
+pub async fn delete(&self, sess_id: &str) -> Result<Deleted> {
+	let (session, unique_id, _write_guard) = loop {
+		let snapshot = self.get(sess_id).await?;
+
+		let provider = async {
+			let idp_id = snapshot.idp_id.as_deref()?;
+
+			self.providers.get(idp_id).map(Result::ok).await
+		}
+		.await;
+
+		let unique_id = provider
+			.as_ref()
+			.and_then(|provider| session_unique_id((provider, &snapshot)).ok());
+
+		let write_guard = match unique_id.as_deref() {
+			| Some(unique_id) => Some(self.write_locks.lock(unique_id).await),
+			| None => None,
+		};
+
+		let session = self.get(sess_id).await?;
+
+		if session.idp_id.as_deref() != snapshot.idp_id.as_deref() {
+			continue;
+		}
+
+		let current_unique_id = provider
+			.as_ref()
+			.and_then(|provider| session_unique_id((provider, &session)).ok());
+
+		if current_unique_id == unique_id {
+			break (session, unique_id, write_guard);
+		}
+	};
+
+	// Only a session holding user_info was ever bound to an identity.
+	let deleted = if unique_id.is_none() && session.user_info.is_some() {
+		Deleted::ProviderUnresolved
+	} else {
+		Deleted::Complete
+	};
+
+	// Preserve a unique identity association updated to a newer session.
+	let unique_id = unique_id
+		.as_deref()
+		.try_map_async(|unique_id| {
+			self.get_sess_id_by_unique_id(unique_id)
+				.map(NotFound::present)
+				.map_err(unreadable(&self.db.oauthuniqid_oauthid, unique_id))
+				.map_ok(move |assoc_id| {
+					assoc_id
+						.is_some_and(|assoc_id| assoc_id == sess_id)
+						.then_some(unique_id)
+				})
+		})
+		.map_ok(Option::flatten)
+		.await?;
+
+	let user_sessions = session
+		.user_id
+		.as_deref()
+		.try_map_async(|user_id| {
+			self.get_sess_id_by_user(user_id)
+				// A user with no index row has no other session to keep.
+				.ready_filter(|listed| !listed.is_missing())
+				.ready_try_filter(|listed| listed != sess_id)
+				.map_err(unreadable(&self.db.userid_oauthid, user_id))
+				.try_collect()
+				.map_ok(move |sess_ids: Vec<_>| (user_id, sess_ids))
+		})
+		.await?;
+
+	let mut txn = self.db.database.txn();
+
+	if let Some((user_id, sess_ids)) = user_sessions {
+		if !sess_ids.is_empty() {
+			txn.raw_put(&self.db.userid_oauthid, user_id, sess_ids);
+		} else {
+			txn.del_raw(&self.db.userid_oauthid, user_id);
+		}
+	}
+
+	if let Some(unique_id) = unique_id {
+		txn.del_raw(&self.db.oauthuniqid_oauthid, unique_id);
+	}
+
+	txn.del_raw(&self.db.oauthid_session, sess_id);
+	txn.execute();
+
+	Ok(deleted)
+}
+
+fn unreadable<K: Display>(map: &Map, key: K) -> impl Fn(Error) -> Error {
+	move |e| err!(Database("{} {key} is unreadable: {e}", map.name()))
+}
+
+#[implement(Deletions)]
+pub(super) fn tally(self, result: Result<Deleted>, sess_id: &str) -> Self {
+	match result {
+		| Ok(Deleted::Complete) => Self {
+			complete: self.complete.saturating_add(1),
+			..self
+		},
+		| Ok(Deleted::ProviderUnresolved) => Self {
+			unresolved: self.unresolved.saturating_add(1),
+			..self
+		},
+		| Err(e) if e.is_missing() => Self {
+			absent: self.absent.saturating_add(1),
+			..self
+		},
+		| Err(e) => {
+			warn!(%sess_id, error = %e, "an OAuth session could not be read for deletion");
+
+			Self {
+				unreadable: self.unreadable.saturating_add(1),
+				..self
+			}
+		},
+	}
+}
+
+/// Counts the sessions removed, whether or not a binding naming them remains.
+///
+/// That is every complete delete plus every delete no configured provider
+/// could derive the binding for.
+#[implement(Deletions)]
+#[inline]
+#[must_use]
+pub fn deleted(&self) -> usize { self.complete.saturating_add(self.unresolved) }
+
+/// Create or overwrite database state for the session.
+///
+/// The canonical session and its available identity and user indexes commit
+/// together.
+#[implement(Sessions)]
+#[tracing::instrument(level = "info", skip(self))]
+pub async fn put(&self, session: &Session) {
+	let unique_id = async {
+		let idp_id = session.idp_id.as_ref()?;
+		let provider = self.providers.get(idp_id).map(Result::ok).await?;
+
+		session_unique_id((&provider, session)).ok()
+	}
+	.await;
+
+	let _write_guard = match unique_id.as_deref() {
+		| Some(unique_id) => Some(self.write_locks.lock(unique_id).await),
+		| None => None,
+	};
+
+	self.put_locked(session, unique_id.as_deref())
+		.await;
+}
+
+/// Build and commit a session while exclusively claiming its identity key.
+///
+/// The callback's identity lookup and user selection remain ordered with bulk
+/// adoption until the canonical session and indexes have committed.
+#[implement(Sessions)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn commit_identity_session<T, F, Fut>(
+	&self,
+	unique_id: &str,
+	build: F,
+) -> Result<(Session, T, Option<SessionId>)>
+where
+	T: Send,
+	F: FnOnce(Option<OwnedUserId>) -> Fut + Send,
+	Fut: Future<Output = Result<(Session, T)>> + Send,
+{
+	let write_guard = self.write_locks.lock(unique_id).await;
+	let existing = self
+		.get_by_unique_id(unique_id)
+		.await
+		.optional()?;
+
+	let old_sess_id = existing
+		.as_ref()
+		.and_then(|session| session.sess_id.clone());
+
+	let old_user_id = existing.and_then(|session| session.user_id);
+	let (session, value) = build(old_user_id).await?;
+
+	self.put_locked(&session, Some(unique_id)).await;
+	drop(write_guard);
+
+	Ok((session, value, old_sess_id))
+}
+
+#[implement(Sessions)]
+async fn put_locked(&self, session: &Session, unique_id: Option<&str>) {
+	let sess_id = session
+		.sess_id
+		.as_deref()
+		.expect("Missing session.sess_id required for sessions.put()");
+
+	let user_sessions = async {
+		let user_id = session.user_id.as_deref()?;
+		let sess_ids: Vec<_> = self
+			.get_sess_id_by_user(user_id)
+			.ready_filter_map(Result::ok)
+			.chain(once(sess_id.to_owned()).stream())
+			.collect::<Vec<_>>()
+			.map(IntoIterator::into_iter)
+			.map(Itertools::sorted_unstable)
+			.map(Itertools::dedup)
+			.map(Iterator::collect)
+			.await;
+
+		Some((user_id, sess_ids))
+	}
+	.await;
+
+	let mut txn = self.db.database.txn();
+
+	txn.raw_put(&self.db.oauthid_session, sess_id, Cbor(session));
+
+	if let Some(unique_id) = unique_id {
+		txn.insert_raw(&self.db.oauthuniqid_oauthid, unique_id, sess_id);
+	}
+
+	if let Some((user_id, sess_ids)) = user_sessions {
+		txn.raw_put(&self.db.userid_oauthid, user_id, sess_ids);
+	}
+
+	txn.execute();
+}
+
+/// Fetch database state for a session from its associated `(iss,sub)`, in case
+/// `sess_id` is not known.
+#[implement(Sessions)]
+#[tracing::instrument(level = "debug", skip(self), ret(level = "debug"))]
+pub async fn get_by_unique_id(&self, unique_id: &str) -> Result<Session> {
+	self.get_sess_id_by_unique_id(unique_id)
+		.and_then(async |sess_id| self.get(&sess_id).await)
+		.await
+}
+
+/// Fetch database state for one or more sessions from its associated `user_id`,
+/// in case `sess_id` is not known.
+#[implement(Sessions)]
+#[tracing::instrument(level = "debug", skip(self))]
+pub fn get_by_user(&self, user_id: &UserId) -> impl Stream<Item = Result<Session>> + Send {
+	self.get_sess_id_by_user(user_id)
+		.and_then(async |sess_id| self.get(&sess_id).await)
+}
+
+/// Fetch database state for a session from its `sess_id`.
+#[implement(Sessions)]
+#[tracing::instrument(level = "debug", skip(self), ret(level = "debug"))]
+pub async fn get(&self, sess_id: &str) -> Result<Session> {
+	self.db
+		.oauthid_session
+		.get(sess_id)
+		.await
+		.deserialized::<Cbor<_>>()
+		.map(at!(0))
+}
+
+/// Resolve the `sess_id` associations with a `user_id`.
+#[implement(Sessions)]
+#[tracing::instrument(level = "debug", skip(self))]
+pub fn get_sess_id_by_user(&self, user_id: &UserId) -> impl Stream<Item = Result<String>> + Send {
+	self.db
+		.userid_oauthid
+		.get(user_id)
+		.map(Deserialized::deserialized)
+		.map_ok(Vec::into_iter)
+		.map_ok(IterStream::try_stream)
+		.try_flatten_stream()
+}
+
+/// Resolve the `sess_id` from an associated provider issuer and subject hash.
+#[implement(Sessions)]
+#[tracing::instrument(level = "debug", skip(self), ret(level = "debug"))]
+pub async fn get_sess_id_by_unique_id(&self, unique_id: &str) -> Result<String> {
+	self.db
+		.oauthuniqid_oauthid
+		.get(unique_id)
+		.await
+		.deserialized()
+}
+
+#[implement(Sessions)]
+pub fn users(&self) -> impl Stream<Item = OwnedUserId> + Send {
+	self.db
+		.userid_oauthid
+		.keys()
+		.expect_ok()
+		.map(UserId::to_owned)
+}
+
+#[implement(Sessions)]
+pub fn stream(&self) -> impl Stream<Item = Session> + Send {
+	self.db
+		.oauthid_session
+		.stream()
+		.expect_ok()
+		.map(|(_, session): (Ignore, Cbor<_>)| session.0)
+}
+
+#[implement(Sessions)]
+pub async fn provider(&self, session: &Session) -> Result<Provider> {
+	let Some(idp_id) = session.idp_id.as_deref() else {
+		return Err!(Request(NotFound("No provider for this session")));
+	};
+
+	self.providers.get(idp_id).await
+}

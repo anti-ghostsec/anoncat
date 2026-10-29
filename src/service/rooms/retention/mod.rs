@@ -1,0 +1,160 @@
+//! Retains original event JSON when accepted timeline events are redacted.
+//!
+//! Originals are indexed by redaction time for periodic expiry. Saving and
+//! scheduled cleanup are controlled independently so operators can retain
+//! originals indefinitely when expiry is disabled.
+
+use std::{sync::Arc, time::Duration};
+
+use async_trait::async_trait;
+use futures::{Stream, TryStreamExt};
+use ruma::{CanonicalJsonObject, EventId};
+use tuwunel_core::{
+	Result, debug_info, expected, implement,
+	utils::{TryReadyExt, time::now},
+};
+use tuwunel_database::{Deserialized, Json, Map};
+use tuwunel_matrix::pdu::PduEvent;
+
+use crate::rooms::timeline::RoomMutexGuard;
+
+#[cfg(test)]
+mod tests;
+
+/// Stores and expires the unredacted originals of redacted events.
+///
+/// Each retained event has a primary row and a time-ordered expiry index row.
+/// The background worker removes entries once their configured retention
+/// interval has elapsed.
+pub struct Service {
+	services: Arc<crate::services::OnceServices>,
+	eventid_originalpdu: Arc<Map>,
+	timeredacted_eventid: Arc<Map>,
+}
+
+#[async_trait]
+impl crate::Service for Service {
+	fn build(args: &crate::Args<'_>) -> Result<Arc<Self>> {
+		Ok(Arc::new(Self {
+			services: args.services.clone(),
+			eventid_originalpdu: args.db["eventid_originalpdu"].clone(),
+			timeredacted_eventid: args.db["timeredacted_eventid"].clone(),
+		}))
+	}
+
+	async fn worker(self: Arc<Self>) -> Result {
+		loop {
+			let retention_seconds = self.services.config.redaction_retention_seconds;
+
+			if retention_seconds != 0 {
+				debug_info!("Cleaning up retained events");
+
+				let now = now().as_secs();
+				let count = self
+					.timeredacted_eventid
+					.keys::<(u64, &EventId)>()
+					.ready_try_take_while(|(time_redacted, _)| {
+						let time_redacted = *time_redacted;
+						Ok(expected!(time_redacted + retention_seconds) < now)
+					})
+					.ready_try_fold_default(|count: usize, (time_redacted, event_id)| {
+						self.eventid_originalpdu.remove(event_id);
+						self.timeredacted_eventid
+							.del((time_redacted, event_id));
+						Ok(count.saturating_add(1))
+					})
+					.await?;
+
+				debug_info!(?count, "Finished cleaning up retained events");
+			}
+
+			tokio::select! {
+				() = tokio::time::sleep(Duration::from_hours(1)) => {},
+				() = self.services.server.until_shutdown() => return Ok(())
+			};
+		}
+	}
+
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+}
+
+/// Returns a retained original decoded as a PDU.
+///
+/// Missing rows and malformed stored JSON are reported to the caller.
+#[implement(Service)]
+pub async fn get_original_pdu(&self, event_id: &EventId) -> Result<PduEvent> {
+	self.eventid_originalpdu
+		.get(event_id)
+		.await?
+		.deserialized()
+}
+
+/// Returns a retained original as canonical event JSON.
+///
+/// Missing rows and malformed stored JSON are reported to the caller.
+#[implement(Service)]
+pub async fn get_original_pdu_json(&self, event_id: &EventId) -> Result<CanonicalJsonObject> {
+	self.eventid_originalpdu
+		.get(event_id)
+		.await?
+		.deserialized()
+}
+
+/// Retains an event's original JSON before it is redacted.
+///
+/// Saving is skipped when saving originals is disabled or an original already
+/// exists.
+/// The primary row and its redaction-time expiry index are committed in one
+/// transaction while the caller retains the room timeline guard.
+#[implement(Service)]
+pub async fn save_original_pdu(
+	&self,
+	event_id: &EventId,
+	pdu: &CanonicalJsonObject,
+	_state_lock: &RoomMutexGuard,
+) {
+	if !self.services.config.save_unredacted_events {
+		return;
+	}
+
+	if self
+		.eventid_originalpdu
+		.exists(event_id)
+		.await
+		.is_ok()
+	{
+		return;
+	}
+
+	self.insert_original(event_id, pdu, now().as_secs());
+}
+
+/// Writes a retained original and its expiry index atomically.
+///
+/// The supplied timestamp is the redaction time used by the cleanup worker.
+#[implement(Service)]
+fn insert_original(&self, event_id: &EventId, pdu: &CanonicalJsonObject, time: u64) {
+	let mut txn = self.services.db.txn();
+
+	txn.raw_put(&self.eventid_originalpdu, event_id, Json(pdu));
+	txn.put_raw(&self.timeredacted_eventid, (time, event_id), []);
+	txn.execute();
+}
+
+/// Streams the raw JSON values of all retained originals.
+///
+/// Values borrow the database cursor and must be owned before they are retained
+/// across another poll. Storage errors remain in the stream.
+#[implement(Service)]
+pub fn retained_pdus_raw(&self) -> impl Stream<Item = Result<&[u8]>> + Send {
+	self.eventid_originalpdu
+		.raw_stream()
+		.map_ok(|x| x.1)
+}
+
+/// Drops the retained original of a purged event.
+///
+/// The paired expiry-index row is deliberately left for the retention worker
+/// to reap at its scheduled time.
+#[implement(Service)]
+pub fn purge_original(&self, event_id: &EventId) { self.eventid_originalpdu.remove(event_id); }

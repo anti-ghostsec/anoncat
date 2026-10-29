@@ -1,0 +1,32 @@
+[book]
+authors = [
+	"girlbossceo",
+	"jevolk"
+]
+description = "Tuwunel, a high performance successor to Conduit and Conduwuit"
+language = "en"
+src = "docs"
+title = "Tuwunel One"
+text-direction = "ltr"
+
+[build]
+build-dir = "public"
+create-missing = true
+extra-watch-dirs = [
+	"debian",
+	"docker",
+	"docs",
+	"rpm",
+]
+
+[rust]
+edition = "2024"
+
+[output.html]
+git-repository-url = "https://github.com/matrix-construct/tuwunel"
+edit-url-template = "https://github.com/matrix-construct/tuwunel/edit/main/{path}"
+git-repository-icon = "fab-github"
+additional-css = ["docs/override.css"]
+
+[output.html.search]
+limit-results = 15

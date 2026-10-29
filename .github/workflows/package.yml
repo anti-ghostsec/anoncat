@@ -1,0 +1,338 @@
+name: Package
+
+on:
+  workflow_call:
+    inputs:
+      cargo_profiles:
+        type: string
+        description: Cargo profiles
+      feat_sets:
+        type: string
+        description: Cargo feature groups
+      rust_toolchains:
+        type: string
+        description: Rust toolchains
+      sys_names:
+        type: string
+        description: System names
+      sys_versions:
+        type: string
+        description: System versions
+      rust_targets:
+        type: string
+        description: Rust targets
+      sys_targets:
+        type: string
+        description: System targets
+      machines:
+        type: string
+        description: Hardware platform vector
+      excludes:
+        type: string
+        default: '[]'
+        description: Matrix exclusions
+      includes:
+        type: string
+        default: '[]'
+        description: Matrix inclusions
+      release_url:
+        type: string
+        description: For release assets
+      checkout:
+        type: string
+        default: ${{github.sha}}
+      enable_book:
+        type: string
+        default: 'true'
+      enable_docs:
+        type: string
+        default: 'true'
+      enable_binary:
+        type: string
+        default: 'true'
+      enable_container:
+        type: string
+        default: 'true'
+      enable_distro:
+        type: string
+        default: 'true'
+      enable_checks:
+        type: string
+        default: 'true'
+      containers:
+        type: string
+        default: '["docker", "oci"]'
+      distros:
+        type: string
+        default: '["deb", "rpm", "nix"]'
+
+    secrets:
+      cachix_auth_token:
+        required: false
+        description: Write token for the Cachix binary cache.
+      attic_token:
+        required: false
+        description: Write token for the self-hosted binary cache.
+
+jobs:
+  base:
+    if: >
+      !failure() && !cancelled()
+      && (fromJSON(inputs.enable_distro) || fromJSON(inputs.enable_checks))
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["default"]')[0])
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["release"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["msrv"]')[0])
+      && inputs.machines
+      && fromJSON(inputs.machines)[0] != null
+
+    name: Base
+    runs-on: ["${{fromJSON(inputs.machines)[0]}}", "self-hosted"]
+    outputs:
+      sys_versions: ${{steps.base.outputs.sys_versions}}
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{inputs.checkout}}
+    - id: base
+      shell: bash
+      run: |
+        source docker/package.env
+        echo "sys_versions=$package_sys_versions" >> "$GITHUB_OUTPUT"
+
+  docs:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_docs)
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["release"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["default"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["nightly"]')[0])
+      && contains(fromJSON(inputs.sys_targets), fromJSON('["x86_64-v1-linux-gnu"]')[0])
+
+    name: Docs
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["docs"]'
+      cargo_profiles: '["release"]'
+      feat_sets: '["default"]'
+      rust_toolchains: '["nightly"]'
+      rust_targets: '["x86_64-unknown-linux-gnu"]'
+      sys_names: '["debian"]'
+      sys_versions: ${{inputs.sys_versions}}
+      sys_targets: '["x86_64-v1-linux-gnu"]'
+      machines: '["X64"]'
+      runner: 'het'
+      #excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      release_url: ${{inputs.release_url}}
+      checkout: ${{inputs.checkout}}
+      rustdoc_base_path: '/tuwunel/docs'
+      artifact: >
+        {
+          "docs": {
+            "dst": "docs",
+            "src": "/usr/src/tuwunel/target/x86_64-unknown-linux-gnu/doc",
+          }
+        }
+
+  book:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_book)
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["release"]')[0])
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["default"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["msrv"]')[0])
+      && contains(fromJSON(inputs.sys_targets), fromJSON('["x86_64-v1-linux-gnu"]')[0])
+
+    name: Book
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["book"]'
+      cargo_profiles: '["release"]'
+      feat_sets: '["default"]'
+      rust_toolchains: '["msrv"]'
+      rust_targets: ${{inputs.rust_targets}}
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      sys_targets: '["x86_64-v1-linux-gnu"]'
+      machines: ${{inputs.machines}}
+      runner: 'het'
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      release_url: ${{inputs.release_url}}
+      checkout: ${{inputs.checkout}}
+      artifact: >
+        {
+          "book": {
+            "dst": "book",
+            "src": "/book",
+          }
+        }
+
+  binary:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_binary)
+
+    name: Binaries
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["static"]'
+      cargo_profiles: ${{inputs.cargo_profiles}}
+      feat_sets: ${{inputs.feat_sets}}
+      rust_toolchains: ${{inputs.rust_toolchains}}
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: ${{inputs.sys_targets}}
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      release_url: ${{inputs.release_url}}
+      checkout: ${{inputs.checkout}}
+      artifact: >
+        {
+          "static": {
+            "dst": "tuwunel.zst",
+            "src": "/usr/bin/tuwunel",
+            "mime": "application/zstd",
+            "zstd": 11,
+            "chmod": "a+x"
+          }
+        }
+
+  container:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_container)
+
+    name: Containers
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: ${{inputs.containers}}
+      cargo_profiles: ${{inputs.cargo_profiles}}
+      feat_sets: ${{inputs.feat_sets}}
+      rust_toolchains: ${{inputs.rust_toolchains}}
+      sys_names: ${{inputs.sys_names}}
+      sys_versions: ${{inputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: ${{inputs.sys_targets}}
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      release_url: ${{inputs.release_url}}
+      checkout: ${{inputs.checkout}}
+      artifact: >
+        {
+          "docker": {
+            "dst": "tuwunel-docker.tar.gz",
+            "img": true,
+            "mime": "application/gzip",
+            "gzip": 7
+          },
+          "oci": {
+            "dst": "tuwunel-oci.tar.zst",
+            "runner": true,
+            "mime": "application/zstd",
+            "zstd": 11
+          }
+        }
+
+  distro:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_distro)
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["default"]')[0])
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["release"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["msrv"]')[0])
+
+    name: Distro Packages
+    needs: [base]
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: ${{inputs.distros}}
+      cargo_profiles: '["release"]'
+      feat_sets: '["default"]'
+      rust_toolchains: '["msrv"]'
+      sys_names: '["debian"]'
+      sys_versions: ${{needs.base.outputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: ${{inputs.sys_targets}}
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      release_url: ${{inputs.release_url}}
+      checkout: ${{inputs.checkout}}
+      artifact: >
+        {
+          "deb": {
+            "dst": "tuwunel.deb",
+            "mime": "application/vnd.debian.binary-package"
+          },
+          "rpm": {
+            "dst": "tuwunel.rpm",
+            "mime": "application/x-rpm"
+          },
+          "nix": {
+            "dst": "tuwunel.nix.tar.zst",
+            "src": "/opt/tuwunel.nix.tar",
+            "mime": "application/zstd",
+            "zstd": 11
+          }
+        }
+    secrets:
+      cachix_auth_token: ${{secrets.cachix_auth_token}}
+      attic_token: ${{secrets.attic_token}}
+
+  checks:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_checks)
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["default"]')[0])
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["release"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["msrv"]')[0])
+
+    name: Check Packages
+    needs: [base, distro]
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["deb-install", "rpm-install"]'
+      cargo_profiles: '["release"]'
+      feat_sets: '["default"]'
+      rust_toolchains: '["msrv"]'
+      sys_names: '["debian"]'
+      sys_versions: ${{needs.base.outputs.sys_versions}}
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: ${{inputs.sys_targets}}
+      machines: ${{inputs.machines}}
+      excludes: ${{inputs.excludes}}
+      includes: ${{inputs.includes}}
+      checkout: ${{inputs.checkout}}
+
+  apt:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(inputs.enable_checks)
+      && contains(fromJSON(inputs.feat_sets), fromJSON('["default"]')[0])
+      && contains(fromJSON(inputs.cargo_profiles), fromJSON('["release"]')[0])
+      && contains(fromJSON(inputs.rust_toolchains), fromJSON('["msrv"]')[0])
+
+    name: Check Apt Repository
+    uses: ./.github/workflows/bake.yml
+    with:
+      bake_targets: '["apt-repo-install"]'
+      cargo_profiles: '["release"]'
+      feat_sets: '["default"]'
+      rust_toolchains: '["msrv"]'
+      sys_names: '["debian", "ubuntu"]'
+      sys_versions: '["stable-slim", "noble"]'
+      rust_targets: ${{inputs.rust_targets}}
+      sys_targets: '["x86_64-v1-linux-gnu", "aarch64-v8-linux-gnu"]'
+      machines: ${{inputs.machines}}
+      excludes: >
+        [
+          {"sys_name": "debian", "sys_version": "noble"},
+          {"sys_name": "ubuntu", "sys_version": "stable-slim"},
+          {"sys_target": "x86_64-v1-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "aarch64-v8-linux-gnu", "machine": "X64"}
+        ]
+      checkout: ${{inputs.checkout}}

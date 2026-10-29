@@ -1,0 +1,42 @@
+# syntax = docker/dockerfile:1.11-labs
+
+ARG sys_name=debian
+ARG sys_version=testing-slim
+
+FROM ${sys_name}:${sys_version} AS system
+
+
+FROM input AS runtime
+ARG var_cache
+ARG var_lib_apt
+ARG packages
+ARG DEBIAN_FRONTEND
+
+ENV DEBIAN_FRONTEND="${DEBIAN_FRONTEND}"
+RUN \
+--mount=type=cache,dst=/var/cache,id=${var_cache},sharing=locked \
+--mount=type=cache,dst=/var/lib/apt,id=${var_lib_apt},sharing=locked \
+<<EOF
+    echo $(uname -a) $0 $-
+    set -eux
+
+    keep_downloaded='Binary::apt::APT::Keep-Downloaded-Packages "true";'
+    echo "$keep_downloaded" > /etc/apt/apt.conf.d/keep-downloaded
+    rm -f /etc/apt/apt.conf.d/docker-clean
+
+    apt-get -y -U install --no-install-recommends ${packages}
+EOF
+
+# Scheduling, perf and linker wrappers live in the root of every layer so no
+# downstream stage has to copy them. Both build stages (cargo, rocksdb, nix) and
+# runtime testees (complement) reach this stage, so a single placement here
+# serves the whole tree; each is a transparent exec until its environment knobs
+# are set.
+# The binary cache uploader follows the same rule: every nix stage calls it and
+# it stays a no-op until a token is mounted.
+COPY --link --chmod=0755 \
+    docker/lib/linker_wrap.sh \
+    docker/lib/sched_wrap.sh \
+    docker/lib/perf_wrap.sh \
+    docker/lib/nix_cache_push.sh \
+    /usr/local/bin/

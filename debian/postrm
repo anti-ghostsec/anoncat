@@ -1,0 +1,37 @@
+#!/bin/sh
+set -e
+
+#. /usr/share/debconf/confmodule
+
+TUWUNEL_DATABASE_PATH=/var/lib/tuwunel
+
+case $1 in
+  remove|purge)
+    # Unload the profile so a binary later installed at the same path is not
+    # confined by a leftover until the next boot, when apparmor.service reloads
+    # everything still in /etc/apparmor.d. The conffile is dpkg's to remove.
+    if command -v apparmor_parser > /dev/null 2>&1 \
+      && [ -f /etc/apparmor.d/usr.sbin.tuwunel ]; then
+      apparmor_parser -R /etc/apparmor.d/usr.sbin.tuwunel || true
+    fi
+    ;;
+esac
+
+case $1 in
+  purge)
+    # The database and anything else under /var/lib/tuwunel are never
+    # deleted, even on purge; remove that directory manually if that is
+    # really intended. Only the compatibility symlinks are cleaned up.
+    for link in /var/lib/matrix-conduit /var/lib/conduwuit; do
+      if [ -L "$link" ] && [ "$(readlink -f "$link")" = "$TUWUNEL_DATABASE_PATH" ]; then
+        rm -v "$link"
+      fi
+    done
+
+    if [ -e "$TUWUNEL_DATABASE_PATH" ]; then
+      echo "Preserving the database at $TUWUNEL_DATABASE_PATH" 1>&2
+    fi
+    ;;
+esac
+
+#DEBHELPER#

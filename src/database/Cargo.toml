@@ -1,0 +1,80 @@
+[package]
+name = "tuwunel_database"
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lib]
+path = "mod.rs"
+bench = false
+crate-type = [
+	"rlib",
+#	"dylib",
+]
+
+[features]
+bzip2_compression = [
+	"rust-rocksdb/bzip2",
+]
+io_uring = [
+	"rust-rocksdb/io-uring",
+]
+jemalloc = [
+	"rust-rocksdb/jemalloc",
+	"tuwunel-core/jemalloc",
+]
+jemalloc_conf = [
+	"tuwunel-core/jemalloc_conf",
+]
+jemalloc_prof = [
+	"tuwunel-core/jemalloc_prof",
+]
+jemalloc_stats = [
+	"tuwunel-core/jemalloc_stats",
+]
+lz4_compression = [
+	"rust-rocksdb/lz4",
+]
+release_max_log_level = [
+	"log/max_level_trace",
+	"log/release_max_level_info",
+	"tracing/max_level_trace",
+	"tracing/release_max_level_info",
+	"tuwunel-core/release_max_log_level",
+]
+zstd_compression = [
+	"rust-rocksdb/zstd",
+	"tuwunel-core/zstd_compression",
+]
+
+[dependencies]
+async-channel.workspace = true
+const-str.workspace = true
+ctor.workspace = true
+dtor.workspace = true
+futures.workspace = true
+log.workspace = true
+minicbor.workspace = true
+minicbor-serde.workspace = true
+rust-rocksdb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tuwunel-core.workspace = true
+
+[dev-dependencies]
+serde_bytes.workspace = true
+criterion.workspace = true
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "ser"
+harness = false

@@ -1,0 +1,210 @@
+mod appservice;
+pub(crate) mod jwt;
+mod ldap;
+mod logout;
+mod password;
+mod refresh;
+mod sso;
+mod token;
+
+use axum::extract::State;
+use ruma::api::client::session::{
+	get_login_types::{
+		self,
+		v3::{
+			ApplicationServiceLoginType, IdentityProvider, JwtLoginType, LoginType,
+			PasswordLoginType, SsoLoginType, TokenLoginType,
+		},
+	},
+	login::{
+		self,
+		v3::{DiscoveryInfo, HomeserverInfo, LoginInfo},
+	},
+};
+use tuwunel_core::{Err, Result, info, utils::stream::ReadyExt};
+use tuwunel_service::users::device::generate_refresh_token;
+
+use self::{ldap::ldap_login, password::password_login};
+pub(crate) use self::{
+	logout::{logout_all_route, logout_route},
+	refresh::refresh_token_route,
+	sso::{
+		sso_callback_route, sso_complete_js_route, sso_css_route, sso_fallback_route,
+		sso_login_route, sso_login_with_provider_route,
+	},
+	token::login_token_route,
+};
+use super::TOKEN_LENGTH;
+use crate::{ClientIp, Ruma};
+
+/// # `GET /_matrix/client/v3/login`
+///
+/// Get the supported login types of this server. One of these should be used as
+/// the `type` field when logging in.
+#[tracing::instrument(skip_all, fields(%client), name = "login")]
+pub(crate) async fn get_login_types_route(
+	State(services): State<crate::State>,
+	ClientIp(client): ClientIp,
+	_body: Ruma<get_login_types::v3::Request>,
+) -> Result<get_login_types::v3::Response> {
+	let get_login_token = services.config.login_via_existing_session;
+
+	let list_idps = services.config.lists_identity_providers();
+
+	let identity_providers: Option<Vec<_>> = list_idps.then(|| {
+		services
+			.config
+			.identity_provider
+			.values()
+			.map(|config| IdentityProvider {
+				id: config.id().to_owned(),
+				brand: Some(config.brand.as_str().into()),
+				icon: config.icon.clone(),
+				name: config.display_name().to_owned(),
+			})
+			.collect()
+	});
+
+	let show_sso = identity_providers
+		.as_ref()
+		.is_none_or(|providers| !providers.is_empty());
+
+	let appservice = Some(LoginType::ApplicationService(ApplicationServiceLoginType::default()));
+
+	let token = Some(LoginType::Token(TokenLoginType { get_login_token }));
+
+	let password = services
+		.config
+		.login_with_password
+		.then(|| LoginType::Password(PasswordLoginType::default()));
+
+	let sso = show_sso.then(|| {
+		LoginType::Sso(SsoLoginType {
+			identity_providers: identity_providers.unwrap_or_default(),
+			oauth_aware_preferred: services.config.oidc_aware_preferred,
+		})
+	});
+
+	let jwt = services
+		.config
+		.jwt
+		.enable
+		.then(|| LoginType::Jwt(JwtLoginType::default()));
+
+	let flows = [appservice, token, password, sso, jwt]
+		.into_iter()
+		.flatten()
+		.collect();
+
+	Ok(get_login_types::v3::Response { flows })
+}
+
+/// # `POST /_matrix/client/v3/login`
+///
+/// Authenticates the user and returns an access token it can use in subsequent
+/// requests.
+///
+/// - The user needs to authenticate using their password (or if enabled using a
+///   JSON Web Token)
+/// - If `device_id` is known: issues an additional access token for that device
+/// - If `device_id` is unknown: creates a new device
+/// - Returns access token that is associated with the user and device
+///
+/// Note: You can use [`GET
+/// /_matrix/client/r0/login`](fn.get_supported_versions_route.html) to see
+/// supported login types.
+#[tracing::instrument(
+	name = "login",
+	level = "debug",
+	skip_all,
+	fields(client = %client_ip),
+)]
+pub(crate) async fn login_route(
+	State(services): State<crate::State>,
+	ClientIp(client_ip): ClientIp,
+	body: Ruma<login::v3::Request>,
+) -> Result<login::v3::Response> {
+	let user_id = match &body.login_info {
+		| LoginInfo::Password(info) if services.config.login_with_password =>
+			password::handle_login(&services, &body, info).await?,
+		| LoginInfo::Token(info) => token::handle_login(&services, &body, info).await?,
+		| LoginInfo::Jwt(info) if services.config.jwt.enable =>
+			jwt::handle_login(&services, &body, info).await?,
+		| LoginInfo::ApplicationService(info) =>
+			appservice::handle_login(&services, &body, info)?,
+		| _ => {
+			return Err!(Request(Unknown(debug_warn!("Invalid or unsupported login type"))));
+		},
+	};
+
+	// Appservice users are often passwordless, which reads as deactivated.
+	if !matches!(body.login_info, LoginInfo::ApplicationService(_)) {
+		services.users.deactivated_check(&user_id).await?;
+	}
+
+	services.users.locked_check(&user_id).await?;
+
+	let (access_token, expires_in) = services
+		.users
+		.generate_access_token(body.body.refresh_token);
+
+	let refresh_token = expires_in.is_some().then(generate_refresh_token);
+
+	let device_id = if let Some(device_id) = &body.device_id
+		&& services
+			.users
+			.all_device_ids(&user_id)
+			.ready_any(|existing_device_id| existing_device_id == device_id)
+			.await
+	{
+		services
+			.users
+			.set_access_token(
+				&user_id,
+				device_id,
+				&access_token,
+				expires_in,
+				refresh_token.as_deref(),
+			)
+			.await?;
+
+		device_id.clone()
+	} else {
+		services
+			.users
+			.create_device(
+				&user_id,
+				body.device_id.as_deref(),
+				(Some(&access_token), expires_in),
+				refresh_token.as_deref(),
+				body.initial_device_display_name.as_deref(),
+				Some(client_ip),
+			)
+			.await?
+	};
+
+	info!("{user_id} logged in");
+
+	let home_server = services.server.name.clone().into();
+
+	// Send client well-known information when configured, so the client can reconfigure itself.
+	let well_known: Option<DiscoveryInfo> = services
+		.config
+		.well_known
+		.client
+		.as_ref()
+		.map(ToString::to_string)
+		.map(HomeserverInfo::new)
+		.map(DiscoveryInfo::new);
+
+	#[expect(deprecated)]
+	Ok(login::v3::Response {
+		user_id,
+		access_token,
+		device_id,
+		home_server,
+		well_known,
+		expires_in,
+		refresh_token,
+	})
+}

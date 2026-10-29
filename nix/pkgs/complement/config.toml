@@ -1,0 +1,61 @@
+[global]
+address = "0.0.0.0"
+allow_device_name_federation = true
+allow_guest_registration = true
+allow_public_room_directory_over_federation = true
+allow_public_room_directory_without_auth = true
+allow_registration = true
+appservice_dir = "/complement/appservice"
+database_path = "/database"
+error_on_unknown_config_opts = true
+log = "trace,h2=debug,hyper=debug"
+port = [8008, 8448]
+trusted_servers = []
+only_query_trusted_key_servers = false
+query_trusted_key_servers_first = false
+query_trusted_key_servers_first_on_join = false
+yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
+ip_range_denylist = []
+url_preview_domain_contains_allowlist = ["*"]
+url_preview_domain_explicit_denylist = ["*"]
+media_compat_file_link = false
+media_startup_check = true
+prune_missing_media = true
+log_colors = true
+admin_room_notices = false
+# Each test deploys a clean server, so the first account it registers would be
+# the server's only admin, and the server refuses to deactivate its last admin.
+# Tests that need an admin register one explicitly.
+grant_admin_to_first_user = false
+intentionally_unknown_config_option_for_testing = true
+rocksdb_log_level = "info"
+rocksdb_max_log_files = 1
+rocksdb_recovery_mode = 0
+rocksdb_paranoid_file_checks = true
+log_guest_registrations = false
+allow_legacy_media = true
+
+# The suite signs one account in many times over, sometimes in parallel, and
+# tests wrong passwords on purpose, so the per-account login limits get bursts
+# it cannot reach rather than being turned off.
+rate_limiting.login.account.burst_count = 1000
+rate_limiting.login.failed.burst_count = 1000
+startup_netburst = true
+startup_netburst_keep = -1
+
+allow_invalid_tls_certificates_yes_i_know_what_the_fuck_i_am_doing_with_this_and_i_know_this_is_insecure = true
+
+# valgrind makes things so slow
+dns_timeout = 60
+dns_attempts = 20
+request_conn_timeout = 60
+request_timeout = 120
+well_known_conn_timeout = 60
+well_known_timeout = 60
+federation_idle_timeout = 300
+sender_timeout = 300
+sender_idle_timeout = 300
+sender_retry_backoff_limit = 300
+
+[global.tls]
+dual_protocol = true

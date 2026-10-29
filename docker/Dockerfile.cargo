@@ -1,0 +1,242 @@
+# syntax = docker/dockerfile:1.11-labs
+
+# cook: dependency build via cargo-chef, against recipe.json only.
+#
+# Cache invalidation key: recipe.json content. Source-only changes do not
+# invalidate this stage.
+FROM input AS cook
+ARG sys_triple
+ARG rust_target
+ARG rust_toolchain
+ARG RUST_HOME
+ARG RUSTUP_HOME
+ARG CARGO_HOME
+ARG CARGO_TARGET
+ARG CARGO_TARGET_DIR
+ARG LTO_CACHE_DIR
+ARG LINKER_JOBS
+ARG LINKER_LOCK_DIR
+ARG LINKER_WRAP_DIR
+ARG CARGO_TERM_VERBOSE=0
+ARG RUST_BACKTRACE
+ARG JEMALLOC_OVERRIDE
+ARG ROCKSDB_LIB_DIR
+ARG ROCKSDB_INCLUDE_DIR
+ARG RUSTDOCFLAGS
+ARG CARGO_BUILD_RUSTFLAGS
+ARG CARGO_PROFILE_TEST_DEBUG
+ARG CARGO_PROFILE_TEST_INCREMENTAL
+ARG CARGO_PROFILE_BENCH_DEBUG
+ARG CARGO_PROFILE_BENCH_LTO
+ARG CARGO_PROFILE_RELEASE_LTO
+ARG CARGO_PROFILE_RELEASE_NATIVE_LTO
+ARG CARGO_PROFILE_RELEASE_DEBUGINFO_DEBUG
+ARG CARGO_PROFILE_RELEASE_DEBUGINFO_LTO
+ARG CC
+ARG CXX
+ARG AR
+ARG RANLIB
+ARG cargo_profile
+ARG cargo_features
+ARG cargo_spec_features
+ARG cargo_cmd="chef cook --all-targets --no-build"
+ARG color_args="--color always"
+ARG cargo_flags=""
+ARG sched_policy="--batch"
+ARG sched_prio=0
+
+WORKDIR /
+COPY --link --from=rust ${RUST_HOME} ${RUST_HOME}
+COPY --link --from=recipe recipe.json /usr/src/tuwunel/recipe.json
+
+WORKDIR /usr/lib/${sys_triple}
+COPY --link --from=rocksdb . .
+
+WORKDIR /usr/src/tuwunel
+SHELL ["/bin/bash", "-c"]
+ENV PATH="${CARGO_HOME}/bin:$PATH"
+ENV CARGO_TERM_VERBOSE="${CARGO_TERM_VERBOSE}"
+ENV RUST_BACKTRACE="${RUST_BACKTRACE}"
+ENV JEMALLOC_OVERRIDE="${JEMALLOC_OVERRIDE}"
+ENV ROCKSDB_LIB_DIR="${ROCKSDB_LIB_DIR}"
+ENV ROCKSDB_INCLUDE_DIR="${ROCKSDB_INCLUDE_DIR}"
+# Link the C++ stdlib via bake's static_libs/dynamic_libs, not the rust-rocksdb
+# System backend. Its build script emits a dynamic `dylib=stdc++`; in the fully
+# static (crt-static) Test/Bench build that leaves dynamic relocations against
+# libstdc++ vtable symbols (e.g. __cxa_pure_virtual) in a binary with no dynamic
+# loader, so glibc aborts at startup ("Unexpected reloc type in static binary",
+# before main). An empty CXXSTDLIB suppresses that directive. Must match the
+# cargo stage's value or the build script re-emits it (rerun-if-env-changed).
+ENV CXXSTDLIB=""
+ENV CC="${CC}"
+ENV CXX="${CXX}"
+ENV AR="${AR}"
+ENV RANLIB="${RANLIB}"
+ENV CFLAGS="-target ${CARGO_TARGET}"
+ENV CXXFLAGS="-target ${CARGO_TARGET}"
+ENV RUSTDOCFLAGS="${RUSTDOCFLAGS}"
+ENV CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG}"
+ENV CARGO_PROFILE_TEST_INCREMENTAL="${CARGO_PROFILE_TEST_INCREMENTAL}"
+ENV CARGO_PROFILE_BENCH_DEBUG="${CARGO_PROFILE_BENCH_DEBUG}"
+ENV CARGO_PROFILE_BENCH_LTO="${CARGO_PROFILE_BENCH_LTO}"
+ENV CARGO_PROFILE_RELEASE_LTO="${CARGO_PROFILE_RELEASE_LTO}"
+ENV CARGO_PROFILE_RELEASE_NATIVE_LTO="${CARGO_PROFILE_RELEASE_NATIVE_LTO}"
+ENV CARGO_PROFILE_RELEASE_DEBUGINFO_DEBUG="${CARGO_PROFILE_RELEASE_DEBUGINFO_DEBUG}"
+ENV CARGO_PROFILE_RELEASE_DEBUGINFO_LTO="${CARGO_PROFILE_RELEASE_DEBUGINFO_LTO}"
+ENV CARGO_BUILD_RUSTFLAGS="${CARGO_BUILD_RUSTFLAGS}"
+ENV CARGO_TARGET_DIR="${CARGO_TARGET_DIR}"
+ENV LINKER_JOBS="${LINKER_JOBS}"
+ENV LINKER_LOCK_DIR="${LINKER_LOCK_DIR}"
+ENV sched_policy=${sched_policy}
+ENV sched_prio=${sched_prio}
+RUN ln -s \
+    "$(rustc --print sysroot)/lib/rustlib/${CARGO_TARGET}/bin/rust-lld" \
+    /usr/local/bin/ld.lld
+# linker_wrap.sh under each linker's own name, outside PATH: rustflags select
+# the linker by its path here, and the wrapper runs the same name from PATH.
+RUN mkdir -p "${LINKER_WRAP_DIR}" \
+    && ln -sf /usr/local/bin/linker_wrap.sh "${LINKER_WRAP_DIR}/cc" \
+    && ln -sf /usr/local/bin/linker_wrap.sh "${LINKER_WRAP_DIR}/${CC##*/}"
+RUN \
+--mount=type=cache,dst=${RUSTUP_HOME}/downloads,sharing=locked \
+--mount=type=cache,dst=${CARGO_HOME}/registry,sharing=locked \
+--mount=type=cache,dst=${CARGO_HOME}/git,sharing=locked \
+--mount=type=cache,id=tuwunel-lto-${rust_toolchain}-${CARGO_TARGET}-${cargo_profile},dst=${LTO_CACHE_DIR},sharing=shared \
+--mount=type=cache,id=tuwunel-linker-slots,dst=${LINKER_LOCK_DIR},sharing=shared \
+<<EOF
+    set -eux
+    ulimit -n 65535
+
+    rustup run "${rust_toolchain}" sched_wrap.sh \
+        cargo ${cargo_cmd} \
+            --verbose \
+            --locked \
+            --workspace \
+            "${cargo_spec_features}" \
+            "--features=${cargo_features}" \
+            "--profile=${cargo_profile}" \
+            "--target=${CARGO_TARGET}" \
+            "--target-dir=${CARGO_TARGET_DIR}" \
+            --recipe-path=recipe.json \
+            ${color_args} \
+            ${cargo_flags}
+EOF
+
+
+# cargo: workspace build, reusing cook's compiled dependencies.
+#
+# COPY --from=source merges into /usr/src/tuwunel: real Cargo.toml and
+# src/<member>/src/* overwrite the chef stubs; target/ from cook is
+# preserved (the source-rust allowlist carries no target/).
+#
+# cargo_target_prune trims the target complex from the result layer when
+# nothing downstream consumes it: "all" removes it outright (check, clippy);
+# "bins" keeps only the built binaries for the install and packaging stages.
+FROM input AS cargo
+ARG rust_toolchain
+ARG RUSTUP_HOME
+ARG CARGO_HOME
+ARG CARGO_TARGET
+ARG CARGO_TARGET_DIR
+ARG LTO_CACHE_DIR
+ARG LINKER_LOCK_DIR
+ARG cargo_profile
+ARG cargo_target_profile
+ARG cargo_target_prune=""
+ARG cargo_features
+ARG cargo_spec_features
+ARG cargo_cmd="build"
+ARG cargo_args=""
+ARG color_args="--color always"
+ARG cargo_flags=""
+ARG VALGRINDFLAGS=""
+ARG VALGRIND_MAX_WORKERS=64
+ARG ROCKSDB_PARALLELISM_THREADS=2
+ARG sched_policy="--batch"
+ARG sched_prio=0
+ARG sched_scope=""
+ARG sched_cpus=""
+ARG cargo_test_timeout=""
+ARG tokio_worker_threads=""
+
+WORKDIR /
+COPY --link --from=source /usr/src/tuwunel /usr/src/tuwunel
+
+WORKDIR /usr/src/tuwunel
+SHELL ["/bin/bash", "-c"]
+# Keep in sync with the cook stage: an empty CXXSTDLIB stops the rust-rocksdb
+# System backend emitting a dynamic `dylib=stdc++` (bake links the stdlib itself).
+# A mismatch with cook would re-run the build script and reintroduce the directive.
+ENV CXXSTDLIB=""
+ENV VALGRINDFLAGS="${VALGRINDFLAGS}"
+ENV TUWUNEL_DB_POOL_MAX_WORKERS="${VALGRIND_MAX_WORKERS}"
+ENV TUWUNEL_ROCKSDB_PARALLELISM_THREADS="${ROCKSDB_PARALLELISM_THREADS}"
+ENV sched_policy=${sched_policy}
+ENV sched_prio=${sched_prio}
+ENV sched_scope=${sched_scope}
+ENV sched_cpus=${sched_cpus}
+RUN \
+--mount=type=cache,dst=${RUSTUP_HOME}/downloads,sharing=locked \
+--mount=type=cache,dst=${CARGO_HOME}/registry,sharing=locked \
+--mount=type=cache,dst=${CARGO_HOME}/git,sharing=locked \
+--mount=type=cache,id=tuwunel-lto-${rust_toolchain}-${CARGO_TARGET}-${cargo_profile},dst=${LTO_CACHE_DIR},sharing=shared \
+--mount=type=cache,id=tuwunel-linker-slots,dst=${LINKER_LOCK_DIR},sharing=shared \
+<<EOF
+    set -eux
+    ulimit -n 65535
+
+    # A deadline on each test binary turns a hang into a failure naming that
+    # binary, and --no-fail-fast still runs the rest. It goes in cargo's
+    # runner so it reaches only the executables cargo launches; sched_wrap.sh
+    # keeps a runner already set and runs it under its scheduling prefix.
+    if test -n "${cargo_test_timeout}"; then
+        runner="CARGO_TARGET_$(tr 'a-z.-' 'A-Z__' <<< "${CARGO_TARGET}")_RUNNER"
+        export "${runner}=timeout --signal=TERM --kill-after=30s ${cargo_test_timeout}"
+    fi
+
+    # Every server boot sizes tokio to the host's cores, and a test that boots
+    # repeatedly can leave earlier workers running; valgrind aborts a process
+    # past 500 threads, so a target testing under it pins the count. Exported
+    # only when set: an empty value fails argument parsing.
+    if test -n "${tokio_worker_threads}"; then
+        export TOKIO_WORKER_THREADS="${tokio_worker_threads}"
+    fi
+
+    example_sha=$(sha1sum tuwunel-example.toml)
+
+    rustup run "${rust_toolchain}" sched_wrap.sh \
+        cargo ${cargo_cmd} \
+            --verbose \
+            --locked \
+            --workspace \
+            "${cargo_spec_features}" \
+            "--features=${cargo_features}" \
+            "--profile=${cargo_profile}" \
+            "--target=${CARGO_TARGET}" \
+            "--target-dir=${CARGO_TARGET_DIR}" \
+            "--manifest-path=Cargo.toml" \
+            ${color_args} \
+            ${cargo_flags} \
+            ${cargo_args}
+
+    if ! echo "$example_sha" | sha1sum --check --status; then
+        echo "tuwunel-example.toml drift: run cargo check yourself and commit the result." >&2
+        exit 1
+    fi
+
+    case "${cargo_target_prune}" in
+    all)
+        rm -rf "${CARGO_TARGET_DIR}"
+        ;;
+    bins)
+        dir="${CARGO_TARGET_DIR}/${CARGO_TARGET}/${cargo_target_profile}"
+        rm -rf \
+            "${dir}/deps" \
+            "${dir}/build" \
+            "${dir}/.fingerprint" \
+            "${dir}/incremental" \
+            "${dir}/examples" \
+            "${CARGO_TARGET_DIR}/${cargo_target_profile}"
+        ;;
+    esac
+EOF

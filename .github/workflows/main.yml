@@ -1,0 +1,514 @@
+name: Main
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      pipeline:
+        type: string
+        description: "Directives e.g. '[ci only it]'"
+      checkout:
+        type: string
+        description: "Checkout commit instead of HEAD"
+      cargo_profiles:
+        type: string
+        default: '["test", "bench", "release", "release-debuginfo", "release-native"]'
+        description: "Matrix Selector: Cargo profiles"
+      feat_sets:
+        type: string
+        default: '["none", "default", "logging", "all"]'
+        description: "Matrix Selector: Cargo feature sets"
+      rust_toolchains:
+        type: string
+        default: '["nightly", "msrv", "stable"]'
+        description: "Matrix Selector: Rust toolchains"
+      rust_targets:
+        type: string
+        default: '["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]'
+        description: "Matrix Selector: Rust targets"
+      sys_names:
+        type: string
+        default: '["debian"]'
+        description: "Matrix Selector: System names"
+      sys_targets:
+        type: string
+        default: '["x86_64-v1-linux-gnu", "x86_64-v2-linux-gnu", "x86_64-v3-linux-gnu", "aarch64-v8-linux-gnu"]'
+        description: "Matrix Selector: System targets"
+      sys_versions:
+        type: string
+        default: '["testing-slim"]'
+        description: "Matrix Selector: System versions"
+      machines:
+        type: string
+        default: '["X64", "ARM64"]'
+        description: "Matrix Selector: Machine architectures"
+      runners:
+        type: string
+        default: '["het", "aws"]'
+        description: "Matrix Selector: Runner labels"
+      package_containers:
+        type: string
+        default: '["docker", "oci"]'
+        description: "Bake Selector: Container packages"
+      package_distros:
+        type: string
+        default: '["deb", "rpm", "nix"]'
+        description: "Bake Selector: Distro packages"
+      enable_lint:
+        type: boolean
+        default: true
+        description: Enable linting stage
+      enable_test:
+        type: boolean
+        default: true
+        description: Enable testing stage
+      enable_package:
+        type: boolean
+        default: false
+        description: Enable packaging stage
+      enable_publish:
+        type: boolean
+        default: false
+        description: Enable publication stage
+      enable_test_complement_interop:
+        type: boolean
+        default: false
+        description: "Interop: run Complement against a foreign homeserver"
+      enable_test_complement_interop_inverse:
+        type: boolean
+        default: false
+        description: "Interop: run Complement with the foreign homeserver as hs1"
+      complement_interop_run:
+        type: string
+        default: '.*'
+        description: "Interop: test selector regex"
+      playwright_shards:
+        type: string
+        default: '1'
+        description: "Playwright: number of test shards"
+      playwright_workers:
+        type: string
+        default: '1'
+        description: "Playwright: workers per shard"
+
+concurrency:
+  group: ${{github.workflow}}-${{github.ref}}
+  cancel-in-progress: false
+
+jobs:
+  init:
+    name: Init
+    runs-on: ${{matrix.runner}}
+    env:
+      default_cargo_profiles: '["test", "bench", "release"]'
+      default_feat_sets: '["none", "default", "all"]'
+      default_rust_toolchains: '["nightly", "msrv", "stable"]'
+      default_sys_names: '["debian"]'
+      default_sys_versions: '["testing-slim"]'
+      default_rust_targets: '["x86_64-unknown-linux-gnu"]'
+      default_sys_targets: '["x86_64-v1-linux-gnu", "x86_64-v3-linux-gnu"]'
+      default_machines: '["X64"]'
+      default_package_containers: '["docker", "oci"]'
+      default_package_distros: '["deb", "rpm", "nix"]'
+      default_playwright_shards: '8'
+      default_playwright_workers: '1'
+      is_release: ${{contains(github.ref, 'tags/v')}}
+      is_branch: ${{contains(github.ref, 'refs/heads')}}
+      is_pull: ${{contains(github.ref, 'refs/pull')}}
+      is_main: ${{github.ref == 'refs/heads/main'}}
+      is_test: ${{github.ref == 'refs/heads/test'}}
+      is_dev: ${{contains(github.ref, 'refs/heads') && github.ref != 'refs/heads/main' && github.ref != 'refs/heads/test'}}
+      is_fat: ${{contains(github.ref, 'tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test'}}
+
+    outputs:
+      cargo_profiles: ${{inputs.cargo_profiles || vars.CARGO_PROFILES || env.default_cargo_profiles}}
+      feat_sets: ${{inputs.feat_sets || vars.FEAT_SETS || env.default_feat_sets}}
+      rust_toolchains: ${{inputs.rust_toolchains || env.default_rust_toolchains}}
+      rust_targets: ${{inputs.rust_targets || vars.RUST_TARGETS || env.default_rust_targets}}
+      sys_names: ${{inputs.sys_names || vars.SYS_NAMES || env.default_sys_names}}
+      sys_targets: ${{inputs.sys_targets || vars.SYS_TARGETS || env.default_sys_targets}}
+      sys_versions: ${{inputs.sys_versions || vars.SYS_VERSIONS || env.default_sys_versions}}
+      machines: ${{inputs.machines || (fromJSON(env.is_fat) && vars.MACHINES) || env.default_machines}}
+      pipeline: ${{inputs.pipeline || github.event.head_commit.message || github.event.workflow_run.head_commit.message}}
+      checkout: ${{inputs.checkout || github.sha}}
+      enable_lint: ${{fromJSON(inputs.enable_lint || 'true')}}
+      enable_audit: ${{fromJSON(inputs.enable_audit || env.is_branch || env.is_fat || 'false')}}
+      enable_test: ${{fromJSON(inputs.enable_test || 'true')}}
+      enable_test_doc: ${{fromJSON(inputs.enable_test_doc || 'true')}}
+      enable_test_unit: ${{fromJSON(inputs.enable_test_unit || 'true')}}
+      enable_test_bench: ${{fromJSON(inputs.enable_test_bench || 'true')}}
+      enable_test_memcheck: ${{fromJSON(inputs.enable_test_memcheck || env.is_test)}}
+      enable_test_smoke: ${{fromJSON(inputs.enable_test_smoke || env.is_fat || 'false')}}
+      enable_test_nix: ${{fromJSON(inputs.enable_test_nix || 'true')}}
+      enable_test_rustsdk: ${{fromJSON(inputs.enable_test_rustsdk || 'true')}}
+      enable_test_complement: ${{fromJSON(inputs.enable_test_complement || 'true')}}
+      enable_test_complement_debug: ${{fromJSON(inputs.enable_test_complement_debug || 'true')}}
+      complement_verbose: ${{fromJSON(inputs.complement_verbose || 'false')}}
+      complement_runner: 'het'
+      enable_test_complement_crypto: ${{fromJSON(inputs.enable_test_complement_crypto || 'true')}}
+      complement_crypto_verbose: ${{fromJSON(inputs.complement_crypto_verbose || 'false')}}
+      enable_test_complement_interop: ${{fromJSON(inputs.enable_test_complement_interop || 'true')}}
+      enable_test_complement_interop_inverse: ${{fromJSON(inputs.enable_test_complement_interop_inverse || 'true')}}
+      complement_interop_run: ${{inputs.complement_interop_run || '.*'}}
+      enable_test_mas: ${{fromJSON(inputs.enable_test_mas || 'true')}}
+      mas_verbose: ${{fromJSON(inputs.mas_verbose || 'false')}}
+      enable_test_playwright: ${{fromJSON(inputs.enable_test_playwright || env.is_branch || 'false')}}
+      playwright_runner: 'het'
+      playwright_shards: ${{inputs.playwright_shards || vars.PLAYWRIGHT_SHARDS || env.default_playwright_shards}}
+      playwright_workers: ${{inputs.playwright_workers || vars.PLAYWRIGHT_WORKERS || env.default_playwright_workers}}
+      enable_package: ${{fromJSON(inputs.enable_package || 'true')}}
+      enable_package_book: ${{fromJSON(inputs.enable_package_book || 'true')}}
+      enable_package_docs: ${{fromJSON(inputs.enable_package_docs || 'true')}}
+      enable_package_binary: ${{fromJSON(inputs.enable_package_binary || env.is_fat || env.is_pull || 'false')}}
+      enable_package_container: ${{fromJSON(inputs.enable_package_container || env.is_fat || 'true')}}
+      package_containers: ${{inputs.package_containers || env.default_package_containers}}
+      enable_package_distro: ${{fromJSON(inputs.enable_package_distro || env.is_fat || 'false')}}
+      package_distros: ${{inputs.package_distros || env.default_package_distros}}
+      enable_package_checks: ${{fromJSON(inputs.enable_package_checks || env.is_fat || 'false')}}
+      enable_publish: ${{fromJSON(inputs.enable_publish || 'true')}}
+      is_release: ${{fromJSON(env.is_release || 'false')}}
+      is_main: ${{fromJSON(env.is_main || 'false')}}
+      is_test: ${{fromJSON(env.is_test || 'false')}}
+      is_pull: ${{fromJSON(env.is_pull || 'false')}}
+      is_fat: ${{fromJSON(env.is_fat || 'false')}}
+      is_dev: ${{fromJSON(env.is_dev || 'true')}}
+      pages_url: 'https://matrix-construct.github.io/tuwunel'
+      release_url: ${{steps.release.outputs.upload_url}}
+      docker_repo: ${{vars.DOCKER_REPO}}
+      docker_acct: ${{vars.DOCKER_ACCT}}
+      apt_ssh_dest: ${{vars.APT_SSH_DEST}}
+      apt_ssh_hostkey: ${{vars.APT_SSH_HOSTKEY}}
+
+    strategy:
+      fail-fast: true
+      matrix:
+        runner: ${{fromJSON(inputs.runners || vars.RUNNERS || '["het"]')}}
+        # Mirrors the machines output (strategy cannot read env.is_fat), so a
+        # lean run never waits on a host none of its jobs will use.
+        machine: ${{fromJSON(inputs.machines || ((contains(github.ref, 'tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test') && vars.MACHINES) || '["X64"]')}}
+        exclude: ${{fromJSON(vars.RUNNERS_EXCLUDES || '[]')}}
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{inputs.checkout || github.sha}}
+
+    - name: Initialize Builder
+      env:
+        runner: ${{matrix.runner}}
+        pipeline: ${{inputs.pipeline || github.event.head_commit.message || github.event.workflow_run.head_commit.message}}
+        seed_builder: ${{vars.SEED_BUILDER || 'jevolk'}}
+        reserved_space:    '{"het": "60GB",  "aws": "12GB", "ec2": "120GB"}'
+        max_used_space:    '{"het": "250GB", "aws": "32GB", "ec2": "1000GB"}'
+        cachemount_max:    '{"het": "80GB",  "aws": "12GB", "ec2": "160GB"}'
+        min_free_space:    '{"het": "200GB", "aws": "16GB", "ec2": "400GB"}'
+        safety_free_space: '{"het": "64GB",  "aws": "8GB",  "ec2": "128GB"}'
+        reap_idle_hours:   '{"het": "24",    "aws": "24",   "ec2": "24"}'
+        reap_min_free:     '{"het": "500GB", "aws": "40GB", "ec2": "1000GB"}'
+        seed_budget:       '{"het": "300GB", "aws": "0GB",  "ec2": "600GB"}'
+        builder_memory:    '{"het": "76GB",  "aws": "",     "ec2": "224GB"}'
+      run: |
+        .github/workflows/init.sh
+
+    - if: >
+        !failure() && !cancelled()
+        && contains(github.ref, 'refs/tags/v')
+        && matrix.runner == 'het'
+
+      id: release
+      name: Create Release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+      with:
+        release_name: Release ${{github.ref_name}}
+        tag_name: ${{github.ref}}
+        body_path: RELEASE.md
+        draft: ${{ contains(github.ref, '-draft') }}
+        prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-pre') }}
+
+  lint:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(needs.init.outputs.enable_lint)
+      && !fromJSON(needs.init.outputs.is_release)
+      && !contains(needs.init.outputs.pipeline, '[ci no lint]')
+      && !contains(needs.init.outputs.pipeline, '[ci only it]')
+
+    name: Lint
+    needs: [init] #needs: [init, deps]
+    uses: ./.github/workflows/lint.yml
+    with:
+      enable_audit: ${{needs.init.outputs.enable_audit}}
+      checkout: ${{needs.init.outputs.checkout}}
+      cargo_profiles: ${{needs.init.outputs.cargo_profiles}}
+      feat_sets: ${{needs.init.outputs.feat_sets}}
+      rust_toolchains: ${{needs.init.outputs.rust_toolchains}}
+      rust_targets: ${{needs.init.outputs.rust_targets}}
+      sys_names: ${{needs.init.outputs.sys_names}}
+      sys_targets: ${{needs.init.outputs.sys_targets}}
+      sys_versions: ${{needs.init.outputs.sys_versions}}
+      machines: ${{needs.init.outputs.machines}}
+      excludes: >
+        [
+          {"cargo_profile": "test", "feat_set": "logging"},
+          {"cargo_profile": "test", "rust_toolchain": "msrv", "feat_set": "none"},
+          {"rust_toolchain": "stable", "cargo_profile": "release"},
+          {"rust_toolchain": "stable", "cargo_profile": "release-native"},
+          {"rust_toolchain": "stable", "feat_set": "none"},
+          {"rust_toolchain": "stable", "feat_set": "default"},
+          {"cargo_profile": "test", "rust_target": "aarch64-unknown-linux-gnu"},
+          {"cargo_profile": "bench"},
+          {"cargo_profile": "release", "rust_toolchain": "nightly", "feat_set": "none"},
+          {"cargo_profile": "release", "rust_toolchain": "nightly", "feat_set": "default"},
+          {"cargo_profile": "release", "rust_toolchain": "nightly", "feat_set": "logging"},
+          {"cargo_profile": "release-debuginfo"},
+          {"cargo_profile": "release-native", "feat_set": "none"},
+          {"cargo_profile": "release-native", "feat_set": "default"},
+          {"cargo_profile": "release-native", "feat_set": "logging"},
+          {"cargo_profile": "release-native", "rust_toolchain": "msrv"},
+          {"cargo_profile": "release-native", "rust_target": "aarch64-unknown-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "feat_set": "none"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "feat_set": "default"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "feat_set": "logging"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "rust_toolchain": "nightly"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v1-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v2-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v3-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v4-linux-gnu"},
+          {"rust_target": "x86_64-unknown-linux-gnu", "sys_target": "aarch64-v8-linux-gnu"},
+          {"sys_target": "aarch64-v8-linux-gnu", "machine": "X64"},
+          {"sys_target": "x86_64-v1-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v2-linux-gnu"},
+          {"sys_target": "x86_64-v3-linux-gnu"},
+          {"sys_target": "x86_64-v4-linux-gnu"},
+        ]
+
+  test:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(needs.init.outputs.enable_test)
+      && !fromJSON(needs.init.outputs.is_release)
+      && !contains(needs.init.outputs.pipeline, '[ci no test]')
+
+    name: Test
+    needs: [init, lint]
+    uses: ./.github/workflows/test.yml
+    with:
+      pipeline: ${{needs.init.outputs.pipeline}}
+      checkout: ${{needs.init.outputs.checkout}}
+      enable_doc: ${{needs.init.outputs.enable_test_doc}}
+      enable_unit: ${{needs.init.outputs.enable_test_unit}}
+      enable_bench: ${{needs.init.outputs.enable_test_bench}}
+      enable_memcheck: ${{needs.init.outputs.enable_test_memcheck}}
+      enable_smoke: ${{needs.init.outputs.enable_test_smoke}}
+      enable_nix: ${{needs.init.outputs.enable_test_nix}}
+      enable_rustsdk: ${{needs.init.outputs.enable_test_rustsdk}}
+      enable_complement: ${{needs.init.outputs.enable_test_complement}}
+      enable_complement_debug: ${{needs.init.outputs.enable_test_complement_debug}}
+      complement_runner: ${{needs.init.outputs.complement_runner}}
+      complement_verbose: ${{needs.init.outputs.complement_verbose}}
+      enable_complement_crypto: ${{needs.init.outputs.enable_test_complement_crypto}}
+      complement_crypto_verbose: ${{needs.init.outputs.complement_crypto_verbose}}
+      enable_complement_interop: ${{needs.init.outputs.enable_test_complement_interop}}
+      enable_complement_interop_inverse: ${{needs.init.outputs.enable_test_complement_interop_inverse}}
+      complement_interop_run: ${{needs.init.outputs.complement_interop_run}}
+      enable_mas: ${{needs.init.outputs.enable_test_mas}}
+      mas_verbose: ${{needs.init.outputs.mas_verbose}}
+      enable_playwright: ${{needs.init.outputs.enable_test_playwright}}
+      playwright_runner: ${{needs.init.outputs.playwright_runner}}
+      playwright_shards: ${{needs.init.outputs.playwright_shards}}
+      playwright_workers: ${{needs.init.outputs.playwright_workers}}
+      cargo_profiles: ${{needs.init.outputs.cargo_profiles}}
+      feat_sets: ${{needs.init.outputs.feat_sets}}
+      rust_toolchains: ${{needs.init.outputs.rust_toolchains}}
+      rust_targets: ${{needs.init.outputs.rust_targets}}
+      sys_names: ${{needs.init.outputs.sys_names}}
+      sys_targets: ${{needs.init.outputs.sys_targets}}
+      sys_versions: ${{needs.init.outputs.sys_versions}}
+      machines: ${{needs.init.outputs.machines}}
+      excludes: >
+        [
+          {"rust_toolchain": "stable"},
+          {"cargo_profile": "test", "rust_toolchain": "msrv", "feat_set": "none"},
+          {"cargo_profile": "test", "rust_target": "aarch64-unknown-linux-gnu"},
+          {"cargo_profile": "release-debuginfo"},
+          {"cargo_profile": "release-native", "feat_set": "none"},
+          {"cargo_profile": "release-native", "feat_set": "default"},
+          {"cargo_profile": "release-native", "rust_toolchain": "msrv"},
+          {"cargo_profile": "release-native", "rust_target": "aarch64-unknown-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "feat_set": "none"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "feat_set": "default"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "feat_set": "logging"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "rust_toolchain": "nightly"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v1-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v2-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v3-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v4-linux-gnu"},
+          {"rust_target": "x86_64-unknown-linux-gnu", "sys_target": "aarch64-v8-linux-gnu"},
+          {"sys_target": "aarch64-v8-linux-gnu", "machine": "X64"},
+          {"sys_target": "x86_64-v1-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v2-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v2-linux-gnu", "feat_set": "none"},
+          {"sys_target": "x86_64-v2-linux-gnu", "feat_set": "default"},
+          {"sys_target": "x86_64-v3-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v3-linux-gnu", "feat_set": "none"},
+          {"sys_target": "x86_64-v3-linux-gnu", "feat_set": "default"},
+          {"sys_target": "x86_64-v4-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v4-linux-gnu", "feat_set": "none"},
+          {"sys_target": "x86_64-v4-linux-gnu", "feat_set": "default"},
+        ]
+
+    secrets:
+      cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      attic_token: ${{ secrets.ATTIC_TOKEN }}
+
+  package:
+    if: >
+      !failure() && !cancelled() && needs.init.result == 'success'
+      && fromJSON(needs.init.outputs.enable_package)
+      && !contains(needs.init.outputs.pipeline, '[ci only it]')
+      && !contains(needs.init.outputs.pipeline, '[ci no build]')
+      && !contains(needs.init.outputs.pipeline, '[ci no package]')
+
+    name: Package
+    needs: [init, test]
+    uses: ./.github/workflows/package.yml
+    with:
+      enable_book: ${{needs.init.outputs.enable_package_book}}
+      enable_docs: ${{needs.init.outputs.enable_package_docs}}
+      enable_binary: ${{needs.init.outputs.enable_package_binary}}
+      enable_container: ${{needs.init.outputs.enable_package_container}}
+      enable_distro: ${{needs.init.outputs.enable_package_distro}}
+      enable_checks: ${{needs.init.outputs.enable_package_checks}}
+      distros: ${{needs.init.outputs.package_distros}}
+      containers: ${{needs.init.outputs.package_containers}}
+      checkout: ${{needs.init.outputs.checkout}}
+      release_url: ${{needs.init.outputs.release_url}}
+      cargo_profiles: ${{needs.init.outputs.cargo_profiles}}
+      feat_sets: ${{needs.init.outputs.feat_sets}}
+      rust_toolchains: ${{needs.init.outputs.rust_toolchains}}
+      rust_targets: ${{needs.init.outputs.rust_targets}}
+      sys_names: ${{needs.init.outputs.sys_names}}
+      sys_targets: ${{needs.init.outputs.sys_targets}}
+      sys_versions: ${{needs.init.outputs.sys_versions}}
+      machines: ${{needs.init.outputs.machines}}
+      excludes: >
+        [
+          {"feat_set": "none"},
+          {"feat_set": "all"},
+          {"cargo_profile": "test"},
+          {"cargo_profile": "bench"},
+          {"cargo_profile": "release-native"},
+          {"cargo_profile": "release-debuginfo", "feat_set": "all"},
+          {"cargo_profile": "release-debuginfo", "feat_set": "logging"},
+          {"cargo_profile": "release-debuginfo", "rust_toolchain": "nightly"},
+          {"cargo_profile": "release-debuginfo", "bake_target": "oci"},
+          {"cargo_profile": "release-debuginfo", "rust_target": "aarch64-unknown-linux-gnu"},
+          {"cargo_profile": "release-debuginfo", "sys_target": "x86_64-v2-linux-gnu"},
+          {"cargo_profile": "release-debuginfo", "sys_target": "x86_64-v3-linux-gnu"},
+          {"cargo_profile": "release-debuginfo", "sys_target": "x86_64-v4-linux-gnu"},
+          {"cargo_profile": "release", "rust_toolchain": "nightly"},
+          {"rust_toolchain": "stable"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "feat_set": "all"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "bake_target": "nix"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v1-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v2-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v3-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v4-linux-gnu"},
+          {"rust_target": "x86_64-unknown-linux-gnu", "sys_target": "aarch64-v8-linux-gnu"},
+          {"sys_target": "aarch64-v8-linux-gnu", "machine": "X64"},
+          {"sys_target": "x86_64-v1-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v2-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v2-linux-gnu", "feat_set": "all"},
+          {"sys_target": "x86_64-v2-linux-gnu", "feat_set": "logging"},
+          {"sys_target": "x86_64-v2-linux-gnu", "bake_target": "nix"},
+          {"sys_target": "x86_64-v3-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v3-linux-gnu", "feat_set": "all"},
+          {"sys_target": "x86_64-v3-linux-gnu", "feat_set": "logging"},
+          {"sys_target": "x86_64-v3-linux-gnu", "bake_target": "nix"},
+          {"sys_target": "x86_64-v4-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v4-linux-gnu", "feat_set": "all"},
+          {"sys_target": "x86_64-v4-linux-gnu", "feat_set": "logging"},
+          {"sys_target": "x86_64-v4-linux-gnu", "bake_target": "nix"},
+        ]
+
+    secrets:
+      cachix_auth_token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      attic_token: ${{ secrets.ATTIC_TOKEN }}
+
+  publish:
+    if: >
+      !failure() && !cancelled()
+      && fromJSON(needs.init.outputs.enable_publish)
+      && !contains(needs.init.outputs.pipeline, '[ci only it]')
+      && !contains(needs.init.outputs.pipeline, '[ci no build]')
+      && !contains(needs.init.outputs.pipeline, '[ci no package]')
+      && !contains(needs.init.outputs.pipeline, '[ci no publish]')
+
+    name: Publish
+    needs: [init, test, package]
+    uses: ./.github/workflows/publish.yml
+    with:
+      checkout: ${{needs.init.outputs.checkout}}
+      docker_repo: ${{needs.init.outputs.docker_repo}}
+      docker_acct: ${{needs.init.outputs.docker_acct}}
+      apt_ssh_dest: ${{needs.init.outputs.apt_ssh_dest}}
+      apt_ssh_hostkey: ${{needs.init.outputs.apt_ssh_hostkey}}
+      release_url: ${{needs.init.outputs.release_url}}
+      pages_url: ${{needs.init.outputs.pages_url}}
+      cargo_profiles: ${{needs.init.outputs.cargo_profiles}}
+      feat_sets: ${{needs.init.outputs.feat_sets}}
+      rust_toolchains: ${{needs.init.outputs.rust_toolchains}}
+      rust_targets: ${{needs.init.outputs.rust_targets}}
+      sys_names: ${{needs.init.outputs.sys_names}}
+      sys_targets: ${{needs.init.outputs.sys_targets}}
+      sys_versions: ${{needs.init.outputs.sys_versions}}
+      machines: ${{needs.init.outputs.machines}}
+      excludes: >
+        [
+          {"feat_set": "none"},
+          {"feat_set": "all"},
+          {"cargo_profile": "test"},
+          {"cargo_profile": "bench"},
+          {"cargo_profile": "release-debuginfo"},
+          {"cargo_profile": "release-native"},
+          {"rust_toolchain": "nightly"},
+          {"rust_toolchain": "stable"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v1-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v2-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v3-linux-gnu"},
+          {"rust_target": "aarch64-unknown-linux-gnu", "sys_target": "x86_64-v4-linux-gnu"},
+          {"rust_target": "x86_64-unknown-linux-gnu", "sys_target": "aarch64-v8-linux-gnu"},
+          {"sys_target": "aarch64-v8-linux-gnu", "machine": "X64"},
+          {"sys_target": "x86_64-v1-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v2-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v2-linux-gnu", "feat_set": "logging"},
+          {"sys_target": "x86_64-v3-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v3-linux-gnu", "feat_set": "logging"},
+          {"sys_target": "x86_64-v4-linux-gnu", "machine": "ARM64"},
+          {"sys_target": "x86_64-v4-linux-gnu", "feat_set": "logging"},
+        ]
+
+    secrets:
+      ghcr_token: ${{ secrets.GHCR_TOKEN }}
+      dockerhub_token: ${{ secrets.DOCKERHUB_TOKEN }}
+      apt_ssh_key: ${{ secrets.APT_DEPLOY_SSH_KEY }}
+
+#  stats:
+#    if: >
+#      !cancelled()
+#
+#    name: Stats
+#    needs: [init, lint, test, package, publish]
+#    uses: ./.github/workflows/stats.yml
+#    with:
+#      machines: ${{needs.init.outputs.machines}}
+#      checkout: ${{needs.init.outputs.checkout}}

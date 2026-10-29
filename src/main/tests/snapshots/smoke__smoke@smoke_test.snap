@@ -1,0 +1,8 @@
+---
+source: src/main/tests/smoke.rs
+description: Smoke Test
+expression: result
+---
+Ok(
+    (),
+)

@@ -1,0 +1,18 @@
+#!/bin/sh
+set -e
+
+# TODO: implement debconf support that is maintainable without duplicating the config
+# Source debconf library.
+#. /usr/share/debconf/confmodule
+#
+## Ask for the Matrix homeserver name, address and port.
+#db_input high tuwunel/hostname || true
+#db_go
+#
+#db_input low tuwunel/address || true
+#db_go
+#
+#db_input medium tuwunel/port || true
+#db_go
+
+exit 0

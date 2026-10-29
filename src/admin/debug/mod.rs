@@ -1,0 +1,397 @@
+mod backoff_metrics;
+mod change_log_level;
+mod create_jwt;
+mod database_files;
+mod database_stats;
+mod delete_forward_extremities;
+mod dump_pdus;
+mod echo;
+mod first_pdu_in_room;
+mod force_device_list_updates;
+mod force_set_room_state_from_server;
+mod get_auth_chain;
+mod get_pdu;
+mod get_remote_pdu;
+mod get_remote_pdu_list;
+mod get_retained_pdu;
+mod get_room_state;
+mod get_short_pdu;
+mod get_signing_keys;
+mod get_verify_keys;
+mod latest_pdu_in_room;
+mod list_dependencies;
+mod memory_stats;
+mod parse_pdu;
+mod ping;
+mod prev_walk_metrics;
+mod prev_walk_rooms;
+mod rebuild_relation_index;
+mod rebuild_thread_index;
+mod resolve_true_destination;
+mod resync_database;
+mod runtime_interval;
+mod runtime_metrics;
+mod show_remote_pdu;
+mod sign_json;
+mod state_at_incoming;
+mod state_local_metrics;
+mod task_interval;
+mod task_metrics;
+pub(crate) mod tester;
+mod time;
+mod trim_memory;
+mod verify_json;
+mod verify_pdu;
+
+use clap::Subcommand;
+use ruma::{OwnedEventId, OwnedRoomId, OwnedRoomOrAliasId, OwnedServerName};
+use tuwunel_core::Result;
+use tuwunel_service::rooms::short::ShortRoomId;
+
+use self::tester::TesterCommand;
+use crate::{
+	admin_command_dispatch,
+	event_fetcher::{self, EventFetcherCommand},
+};
+
+#[admin_command_dispatch]
+#[derive(Debug, Subcommand)]
+pub(super) enum DebugCommand {
+	/// - Echo input of admin command
+	Echo {
+		message: Vec<String>,
+	},
+
+	/// - Get the auth_chain of a PDU
+	GetAuthChain {
+		/// An event ID (the $ character followed by the base64 reference hash)
+		event_id: OwnedEventId,
+	},
+
+	/// - Parse and print a PDU from a JSON
+	///
+	/// The PDU event is only checked for validity and is not added to the
+	/// database.
+	///
+	/// This command needs a JSON blob provided in a Markdown code block below
+	/// the command.
+	ParsePdu,
+
+	/// - Retrieve and print a PDU by EventID from the tuwunel database
+	GetPdu {
+		/// An event ID (a $ followed by the base64 reference hash)
+		event_id: OwnedEventId,
+	},
+
+	/// - Retrieve and print a PDU by PduId from the tuwunel database
+	GetShortPdu {
+		/// Shortroomid integer
+		shortroomid: ShortRoomId,
+
+		/// PduCount integer
+		count: i64,
+	},
+
+	/// - Requests a PDU from a remote server and prints the result. The PDU is
+	///   not inserted into the database.
+	ShowRemotePdu {
+		/// An event ID (a $ followed by the base64 reference hash)
+		event_id: OwnedEventId,
+
+		/// Server to fetch the PDU from
+		server: OwnedServerName,
+	},
+
+	/// - Attempts to retrieve a PDU from a remote server. Inserts it into our
+	///   database/timeline if found and we do not have this PDU already
+	///   (following normal event auth rules, handles it as an incoming PDU).
+	GetRemotePdu {
+		/// An event ID (a $ followed by the base64 reference hash)
+		event_id: OwnedEventId,
+
+		/// Argument for us to attempt to fetch the event from the
+		/// specified remote server.
+		server: OwnedServerName,
+	},
+
+	/// - Same as `get-remote-pdu` but accepts a codeblock newline delimited
+	///   list of PDUs and a single server to fetch from
+	GetRemotePduList {
+		/// Argument for us to attempt to fetch all the events from the
+		/// specified remote server.
+		server: OwnedServerName,
+
+		/// If set, ignores errors, else stops at the first error/failure.
+		#[arg(short, long)]
+		force: bool,
+	},
+
+	/// - Gets all the room state events for the specified room.
+	GetRoomState {
+		/// Room ID
+		room_id: OwnedRoomOrAliasId,
+
+		/// Event Type
+		kind: Option<String>,
+
+		/// State Key
+		state_key: Option<String>,
+	},
+
+	/// - Get and display signing keys from local cache or remote server.
+	GetSigningKeys {
+		server_name: Option<OwnedServerName>,
+
+		#[arg(long)]
+		notary: Option<OwnedServerName>,
+
+		#[arg(short, long)]
+		query: bool,
+	},
+
+	/// - Get and display signing keys from local cache or remote server.
+	GetVerifyKeys {
+		server_name: Option<OwnedServerName>,
+	},
+
+	/// - Sends a federation request to the remote server's
+	///   `/_matrix/federation/v1/version` endpoint and measures the latency it
+	///   took for the server to respond
+	Ping {
+		server: OwnedServerName,
+	},
+
+	/// - Forces device lists for all local and remote users to be updated (as
+	///   having new keys available)
+	ForceDeviceListUpdates,
+
+	/// - Change tracing log level/filter on the fly
+	///
+	/// This accepts the same format as the `log` config option.
+	ChangeLogLevel {
+		/// Log level/filter
+		filter: Option<String>,
+
+		/// Resets the log level/filter to the one in your config
+		#[arg(short, long)]
+		reset: bool,
+	},
+
+	/// - Sign JSON blob
+	///
+	/// This command needs a JSON blob provided in a Markdown code block below
+	/// the command.
+	SignJson,
+
+	/// - Verify JSON signatures
+	///
+	/// This command needs a JSON blob provided in a Markdown code block below
+	/// the command.
+	VerifyJson,
+
+	/// - Verify PDU
+	///
+	/// This re-verifies a PDU existing in the database found by ID.
+	VerifyPdu {
+		event_id: OwnedEventId,
+	},
+
+	/// - Prints the very first PDU in the specified room (typically
+	///   m.room.create)
+	FirstPduInRoom {
+		/// The room ID
+		room_id: OwnedRoomId,
+	},
+
+	/// - Prints the latest ("last") PDU in the specified room (typically a
+	///   message)
+	LatestPduInRoom {
+		/// The room ID
+		room_id: OwnedRoomId,
+	},
+
+	/// - Forcefully replaces the room state of our local copy of the specified
+	///   room, with the copy (auth chain and room state events) the specified
+	///   remote server says.
+	///
+	/// A common desire for room deletion is to simply "reset" our copy of the
+	/// room. While this admin command is not a replacement for that, if you
+	/// know you have split/broken room state and you know another server in the
+	/// room that has the best/working room state, this command can let you use
+	/// their room state. Such example is your server saying users are in a
+	/// room, but other servers are saying they're not in the room in question.
+	///
+	/// This command will get the latest PDU in the room we know about, and
+	/// request the room state at that point in time via
+	/// `/_matrix/federation/v1/state/{roomId}`.
+	ForceSetRoomStateFromServer {
+		/// The impacted room ID
+		room_id: OwnedRoomId,
+		/// The server we will use to query the room state for
+		server_name: OwnedServerName,
+	},
+
+	/// - Prunes the room's forward extremities down to a single one, keeping
+	///   the extremity furthest along in stream order.
+	///
+	/// A room accumulates extra forward extremities when it takes on events
+	/// across a gap or fork it cannot fully resolve; collapsing them repairs a
+	/// room wedged with a large or growing extremity set. This is the
+	/// admin-command counterpart to the Synapse
+	/// `DELETE /_synapse/admin/v1/rooms/{roomId}/forward_extremities` endpoint.
+	DeleteForwardExtremities {
+		/// The room ID or alias
+		room_id: OwnedRoomOrAliasId,
+	},
+
+	/// - Runs a server name through tuwunel's true destination resolution
+	///   process
+	///
+	/// Useful for debugging well-known issues
+	ResolveTrueDestination {
+		server_name: OwnedServerName,
+
+		#[arg(short, long)]
+		no_cache: bool,
+	},
+
+	/// - Print extended memory usage
+	///
+	/// Optional argument is a character mask (a sequence of characters in any
+	/// order) which enable additional extended statistics. Known characters are
+	/// "abdeglmx". For convenience, a '*' will enable everything.
+	MemoryStats {
+		opts: Option<String>,
+	},
+
+	/// - Print general tokio runtime metric totals.
+	RuntimeMetrics,
+
+	/// - Print detailed tokio runtime metrics accumulated since last command
+	///   invocation.
+	RuntimeInterval,
+
+	/// - Print detailed tokio task metrics accumulated in total.
+	TaskMetrics,
+
+	/// - Print process-lifetime state-local build metrics.
+	///
+	/// Difference two snapshots to observe an interval.
+	StateLocalMetrics,
+
+	/// - Print process-lifetime incoming prev-walk metrics.
+	///
+	/// Difference two snapshots to observe an interval.
+	PrevWalkMetrics,
+
+	/// - Print process-lifetime backoff verdict metrics.
+	///
+	/// Difference two snapshots to observe an interval.
+	BackoffMetrics,
+
+	/// - Print the prev walk passes recorded per room, kept for up to three days.
+	///
+	/// Without a room, lists the rooms with the most recorded passes and their
+	/// totals. With a room, lists its latest passes. A pass is recorded when it
+	/// ends, unless a backoff hold withheld it or its fetch left nothing to walk.
+	PrevWalkRooms {
+		/// The room to list the latest passes of
+		room_id: Option<OwnedRoomId>,
+
+		/// How many rooms or passes to list
+		#[arg(short, long, default_value_t = 20)]
+		limit: usize,
+	},
+
+	/// - Print detailed tokio task metrics accumulated since last command
+	///   invocation.
+	TaskInterval,
+
+	/// - Print the current time
+	Time,
+
+	/// - List dependencies
+	ListDependencies {
+		#[arg(short, long)]
+		names: bool,
+	},
+
+	/// - Get database statistics
+	DatabaseStats {
+		property: Option<String>,
+
+		#[arg(short, long, alias("column"))]
+		map: Option<String>,
+	},
+
+	/// - Trim memory usage
+	TrimMemory,
+
+	/// - List database files
+	DatabaseFiles {
+		map: Option<String>,
+
+		#[arg(long)]
+		level: Option<i32>,
+	},
+
+	/// - Create a JWT token for login
+	CreateJwt {
+		/// Localpart of the user's MXID
+		user: String,
+
+		/// Set expiration time in seconds from now.
+		#[arg(long)]
+		exp_from_now: Option<u64>,
+
+		/// Set not-before time in seconds from now.
+		#[arg(long)]
+		nbf_from_now: Option<u64>,
+
+		/// Claim an issuer.
+		#[arg(long)]
+		issuer: Option<String>,
+
+		/// Claim an audience.
+		#[arg(long)]
+		audience: Option<String>,
+	},
+
+	/// - Synchronize database with primary (secondary only)
+	ResyncDatabase,
+
+	/// - Rebuild the typed relation index (relatesto_typed) from all PDUs
+	RebuildRelationIndex,
+
+	/// - Rebuild the thread activity index (threadactivityid_rootid) from all
+	///   thread roots
+	RebuildThreadIndex,
+
+	/// - Retrieves the saved original PDU before it has been redacted
+	GetRetainedPdu {
+		event_id: OwnedEventId,
+	},
+
+	/// - Dump all stored PDUs
+	DumpPdus {
+		dir: String,
+	},
+
+	/// - Run a diagnostic local state derivation for one stored event and report
+	///   the outcome without writing room state, resolved-state memos, or
+	///   production counters
+	StateAtIncoming {
+		/// An event ID (a $ followed by the base64 reference hash)
+		event_id: OwnedEventId,
+	},
+
+	/// - Drive the federation event-fetcher service directly (diagnostic)
+	#[command(subcommand)]
+	#[clap(hide = true)]
+	EventFetcher(EventFetcherCommand),
+
+	/// - Developer test stubs
+	#[command(subcommand)]
+	#[clap(hide(true))]
+	Tester(TesterCommand),
+}

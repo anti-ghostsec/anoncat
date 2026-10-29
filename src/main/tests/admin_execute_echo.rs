@@ -1,0 +1,37 @@
+#![cfg(test)]
+
+use std::net::TcpListener;
+
+use insta::{assert_debug_snapshot, with_settings};
+use tuwunel::{Args, Runtime, Server, async_exec};
+use tuwunel_core::Result;
+
+#[test]
+fn admin_execute_echo() -> Result {
+	with_settings!({
+		description => "Admin Execute Echo",
+		snapshot_suffix => "admin_execute_echo",
+	}, {
+		let listener = TcpListener::bind(("127.0.0.1", 0))?;
+		let port = listener.local_addr()?.port();
+
+		let args = Args::default_test(&["smoke", "fresh", "cleanup"])
+			.with_option(format!("port={port}"))
+			.with_execute("debug echo Test")
+			.with_execute("federation incoming-federation")
+			.with_execute("debug prev-walk-rooms")
+			.with_execute("debug prev-walk-rooms !none:localhost");
+
+		let runtime = Runtime::new(Some(&args))?;
+		let server = Server::new(Some(&args), Some(&runtime))?;
+
+		// the reservation ends here so the server can take the port
+		drop(listener);
+
+		let result = runtime.block_on(async_exec(&server));
+
+		drop(runtime);
+		assert_debug_snapshot!(result);
+		result
+	})
+}

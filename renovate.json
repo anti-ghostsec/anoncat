@@ -1,0 +1,26 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "at any time"
+    ]
+  },
+  "nix": {
+    "enabled": true
+  },
+  "labels": [
+    "dependencies",
+    "github_actions"
+  ],
+  "ignoreDeps": [
+    "tikv-jemllocator",
+    "tikv-jemalloc-sys",
+    "tikv-jemalloc-ctl",
+    "opentelemetry-rust",
+    "tracing-opentelemetry"
+  ]
+}

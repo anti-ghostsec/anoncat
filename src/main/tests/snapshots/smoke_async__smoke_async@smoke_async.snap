@@ -1,0 +1,8 @@
+---
+source: src/main/tests/smoke_async.rs
+description: Smoke Async
+expression: result
+---
+Ok(
+    (),
+)

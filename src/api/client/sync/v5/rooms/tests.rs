@@ -1,0 +1,348 @@
+use std::{
+	collections::HashSet,
+	iter::{empty, once},
+};
+
+use ruma::{
+	UInt,
+	api::client::sync::sync_events::v5::{
+		ListId,
+		request::{List, ListConfig},
+		response::Room as ResponseRoom,
+	},
+	events::{StateEventType, room::member::MembershipState},
+	room_id, uint, user_id,
+};
+use tuwunel_matrix::pdu::PduCount;
+
+use super::{
+	Candidate, Collected, Connection, ListIds, StateMode, TIMELINE_LIMIT_MAX, UnreadState,
+	collected::{recorded_snapshot, unread_state},
+	fingerprints_cover, membership_allows_required_state, merged_room_details,
+	required_state_hash, room_config, room_timeline_limited, room_timeline_metadata,
+	state_is_required, state_may_have_changed, state_mode,
+};
+
+#[test]
+fn first_connection_timeline_is_initial_and_historical() {
+	let (initial, num_live) = room_timeline_metadata(0, None, &timeline(&[8, 9, 10]));
+
+	assert_eq!(initial, Some(true));
+	assert_eq!(num_live, None);
+}
+
+#[test]
+fn incremental_new_room_has_one_live_event() {
+	let (initial, num_live) = room_timeline_metadata(0, Some(10), &timeline(&[8, 9, 11]));
+
+	assert_eq!(initial, Some(true));
+	assert_eq!(num_live, Some(uint!(1)));
+}
+
+#[test]
+fn incremental_range_expansion_has_no_live_events() {
+	let (initial, num_live) = room_timeline_metadata(0, Some(10), &timeline(&[7, 8, 9]));
+
+	assert_eq!(initial, Some(true));
+	assert_eq!(num_live, Some(uint!(0)));
+}
+
+#[test]
+fn incremental_timeline_counts_only_live_suffix() {
+	let (initial, num_live) = room_timeline_metadata(5, Some(10), &timeline(&[8, 9, 11, 12]));
+
+	assert_eq!(initial, None);
+	assert_eq!(num_live, Some(uint!(2)));
+}
+
+#[test]
+fn limited_timeline_counts_only_returned_live_events() {
+	// Earlier live events at positions 11 through 13 were truncated.
+	let returned_timeline = timeline(&[14, 15]);
+	let (_, num_live) = room_timeline_metadata(5, Some(10), &returned_timeline);
+
+	assert_eq!(num_live, Some(uint!(2)));
+	let timeline_len =
+		UInt::try_from(returned_timeline.len()).expect("timeline length fits UInt");
+
+	assert!(num_live.expect("incremental response") <= timeline_len);
+}
+
+#[test]
+fn required_state_is_limited_to_visible_memberships() {
+	assert!(membership_allows_required_state(None));
+	assert!(membership_allows_required_state(Some(&MembershipState::Join)));
+	assert!(!membership_allows_required_state(Some(&MembershipState::Invite)));
+	assert!(!membership_allows_required_state(Some(&MembershipState::Knock)));
+}
+
+#[test]
+fn required_state_is_full_initially_and_without_coverage() {
+	assert_eq!(state_mode(0, false), StateMode::Full);
+	assert_eq!(state_mode(7, true), StateMode::Full);
+	assert_eq!(state_mode(7, false), StateMode::Delta(PduCount::Normal(7)));
+	assert!(state_is_required(StateMode::Full, unchanged(Some(PduCount::Normal(1)))));
+}
+
+#[test]
+fn incremental_required_state_omits_unchanged_events() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+
+	assert!(!state_is_required(mode, unchanged(Some(PduCount::Normal(7)))));
+	assert!(!state_is_required(mode, unchanged(Some(PduCount::Normal(6)))));
+}
+
+#[test]
+fn incremental_required_state_includes_only_changes() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+	let included = [PduCount::Normal(6), PduCount::Normal(8)]
+		.into_iter()
+		.filter(|count| state_is_required(mode, unchanged(Some(*count))))
+		.count();
+
+	assert_eq!(included, 1);
+}
+
+#[test]
+fn incremental_required_state_keeps_reselected_old_event() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+
+	assert!(state_is_required(mode, Candidate {
+		count: Some(PduCount::Normal(6)),
+		..Default::default()
+	}));
+}
+
+#[test]
+fn incremental_required_state_keeps_uncounted_events() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+
+	assert!(state_is_required(mode, Candidate::default()));
+}
+
+#[test]
+fn incremental_required_state_omits_unchanged_uncounted_events() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+
+	assert!(!state_is_required(mode, unchanged(None)));
+}
+
+#[test]
+fn incremental_required_state_needs_a_newer_timeline_event() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+
+	assert!(!state_may_have_changed(mode, PduCount::Normal(7)));
+	assert!(state_may_have_changed(mode, PduCount::Normal(8)));
+	assert!(state_may_have_changed(StateMode::Full, PduCount::Normal(0)));
+}
+
+#[test]
+fn incremental_required_state_keeps_lazy_members() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+
+	let candidate = Candidate {
+		lazy: true,
+		..unchanged(Some(PduCount::Normal(1)))
+	};
+
+	assert!(state_is_required(mode, candidate));
+}
+
+#[test]
+fn incremental_required_state_sends_events_left_unread() {
+	let mode = StateMode::Delta(PduCount::Normal(7));
+
+	for count in [Some(PduCount::Normal(6)), None] {
+		let candidate = Candidate { left_unread: true, ..unchanged(count) };
+
+		assert!(state_is_required(mode, candidate));
+	}
+}
+
+#[test]
+fn delivered_snapshot_vouches_only_for_keys_it_resolved() {
+	assert_eq!(recorded_snapshot(Some(9), true), Some(9));
+	assert_eq!(recorded_snapshot(None, true), None);
+	assert_eq!(recorded_snapshot(Some(9), false), Some(0));
+	assert_eq!(recorded_snapshot(None, false), Some(0));
+}
+
+#[test]
+fn unread_keys_are_kept_once_in_order() {
+	let unread: UnreadState = [5, 3].into();
+
+	assert_eq!(unread_state([3, 7].into_iter(), unread).as_slice(), &[3, 5, 7]);
+	assert!(unread_state(empty(), UnreadState::new()).is_empty());
+}
+
+#[test]
+fn delivery_records_zero_and_keeps_unsent_keys_when_a_key_is_unresolved() {
+	let collected = Collected {
+		settled: once(7).collect(),
+		unresolved: true,
+		..Default::default()
+	};
+
+	let (_, (snapshot, unread)) = collected.finish(Some(9), &[3, 7]);
+
+	assert_eq!(snapshot, Some(0));
+	assert_eq!(unread.as_slice(), &[3]);
+}
+
+#[test]
+fn delivery_without_a_snapshot_keeps_the_previous_keys() {
+	let (_, (snapshot, unread)) = Collected::default().finish(None, &[3]);
+
+	assert_eq!(snapshot, None);
+	assert_eq!(unread.as_slice(), &[3]);
+}
+
+#[test]
+fn complete_delivery_keeps_only_its_own_unread_keys() {
+	let collected = Collected {
+		unread: once(5).collect(),
+		..Default::default()
+	};
+
+	let (_, (snapshot, unread)) = collected.finish(Some(9), &[3]);
+
+	assert_eq!(snapshot, Some(9));
+	assert_eq!(unread.as_slice(), &[5]);
+}
+
+#[test]
+fn empty_required_state_is_omitted() {
+	let room = serde_json::to_value(ResponseRoom::new()).expect("room must serialize");
+
+	assert!(room.get("required_state").is_none());
+}
+
+#[test]
+fn zero_timeline_limit_is_not_limited() {
+	assert!(!room_timeline_limited(0, true));
+	assert!(room_timeline_limited(1, true));
+	assert!(!room_timeline_limited(1, false));
+}
+
+#[test]
+fn timeline_limit_is_capped() {
+	for (list_limit, subscription_limit, expected) in [
+		(uint!(0), uint!(0), 0),
+		(uint!(1), uint!(0), 1),
+		(uint!(0), uint!(99), 99),
+		(uint!(100), uint!(0), TIMELINE_LIMIT_MAX),
+		(uint!(0), uint!(100), TIMELINE_LIMIT_MAX),
+		(uint!(101), uint!(0), TIMELINE_LIMIT_MAX),
+		(uint!(0), uint!(101), TIMELINE_LIMIT_MAX),
+		(UInt::MAX, uint!(1), TIMELINE_LIMIT_MAX),
+		(uint!(1), UInt::MAX, TIMELINE_LIMIT_MAX),
+		(UInt::MAX, UInt::MAX, TIMELINE_LIMIT_MAX),
+	] {
+		let room_id = room_id!("!room:example.com");
+		let list = ListId::from("main");
+		let room_details = ListConfig {
+			timeline_limit: list_limit,
+			required_state: vec![(StateEventType::RoomName, "".into())],
+		};
+
+		let list_config = List { room_details, ..Default::default() };
+		let required_state =
+			vec![(StateEventType::RoomName, "".into()), (StateEventType::RoomTopic, "".into())];
+
+		let subscription = ListConfig {
+			timeline_limit: subscription_limit,
+			required_state,
+		};
+
+		let conn = Connection {
+			lists: [(list.clone(), list_config)].into(),
+			subscriptions: [(room_id.to_owned(), subscription)].into(),
+			..Default::default()
+		};
+
+		let lists: ListIds = once(list).collect();
+		let (timeline_limit, required_state) = merged_room_details(&conn, &lists, room_id);
+		let expected_state = HashSet::from([
+			(StateEventType::RoomName, "".into()),
+			(StateEventType::RoomTopic, "".into()),
+		]);
+
+		assert_eq!(timeline_limit, expected);
+		assert_eq!(required_state, expected_state);
+	}
+}
+
+#[test]
+fn config_hash_is_order_independent() {
+	let first: HashSet<_> =
+		[(StateEventType::RoomName, "".into()), (StateEventType::RoomMember, "*".into())].into();
+
+	let second: HashSet<_> =
+		[(StateEventType::RoomMember, "*".into()), (StateEventType::RoomName, "".into())].into();
+
+	assert_eq!(room_config(&(0, first)).0, room_config(&(0, second)).0);
+}
+
+#[test]
+fn config_hash_uses_deduplicated_state() {
+	let entry = (StateEventType::RoomName, "".into());
+	let duplicated = [entry.clone(), entry.clone()]
+		.into_iter()
+		.collect();
+
+	let deduplicated = once(entry).collect();
+
+	assert_eq!(room_config(&(0, duplicated)).0, room_config(&(0, deduplicated)).0);
+}
+
+#[test]
+fn config_hash_tracks_timeline_limit() {
+	let empty = HashSet::new();
+
+	assert_ne!(room_config(&(0, empty.clone())).0, 0);
+	assert_ne!(room_config(&(0, empty.clone())).0, room_config(&(1, empty)).0);
+}
+
+#[test]
+fn state_coverage_resolves_wildcards_and_own_user() {
+	let user = user_id!("@share:example.com");
+	let kind = StateEventType::BeaconInfo;
+
+	for key in ["*", "$ME", user.as_str()] {
+		let previous = [required_state_hash(&kind, key)];
+
+		assert!(fingerprints_cover(&previous, &kind, user.as_str(), user));
+	}
+
+	let previous = [required_state_hash(&kind, "$ME")];
+
+	assert!(!fingerprints_cover(&previous, &kind, "@other:example.com", user));
+	assert!(!fingerprints_cover(&previous, &StateEventType::RoomMember, user.as_str(), user));
+}
+
+#[test]
+fn lazy_membership_does_not_claim_general_state_coverage() {
+	let user = user_id!("@share:example.com");
+	let kind = StateEventType::RoomMember;
+	let previous = [required_state_hash(&kind, "$LAZY")];
+	let details = (0, [(kind.clone(), "$LAZY".into())].into());
+
+	assert!(room_config(&details).1.is_empty());
+	assert!(!fingerprints_cover(&previous, &kind, user.as_str(), user));
+}
+
+fn timeline(positions: &[u64]) -> Vec<(PduCount, ())> {
+	positions
+		.iter()
+		.copied()
+		.map(|position| (PduCount::Normal(position), ()))
+		.collect()
+}
+
+fn unchanged(count: Option<PduCount>) -> Candidate {
+	Candidate {
+		count,
+		same_at_since: true,
+		..Default::default()
+	}
+}

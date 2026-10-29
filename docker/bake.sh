@@ -1,0 +1,177 @@
+#!/bin/bash
+set -eo pipefail
+
+# Resolve the repository root from the script's own location and chdir there.
+# All subsequent paths and the docker buildx bake` context are relative and
+# require this.
+cd "$(dirname "$0")/.."
+BASEDIR="docker"
+
+CI="${CI:-false}"
+CI_VERBOSE="${CI_VERBOSE:-false}"
+CI_VERBOSE_ENV="${CI_VERBOSE_ENV:-$CI_VERBOSE}"
+CI_SILENT_BAKE="${CI_SILENT_BAKE:-false}"
+CI_PRINT_BAKE="${CI_PRINT_BAKE:-$CI_VERBOSE}"
+
+default_cargo_profiles='["test"]'
+default_feat_sets='["all"]'
+default_rust_toolchains='["nightly"]'
+default_rust_targets='["x86_64-unknown-linux-gnu"]'
+default_sys_names='["debian"]'
+default_sys_versions='["testing-slim"]'
+default_sys_targets='["x86_64-v1-linux-gnu"]'
+
+# Package defaults are shared with CI; explicit system selections still win.
+for target in ${bake_target:-$*}; do
+    case "$target" in
+        pkg|deb|deb-install|build-deb|build-bins-deb|deps-build-bins-deb|rpm|rpm-install|build-rpm|nix|build-nix)
+            # shellcheck source=docker/package.env
+            source "$BASEDIR/package.env"
+            default_sys_versions="$package_sys_versions"
+            break
+            ;;
+    esac
+done
+
+if test ! -z "$cargo_profile"; then
+    env_cargo_profiles="[\"${cargo_profile}\"]"
+fi
+
+if test ! -z "$feat_set"; then
+    env_feat_sets="[\"${feat_set}\"]"
+fi
+
+if test ! -z "$rust_target"; then
+    env_rust_targets="[\"${rust_target}\"]"
+fi
+
+if test ! -z "$rust_toolchain"; then
+    env_rust_toolchains="[\"${rust_toolchain}\"]"
+fi
+
+if test ! -z "$sys_name"; then
+    env_sys_names="[\"${sys_name}\"]"
+fi
+
+if test ! -z "$sys_target"; then
+    env_sys_targets="[\"${sys_target}\"]"
+fi
+
+if test ! -z "$sys_version"; then
+    env_sys_versions="[\"${sys_version}\"]"
+fi
+
+set -a
+bake_target="${bake_target:-$@}"
+cargo_profiles="${env_cargo_profiles:-$default_cargo_profiles}"
+feat_sets="${env_feat_sets:-$default_feat_sets}"
+rust_targets="${env_rust_targets:-$default_rust_targets}"
+rust_toolchains="${env_rust_toolchains:-$default_rust_toolchains}"
+sys_names="${env_sys_names:-$default_sys_names}"
+sys_targets="${env_sys_targets:-$default_sys_targets}"
+sys_versions="${env_sys_versions:-$default_sys_versions}"
+
+docker_dir="$PWD/$BASEDIR"
+builder_name="${GITHUB_ACTOR:-owo}"
+
+# Translates 'nightly' in `rust_toolchains` to some other value. Needed for
+# github actions to pass some specific nightly. Local users can add the specific
+# nightly to the `rust_toolchains` array as intended. see bake.hcl
+rust_nightly="${rust_nightly:-nightly}"
+
+# Translates 'msrv' in `rust_toolchains` to the toolchain pinned in
+# rust-toolchain.toml, for all callers; 'stable' reaches rustup as the moving
+# stable channel. see bake.hcl
+toolchain_toml="$docker_dir/../rust-toolchain.toml"
+rust_msrv=$(grep "channel = " "$toolchain_toml" | cut -d'=' -f2 | sed 's/\s"\|"$//g')
+
+# Package metadata for OCI image labels/annotations. Mirrors the priority
+# used by src/core/info/version.rs::semantic(): `git describe --tags` falling
+# back to the workspace Cargo.toml version. Existing envs take precedence.
+git_semantic="$(git describe --tags --abbrev=1 2>/dev/null || true)"
+git_semantic="${git_semantic#v}"
+git_semantic="${git_semantic%-*-g*}"
+cargo_semantic="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+package_version="${package_version:-${git_semantic:-$cargo_semantic}}"
+package_revision="${package_revision:-$(git rev-parse HEAD 2>/dev/null || true)}"
+package_last_modified="${package_last_modified:-$(git show -s --format=%cI HEAD 2>/dev/null || true)}"
+
+# Nix binary cache. Substituting from the cache is public and unconditional;
+# uploading requires a token, so forks and local builds simply skip the push.
+# CACHIX_AUTH_TOKEN itself reaches buildkit as a secret mount, never an arg.
+cachix_cache="${cachix_cache:-tuwunel}"
+if test -n "$CACHIX_AUTH_TOKEN"; then
+    cachix_push=1
+else
+    cachix_push=0
+fi
+
+attic_cache="${attic_cache:-tuwunel}"
+attic_endpoint="${attic_endpoint:-https://cache.tuwunel.chat}"
+if test -n "$ATTIC_TOKEN"; then
+    attic_push=1
+else
+    attic_push=0
+fi
+
+# other options
+rustdoc_base_path="${rustdoc_base_path:-}"
+rocksdb_opt_level=3
+rocksdb_portable=1
+set +a
+
+###############################################################################
+
+export DOCKER_BUILDKIT=1
+if test "$CI" = "true"; then
+    export BUILDKIT_PROGRESS="plain"
+fi
+
+args=""
+args="$args --provenance=false"
+args="$args --builder ${builder_name}"
+#args="$args --set *.platform=${sys_platform}"
+
+if test "$CI" = "true"; then
+	args="$args --allow=network.host"
+fi
+
+if test "$(uname)" = "Darwin"; then
+    nprocs=$(sysctl -n hw.logicalcpu)
+    args="$args --set *.args.nprocs=${nprocs}"
+    :
+else
+    nprocs=$(nproc)
+    args="$args --set *.args.nprocs=${nprocs}"
+    :
+fi
+
+export valgrind_build_jobs="${valgrind_build_jobs:-$(( (nprocs + 3) / 4 ))}"
+export linker_jobs="${linker_jobs:-${nprocs}}"
+export lto_linker_jobs="${lto_linker_jobs:-$(( (nprocs + 3) / 4 ))}"
+
+if test "$CI_SILENT_BAKE" = "true"; then
+	args="$args --progress=quiet"
+fi
+
+arg="$args -f $BASEDIR/bake.hcl"
+trap 'set +x; date; echo -e "\033[1;41;37mERROR\033[0m"' ERR
+
+if test "$CI_VERBOSE_ENV" = "true"; then
+	date
+	env
+fi
+
+if test "$CI_PRINT_BAKE" = "true"; then
+    docker buildx bake --print $arg $bake_target
+fi
+
+if test "$NO_BAKE" = "1"; then
+    exit 0
+fi
+
+trap '' ERR
+set -ux
+docker buildx bake $arg $bake_target
+set +x
+echo -e "\033[1;42;30mACCEPT\033[0m"

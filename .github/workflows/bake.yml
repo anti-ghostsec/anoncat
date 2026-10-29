@@ -1,0 +1,301 @@
+name: Bakery
+
+on:
+  workflow_call:
+    inputs:
+      bake_targets:
+        type: string
+        description: Bake Matrix
+      cargo_profiles:
+        type: string
+        description: Cargo profiles
+      feat_sets:
+        type: string
+        description: Cargo feature groups
+      rust_targets:
+        type: string
+        description: Rust targets
+      rust_toolchains:
+        type: string
+        description: Rust toolchains
+      sys_names:
+        type: string
+        description: System names
+      sys_targets:
+        type: string
+        description: System targets
+      sys_versions:
+        type: string
+        description: System versions
+      machines:
+        type: string
+        description: Hardware platforms
+      runner:
+        type: string
+        description: Runner mask
+        default: 'self-hosted'
+      excludes:
+        type: string
+        default: '[]'
+        description: Matrix exclusions
+      includes:
+        type: string
+        default: '[]'
+        description: Matrix inclusions
+      rust_nightly:
+        type: string
+        default: ${{vars.RUST_NIGHTLY || 'nightly'}}
+        description: Override nightly toolchain with more specific nightly.
+      checkout:
+        type: string
+        default: ${{github.sha}}
+        description: Specific commit to checkout
+      max-parallel:
+        type: number
+        default: 128
+        description: Limit number of concurrent jobs.
+      verbose_env:
+        type: string
+        default: ${{vars.CI_VERBOSE_ENV || false}}
+        description: Print the bake environment.
+      silent_bake:
+        type: string
+        default: ${{vars.CI_SILENT_BAKE || false}}
+        description: Print as little as possible.
+      print_bake:
+        type: string
+        default: ${{vars.CI_PRINT_BAKE || false}}
+        description: Print the computed receipe.
+      fail_fast:
+        type: boolean
+        default: false
+        description: Fail-fast for the underlying matrix.
+      release_url:
+        type: string
+        description: Upload url for created release.
+      rustdoc_base_path:
+        type: string
+        description: Path where rustdoc will be deployed for finding static assets
+      artifact:
+        type: string
+        default: '{}'
+        description: >
+          Map of targets to artifact files to upload. Key is bake target (image prefix),
+          value is a JSON object containing keys 'src' and 'dst'. dst is the artifact name,
+          src is optional path inside image, defaulting to dst.
+
+    secrets:
+      cachix_auth_token:
+        required: false
+        description: >
+          Write token for the Cachix binary cache. When absent the nix targets
+          still substitute from the caches, they just do not upload.
+      attic_token:
+        required: false
+        description: >
+          Write token for the self-hosted binary cache. Independent of the
+          Cachix token; either, both, or neither may be present.
+
+jobs:
+  bake:
+    if: >
+      !failure() && !cancelled()
+      && inputs.machines
+      && fromJSON(inputs.machines)[0] != null
+      && fromJSON(inputs.bake_targets)[0] != null
+
+    name: >
+      ${{matrix.bake_target}}
+      ${{matrix.cargo_profile}}
+      ${{matrix.rust_toolchain}}
+      ${{matrix.feat_set}}
+      ${{matrix.sys_name}}
+      ${{matrix.sys_version}}
+      ${{matrix.sys_target}}
+
+    runs-on: ["${{matrix.machine}}", "${{inputs.runner}}"]
+    strategy:
+      fail-fast: ${{inputs.fail_fast}}
+      max-parallel: ${{inputs.max-parallel}}
+      matrix:
+        exclude: ${{fromJSON(inputs.excludes)}}
+        include: ${{fromJSON(inputs.includes)}}
+        bake_target: ${{fromJSON(inputs.bake_targets)}}
+        cargo_profile: ${{fromJSON(inputs.cargo_profiles)}}
+        feat_set: ${{fromJSON(inputs.feat_sets)}}
+        rust_toolchain: ${{fromJSON(inputs.rust_toolchains)}}
+        sys_name: ${{fromJSON(inputs.sys_names)}}
+        sys_version: ${{fromJSON(inputs.sys_versions)}}
+        rust_target: ${{fromJSON(inputs.rust_targets)}}
+        sys_target: ${{fromJSON(inputs.sys_targets)}}
+        machine: ${{fromJSON(inputs.machines)}}
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{inputs.checkout || github.sha}}
+        fetch-depth: 1
+        fetch-tags: true
+        persist-credentials: false
+
+    # Call docker
+    - name: Bake ${{matrix.bake_target}}
+      env:
+        bake_target: ${{matrix.bake_target}}
+        cargo_profile: ${{matrix.cargo_profile}}
+        rust_toolchain: ${{matrix.rust_toolchain}}
+        rust_target: ${{matrix.rust_target}}
+        feat_set: ${{matrix.feat_set}}
+        sys_name: ${{matrix.sys_name}}
+        sys_version: ${{matrix.sys_version}}
+        sys_target: ${{matrix.sys_target}}
+        machine: ${{matrix.machine}}
+        acct: ${{github.actor}}
+        repo: ${{github.repository}}
+        CI_VERBOSE_ENV: ${{inputs.verbose_env}}
+        CI_SILENT_BAKE: ${{inputs.silent_bake}}
+        CI_PRINT_BAKE: ${{inputs.print_bake}}
+        rust_nightly: ${{inputs.rust_nightly}}
+        git_checkout: ${{inputs.checkout}}
+        rustdoc_base_path: ${{inputs.rustdoc_base_path}}
+        CACHIX_AUTH_TOKEN: ${{secrets.cachix_auth_token}}
+        ATTIC_TOKEN: ${{secrets.attic_token}}
+
+      run: |
+        docker/bake.sh "${{matrix.bake_target}}"
+
+    # Optionally extract an inner artifact
+    - name: Extract Inner Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+        && fromJSON(inputs.artifact)[matrix.bake_target].img == null
+        && fromJSON(inputs.artifact)[matrix.bake_target].runner != true
+
+      env:
+        iid: ${{matrix.bake_target}}--${{matrix.cargo_profile}}--${{matrix.rust_toolchain}}--${{matrix.rust_target}}--${{matrix.feat_set}}--${{matrix.sys_name}}--${{matrix.sys_version}}--${{matrix.sys_target}}
+        dst: ${{ fromJSON(inputs.artifact)[matrix.bake_target].dst }}
+        src: ${{ fromJSON(inputs.artifact)[matrix.bake_target].src || fromJSON(inputs.artifact)[matrix.bake_target].dst }}
+        mod: ${{ fromJSON(inputs.artifact)[matrix.bake_target].chmod || 'u+r' }}
+
+      run: |
+        cid=$(docker create "$iid" /)
+        trap 'docker rm -f "$cid" >/dev/null' EXIT
+        rm -rf _artifact
+        mkdir -p "_artifact"
+        docker cp "$cid:$src" "_artifact/$dst"
+        chmod "$mod" "_artifact/$dst"
+
+    # Optionally extract the image itself as an artifact.
+    - name: Extract Image Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+        && fromJSON(inputs.artifact)[matrix.bake_target].img != null
+
+      env:
+        iid: ${{matrix.bake_target}}--${{matrix.cargo_profile}}--${{matrix.rust_toolchain}}--${{matrix.rust_target}}--${{matrix.feat_set}}--${{matrix.sys_name}}--${{matrix.sys_version}}--${{matrix.sys_target}}
+        dst: ${{ fromJSON(inputs.artifact)[matrix.bake_target].dst }}
+
+      run: |
+        rm -rf _artifact
+        mkdir -p "_artifact"
+        docker save -o "_artifact/$dst" "$iid"
+
+    # Optionally extract a runner artifact
+    - name: Extract Outer Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+        && fromJSON(inputs.artifact)[matrix.bake_target].runner == true
+
+      env:
+        dst: ${{ fromJSON(inputs.artifact)[matrix.bake_target].dst }}
+        src: ${{ fromJSON(inputs.artifact)[matrix.bake_target].src || fromJSON(inputs.artifact)[matrix.bake_target].dst }}
+        mod: ${{ fromJSON(inputs.artifact)[matrix.bake_target].chmod || 'u+r' }}
+
+      run: |
+        rm -rf _artifact
+        mkdir -p "_artifact"
+        mv "$src" "_artifact/$dst"
+        chmod "$mod" "_artifact/$dst"
+
+    # Tar an extracted directory for downstream Compress/Upload steps
+    - name: Tar Directory Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+        && fromJSON(inputs.artifact)[matrix.bake_target].dir == true
+
+      env:
+        dst: ${{ fromJSON(inputs.artifact)[matrix.bake_target].dst }}
+
+      run: |
+        if test -d "_artifact/$dst"; then
+          tar -cf "_artifact/$dst.tar" -C "_artifact" "$dst"
+          rm -rf "_artifact/$dst"
+          mv "_artifact/$dst.tar" "_artifact/$dst"
+        fi
+
+    # Optionally compress extracted artifact
+    - name: Compress Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+        && (fromJSON(inputs.artifact)[matrix.bake_target].gzip || fromJSON(inputs.artifact)[matrix.bake_target].zstd)
+
+      env:
+        dst: ${{ fromJSON(inputs.artifact)[matrix.bake_target].dst }}
+        gzlev: ${{ fromJSON(inputs.artifact)[matrix.bake_target].gzip }}
+        zstlev: ${{ fromJSON(inputs.artifact)[matrix.bake_target].zstd }}
+
+      run: |
+        if test -n "$gzlev"; then
+          mv "_artifact/$dst" "_artifact/$dst.artifact"
+          gzip "-$gzlev" "_artifact/$dst.artifact"
+          mv "_artifact/$dst.artifact.gz" "_artifact/$dst"
+        elif test -n "$zstlev"; then
+          zstd "-$zstlev" "_artifact/$dst"
+          mv "_artifact/$dst.zst" "_artifact/$dst"
+        fi
+
+    # Upload either artifact
+    - name: Upload Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+
+      uses: actions/upload-artifact@v7
+      with:
+        path: _artifact/*
+        name: ${{matrix.cargo_profile}}-${{matrix.feat_set}}-${{matrix.sys_target}}-${{fromJSON(inputs.artifact)[matrix.bake_target].dst}}
+
+    # Optionally upload artifact as pages-artifact
+    - name: Upload Pages Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+        && fromJSON(inputs.artifact)[matrix.bake_target].pages == true
+
+      uses: actions/upload-pages-artifact@v5
+      with:
+        path: _artifact/${{fromJSON(inputs.artifact)[matrix.bake_target].dst}}
+        name: github-pages-${{fromJSON(inputs.artifact)[matrix.bake_target].dst}}
+
+    # Optionally upload artifact as release-artifact
+    - name: Upload Release Artifact
+      if: >
+        !failure() && !cancelled()
+        && fromJSON(inputs.artifact)[matrix.bake_target].dst
+        && fromJSON(inputs.artifact)[matrix.bake_target].mime
+        && contains(github.ref, 'refs/tags/v')
+        && inputs.release_url
+
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+      with:
+        upload_url: ${{inputs.release_url}}
+        asset_path: _artifact/${{fromJSON(inputs.artifact)[matrix.bake_target].dst}}
+        asset_name: ${{github.ref_name}}-${{matrix.cargo_profile}}-${{matrix.feat_set}}-${{matrix.sys_target}}-${{fromJSON(inputs.artifact)[matrix.bake_target].dst}}
+        asset_content_type: ${{fromJSON(inputs.artifact)[matrix.bake_target].mime || 'application/octet-stream'}}

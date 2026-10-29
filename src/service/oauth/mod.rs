@@ -1,0 +1,492 @@
+pub mod providers;
+pub mod server;
+pub mod sessions;
+pub mod token_response;
+pub mod user_info;
+
+use std::{
+	collections::HashMap,
+	net::IpAddr,
+	sync::{Arc, Mutex},
+	time::Instant,
+};
+
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as b64encode};
+use futures::{Stream, StreamExt, TryStreamExt};
+use http::StatusCode;
+use reqwest::{
+	Method,
+	header::{ACCEPT, CONTENT_TYPE},
+};
+use ruma::{
+	UserId,
+	api::error::{ErrorKind, LimitExceededErrorData},
+};
+use serde::Serialize;
+use serde_json::Value as JsonValue;
+use tuwunel_core::{
+	Err, Error, Result, err, implement,
+	smallstr::SmallString,
+	utils::{
+		hash::sha256,
+		result::{LogErr, NotFound},
+		stream::{ReadyExt, TryReadyExt},
+		string::truncate_deterministic,
+	},
+	warn,
+};
+use url::Url;
+
+use self::{providers::Providers, sessions::Sessions};
+pub use self::{
+	providers::{Provider, ProviderId},
+	server::Server,
+	sessions::{CODE_VERIFIER_LENGTH, Deleted, Deletions, SESSION_ID_LENGTH, Session, SessionId},
+	token_response::TokenResponse,
+	user_info::UserInfo,
+};
+use crate::{SelfServices, client::read_response_capped};
+
+/// Fallback localpart derived from an identity's unique-id string.
+pub type Localpart = SmallString<[u8; 23]>;
+
+/// Per-client-IP token-bucket table: last-refill instant and remaining tokens.
+type Ratelimiter = Mutex<HashMap<IpAddr, (Instant, f64)>>;
+
+pub struct Service {
+	services: SelfServices,
+	pub providers: Arc<Providers>,
+	pub sessions: Arc<Sessions>,
+	pub server: Option<Arc<Server>>,
+	ratelimiter: Ratelimiter,
+	device_ratelimiter: Ratelimiter,
+}
+
+impl crate::Service for Service {
+	fn build(args: &crate::Args<'_>) -> Result<Arc<Self>> {
+		let providers = Arc::new(Providers::build(args));
+		let sessions = Arc::new(Sessions::build(args, providers.clone()));
+		let server = Server::build(args)?.map(Arc::new);
+
+		Ok(Arc::new(Self {
+			services: args.services.clone(),
+			sessions,
+			providers,
+			server,
+			ratelimiter: Mutex::new(HashMap::new()),
+			device_ratelimiter: Mutex::new(HashMap::new()),
+		}))
+	}
+
+	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
+}
+
+#[implement(Service)]
+#[inline]
+pub fn get_server(&self) -> Result<&Server> {
+	self.server
+		.as_deref()
+		.ok_or_else(|| err!(Request(Unrecognized("OIDC server not configured"))))
+}
+
+/// Cap on the rate-limit table; fully refilled buckets are pruned past it.
+const RATELIMIT_MAP_CAP: usize = 1 << 16;
+
+#[cfg(test)]
+mod tests;
+
+/// Always-on throttle for the RFC 8628 device user-code endpoints. The
+/// `user_code` is low-entropy by design (§6.1), so §5.1 requires bounding
+/// guesses regardless of the optional `oidc_rc_*` knobs; the burst stays
+/// generous for the one code a real user enters.
+const DEVICE_RC_PER_SECOND: f64 = 1.0;
+/// Generous allowance for the one code a real user enters.
+const DEVICE_RC_BURST: f64 = 60.0;
+
+/// Shared per-client-IP token-bucket throttle for the OIDC endpoints. A no-op
+/// unless both `oidc_rc_per_second` and `oidc_rc_burst_count` are configured.
+#[implement(Service)]
+pub fn check_rate_limit(&self, client: IpAddr) -> Result {
+	let config = &self.services.config;
+	let rate = f64::from(config.oidc_rc_per_second);
+	let burst = f64::from(config.oidc_rc_burst_count);
+
+	if rate <= 0.0 || burst <= 0.0 {
+		return Ok(());
+	}
+
+	check_bucket(&self.ratelimiter, client, rate, burst)
+}
+
+/// Always-on anti-brute-force throttle for the device user-code endpoints
+/// (RFC 8628 §5.1), independent of the optional `oidc_rc_*` knobs.
+#[implement(Service)]
+pub fn check_device_rate_limit(&self, client: IpAddr) -> Result {
+	check_bucket(&self.device_ratelimiter, client, DEVICE_RC_PER_SECOND, DEVICE_RC_BURST)
+}
+
+fn check_bucket(table: &Ratelimiter, client: IpAddr, rate: f64, burst: f64) -> Result {
+	check_bucket_at(table, client, rate, burst, Instant::now(), RATELIMIT_MAP_CAP)
+}
+
+fn check_bucket_at(
+	table: &Ratelimiter,
+	client: IpAddr,
+	rate: f64,
+	burst: f64,
+	now: Instant,
+	cap: usize,
+) -> Result {
+	let mut buckets = table.lock()?;
+	debug_assert!(cap > 0, "rate-limit table cap must be positive");
+	debug_assert!(buckets.len() <= cap, "rate-limit table exceeded its cap");
+
+	if buckets.len() >= cap && !buckets.contains_key(&client) {
+		let mut oldest = None;
+
+		buckets.retain(|client, bucket| {
+			let (last_time, tokens) = *bucket;
+			let refilled = now
+				.duration_since(last_time)
+				.as_secs_f64()
+				.mul_add(rate, tokens);
+
+			let retain = refilled < burst;
+
+			if retain && oldest.is_none_or(|(_, oldest_at)| last_time < oldest_at) {
+				oldest = Some((*client, last_time));
+			}
+
+			retain
+		});
+
+		if buckets.len() >= cap
+			&& let Some((oldest, _)) = oldest
+		{
+			buckets.remove(&oldest);
+		}
+	}
+
+	let (last_time, tokens) = buckets
+		.entry(client)
+		.or_insert_with(|| (now, burst));
+
+	let new_tokens = now
+		.duration_since(*last_time)
+		.as_secs_f64()
+		.mul_add(rate, *tokens)
+		.min(burst);
+
+	if new_tokens < 1.0 {
+		return Err(Error::Request(
+			ErrorKind::LimitExceeded(LimitExceededErrorData { retry_after: None }),
+			"Too many OIDC requests.".into(),
+			StatusCode::TOO_MANY_REQUESTS,
+		));
+	}
+
+	*last_time = now;
+	*tokens = new_tokens - 1.0;
+
+	Ok(())
+}
+
+/// Remove every session listed under a user.
+///
+/// Each listed session is deleted whether or not its provider still resolves,
+/// and one that cannot be read is kept; the result counts each outcome, and an
+/// unreadable list is an error. For debug and developer use only; deleting
+/// state can cause registration conflicts and unintended re-registrations.
+#[implement(Service)]
+#[tracing::instrument(level = "debug", skip(self))]
+pub async fn delete_user_sessions(&self, user_id: &UserId) -> Result<Deletions> {
+	self.sessions
+		.get_sess_id_by_user(user_id)
+		// A user with no sessions has no index row to list them.
+		.ready_filter(|listed| !listed.is_missing())
+		.and_then(async |sess_id| Ok((self.sessions.delete(&sess_id).await, sess_id)))
+		.ready_try_fold_default(|deletions: Deletions, (deleted, sess_id)| {
+			Ok(deletions.tally(deleted, &sess_id))
+		})
+		.await
+}
+
+/// Revoke all session tokens for a user.
+#[implement(Service)]
+#[tracing::instrument(level = "debug", skip(self))]
+pub async fn revoke_user_tokens(&self, user_id: &UserId) {
+	self.user_sessions(user_id)
+		.ready_filter_map(Result::ok)
+		.for_each(async |(provider, session)| {
+			self.revoke_token((&provider, &session))
+				.await
+				.log_err()
+				.ok();
+		})
+		.await;
+}
+
+/// Get user's authorizations. Lists pairs of `(Provider, Session)` for a user.
+#[implement(Service)]
+#[tracing::instrument(level = "debug", skip(self))]
+pub fn user_sessions(
+	&self,
+	user_id: &UserId,
+) -> impl Stream<Item = Result<(Provider, Session)>> + Send {
+	self.sessions
+		.get_by_user(user_id)
+		.and_then(async |session| Ok((self.sessions.provider(&session).await?, session)))
+}
+
+/// Network request to a Provider returning userinfo for a Session. The session
+/// must have a valid access token.
+#[implement(Service)]
+#[tracing::instrument(level = "debug", skip_all, ret)]
+pub async fn request_userinfo(
+	&self,
+	(provider, session): (&Provider, &Session),
+) -> Result<UserInfo> {
+	#[derive(Debug, Serialize)]
+	struct Query;
+
+	let url = provider
+		.userinfo_url
+		.clone()
+		.ok_or_else(|| err!(Config("userinfo_url", "Missing userinfo URL in config")))?;
+
+	self.request((Some(provider), Some(session)), Method::GET, url, Option::<Query>::None)
+		.await
+		.and_then(|value| serde_json::from_value(value).map_err(Into::into))
+		.log_err()
+}
+
+/// Network request to a Provider returning information for a Session based on
+/// its access token.
+#[implement(Service)]
+#[tracing::instrument(level = "debug", skip_all, ret)]
+pub async fn request_tokeninfo(
+	&self,
+	(provider, session): (&Provider, &Session),
+) -> Result<UserInfo> {
+	#[derive(Debug, Serialize)]
+	struct Query;
+
+	let url = provider
+		.introspection_url
+		.clone()
+		.ok_or_else(|| {
+			err!(Config("introspection_url", "Missing introspection URL in config"))
+		})?;
+
+	self.request((Some(provider), Some(session)), Method::GET, url, Option::<Query>::None)
+		.await
+		.and_then(|value| serde_json::from_value(value).map_err(Into::into))
+		.log_err()
+}
+
+/// Network request to a Provider revoking a Session's token.
+#[implement(Service)]
+#[tracing::instrument(level = "debug", skip_all, ret)]
+pub async fn revoke_token(&self, (provider, session): (&Provider, &Session)) -> Result {
+	#[derive(Debug, Serialize)]
+	struct RevokeQuery<'a> {
+		client_id: &'a str,
+		client_secret: &'a str,
+	}
+
+	let client_secret = provider.get_client_secret().await?;
+
+	let query = RevokeQuery {
+		client_id: &provider.client_id,
+		client_secret: &client_secret,
+	};
+
+	let url = provider
+		.revocation_url
+		.clone()
+		.ok_or_else(|| err!(Config("revocation_url", "Missing revocation URL in config")))?;
+
+	self.request((Some(provider), Some(session)), Method::POST, url, Some(query))
+		.await
+		.log_err()
+		.map(|_| ())
+}
+
+/// Network request to a Provider to obtain an access token for a Session using
+/// a provided code.
+#[implement(Service)]
+#[tracing::instrument(level = "debug", skip_all, ret)]
+pub async fn request_token(
+	&self,
+	(provider, session): (&Provider, &Session),
+	code: &str,
+) -> Result<TokenResponse> {
+	#[derive(Debug, Serialize)]
+	struct TokenQuery<'a> {
+		client_id: &'a str,
+		client_secret: &'a str,
+		grant_type: &'a str,
+		code: &'a str,
+		code_verifier: Option<&'a str>,
+		redirect_uri: Option<&'a str>,
+	}
+
+	let client_secret = provider.get_client_secret().await?;
+
+	let query = TokenQuery {
+		client_id: &provider.client_id,
+		client_secret: &client_secret,
+		grant_type: "authorization_code",
+		code,
+		code_verifier: session.code_verifier.as_deref(),
+		redirect_uri: provider.callback_url.as_ref().map(Url::as_str),
+	};
+
+	let url = provider
+		.token_url
+		.clone()
+		.ok_or_else(|| err!(Config("token_url", "Missing token URL in config")))?;
+
+	self.request((Some(provider), Some(session)), Method::POST, url, Some(query))
+		.await
+		.and_then(|value| serde_json::from_value(value).map_err(Into::into))
+		.log_err()
+}
+
+/// Send a request to a provider; this is somewhat abstract since URL's are
+/// formed prior to this call and could point at anything, however this function
+/// uses the oauth-specific http client and is configured for JSON with special
+/// casing for an `error` property in the response.
+#[implement(Service)]
+#[tracing::instrument(
+	name = "request",
+	level = "debug",
+	ret(level = "trace"),
+	skip(self, body)
+)]
+pub async fn request<Body>(
+	&self,
+	(provider, session): (Option<&Provider>, Option<&Session>),
+	method: Method,
+	url: Url,
+	body: Option<Body>,
+) -> Result<JsonValue>
+where
+	Body: Serialize,
+{
+	let mut request = self
+		.services
+		.client
+		.oauth
+		.request(method, url)
+		.header(ACCEPT, "application/json");
+
+	if let Some(body) = body.map(serde_html_form::to_string).transpose()? {
+		request = request
+			.header(CONTENT_TYPE, "application/x-www-form-urlencoded")
+			.body(body);
+	}
+
+	if let Some(session) = session
+		&& let Some(access_token) = session.access_token.clone()
+	{
+		request = request.bearer_auth(access_token);
+	}
+
+	let limit = self.services.config.max_response_size;
+	let http_response = request.send().await?.error_for_status()?;
+
+	let body = read_response_capped(http_response, limit).await?;
+	let response: JsonValue = serde_json::from_slice(&body)?;
+
+	if let Some(response) = response.as_object().as_ref()
+		&& let Some(error) = response.get("error").and_then(JsonValue::as_str)
+	{
+		let description = response
+			.get("error_description")
+			.and_then(JsonValue::as_str)
+			.unwrap_or("(no description)");
+
+		return Err!(Request(Forbidden("Error from provider: {error}: {description}",)));
+	}
+
+	Ok(response)
+}
+
+/// Generate a unique-id string determined by the combination of `Provider` and
+/// `Session` instances.
+#[inline]
+pub fn unique_id((provider, session): (&Provider, &Session)) -> Result<String> {
+	unique_id_parts((provider, session)).and_then(unique_id_iss_sub)
+}
+
+/// Generate a unique-id string determined by the combination of `Provider`
+/// instance and `sub` string.
+#[inline]
+pub fn unique_id_sub((provider, sub): (&Provider, &str)) -> Result<String> {
+	unique_id_sub_parts((provider, sub)).and_then(unique_id_iss_sub)
+}
+
+/// Generate a unique-id string determined by the combination of `issuer_url`
+/// and `Session` instance.
+#[inline]
+pub fn unique_id_iss((iss, session): (&str, &Session)) -> Result<String> {
+	unique_id_iss_parts((iss, session)).and_then(unique_id_iss_sub)
+}
+
+/// Generate a unique-id string determined by the `issuer_url` and the `sub`
+/// strings directly.
+pub fn unique_id_iss_sub((iss, sub): (&str, &str)) -> Result<String> {
+	let hash = sha256::delimited([iss, sub].iter());
+	let b64 = b64encode.encode(hash);
+
+	Ok(b64)
+}
+
+/// Derive the fallback localpart of an identity from its unique-id string.
+///
+/// The localpart is a lowercase prefix of 15 to 23 characters selected from the
+/// string's contents. An identity whose claimed usernames are unavailable
+/// therefore falls back to the same localpart on every sign-in.
+#[must_use]
+pub fn fallback_localpart(unique_id: &str) -> Localpart {
+	truncate_deterministic(unique_id, Some(15..23))
+		.chars()
+		.flat_map(char::to_lowercase)
+		.collect()
+}
+
+fn unique_id_parts<'a>(
+	(provider, session): (&'a Provider, &'a Session),
+) -> Result<(&'a str, &'a str)> {
+	identity_issuer(provider)
+		.ok_or_else(|| err!(Config("issuer_url", "issuer_url not found for this provider.")))
+		.and_then(|iss| unique_id_iss_parts((iss, session)))
+}
+
+fn unique_id_sub_parts<'a>(
+	(provider, sub): (&'a Provider, &'a str),
+) -> Result<(&'a str, &'a str)> {
+	identity_issuer(provider)
+		.ok_or_else(|| err!(Config("issuer_url", "issuer_url not found for this provider.")))
+		.map(|iss| (iss, sub))
+}
+
+/// Issuer string used as input to the identity hash. Pinned per-brand for
+/// providers whose published issuer has changed under us, so existing account
+/// associations survive the change.
+fn identity_issuer(provider: &Provider) -> Option<&str> {
+	match provider.brand.as_str() {
+		| "github" => Some("https://github.com/"),
+		| _ => provider.issuer_url.as_ref().map(Url::as_str),
+	}
+}
+
+fn unique_id_iss_parts<'a>((iss, session): (&'a str, &'a Session)) -> Result<(&'a str, &'a str)> {
+	session
+		.user_info
+		.as_ref()
+		.map(|user_info| user_info.sub.as_str())
+		.ok_or_else(|| err!(Request(NotFound("user_info not found for this session."))))
+		.map(|sub| (iss, sub))
+}

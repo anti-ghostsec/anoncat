@@ -1,0 +1,143 @@
+pub(crate) mod account;
+pub(crate) mod auth_issuer;
+pub(crate) mod auth_metadata;
+pub(crate) mod authorize;
+pub(crate) mod complete;
+pub(crate) mod device;
+pub(crate) mod jwks;
+pub(crate) mod native;
+pub(crate) mod registration;
+pub(crate) mod revoke;
+pub(crate) mod token;
+pub(crate) mod userinfo;
+
+/// Provides the OpenID Connect route builder.
+///
+/// It groups discovery, authorization and callback endpoints.
+pub mod routes;
+
+use axum::{Json, body::Body, response::IntoResponse};
+use http::{Response, StatusCode};
+use ruma::{OwnedUserId, UserId};
+use serde_json::json;
+use tuwunel_api::router::{ClientIp, State};
+pub(crate) use tuwunel_core::utils::url::{redirect_allowlisted, url_encode};
+use tuwunel_core::{Result, err, mod_ctor, mod_dtor};
+use tuwunel_service::{Services, users::LoginToken};
+use url::Url;
+
+pub(crate) use self::{
+	account::{
+		ACCOUNT_MANAGEMENT_ACTIONS_SUPPORTED, account_css_route, account_js_route,
+		get_account_callback_route, get_account_route, post_account_callback_route,
+	},
+	auth_issuer::auth_issuer_route,
+	auth_metadata::openid_configuration_route,
+	authorize::authorize_route,
+	complete::{complete_route, post_complete_route},
+	device::{
+		device_authorization_route, get_device_callback_route, get_device_route,
+		post_device_callback_route,
+	},
+	jwks::jwks_route,
+	native::{native_get_route, native_submit_route},
+	registration::registration_route,
+	revoke::revoke_route,
+	token::token_route,
+	userinfo::userinfo_route,
+};
+
+const OIDC_REQ_ID_LENGTH: usize = 32;
+
+fn oauth_error(status: StatusCode, error: &str, description: &str) -> Response<Body> {
+	let body = json!({
+		"error": error,
+		"error_description": description,
+	});
+
+	(status, Json(body)).into_response()
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+async fn require_account_usable(services: &Services, user_id: &UserId) -> Result {
+	services.users.deactivated_check(user_id).await?;
+	services.users.locked_check(user_id).await
+}
+
+async fn consume_login_token(services: &Services, token: Option<&str>) -> Result<OwnedUserId> {
+	let token = token.ok_or_else(|| err!(Request(Forbidden("Missing login token"))))?;
+
+	services
+		.users
+		.find_from_login_token(token)
+		.await
+		.map_err(|_| err!(Request(Forbidden("Invalid or expired login token"))))
+}
+
+async fn consume_login_token_with_provider(
+	services: &Services,
+	token: Option<&str>,
+) -> Result<LoginToken> {
+	let token = token.ok_or_else(|| err!(Request(Forbidden("Missing login token"))))?;
+
+	services
+		.users
+		.find_login_token_with_provider(token)
+		.await
+		.map_err(|_| err!(Request(Forbidden("Invalid or expired login token"))))
+}
+
+/// Verify a login token without consuming it; it is consumed later when the
+/// confirmation form is submitted.
+async fn peek_login_token(services: &Services, token: Option<&str>) -> Result<OwnedUserId> {
+	let token = token.ok_or_else(|| err!(Request(Forbidden("Missing login token"))))?;
+
+	services
+		.users
+		.peek_login_token(token)
+		.await
+		.map_err(|_| err!(Request(Forbidden("Invalid or expired login token"))))
+}
+
+async fn peek_login_token_with_provider(
+	services: &Services,
+	token: Option<&str>,
+) -> Result<LoginToken> {
+	let token = token.ok_or_else(|| err!(Request(Forbidden("Missing login token"))))?;
+
+	services
+		.users
+		.peek_login_token_with_provider(token)
+		.await
+		.map_err(|_| err!(Request(Forbidden("Invalid or expired login token"))))
+}
+
+/// Build the upstream SSO redirect URL for a pending authorization request.
+///
+/// The provider hands the browser back to the completion route carrying the
+/// request id, where the authorization code is minted. A trailing slash on the
+/// issuer is ignored.
+fn authorization_sso_url(issuer: &str, idp_id: &str, req_id: &str) -> Result<Url> {
+	let base = issuer.trim_end_matches('/');
+	let complete = format!("{base}/_tuwunel/oidc/_complete");
+	let callback = Url::parse_with_params(&complete, [("oidc_req_id", req_id)])
+		.map_err(|_| err!(error!("Failed to build complete URL")))?;
+
+	sso_redirect_url(base, idp_id, &callback)
+}
+
+fn sso_redirect_url(base: &str, idp_id: &str, callback: &Url) -> Result<Url> {
+	let idp_id_enc = url_encode(idp_id);
+	let mut sso_url =
+		Url::parse(&format!("{base}/_matrix/client/v3/login/sso/redirect/{idp_id_enc}"))
+			.map_err(|_| err!(error!("Failed to build SSO URL")))?;
+
+	sso_url
+		.query_pairs_mut()
+		.append_pair("redirectUrl", callback.as_str());
+
+	Ok(sso_url)
+}
+
+mod_ctor! {}
+mod_dtor! {}

@@ -1,0 +1,31 @@
+# Local build and dev artifacts
+target/
+#tests
+
+# Docker files
+Dockerfile*
+docker/
+!docker/lib/
+!docker/lib/*
+
+# IDE files
+.vscode
+.idea
+*.iml
+
+# Git folder
+.git
+#.gitea
+#.gitlab
+#.github
+
+# Dot files
+.env
+#.gitignore
+
+# Toml files
+#rustfmt.toml
+
+# Documentation
+#*.md
+*.hcl

@@ -1,0 +1,34 @@
+# syntax = docker/dockerfile:1.11-labs
+
+FROM input AS lychee
+ARG rust_toolchain="nightly"
+ARG RUSTUP_HOME
+ARG CARGO_HOME
+ARG lychee_cache_age="7d"
+ARG lychee_mode="color"
+# .lycheecache is hardcoded as path to reg file in the cwd so we execute lychee
+# in cache directory itself. all paths here should be absolute paths
+ARG lychee_args="/usr/src/tuwunel/docs /usr/src/tuwunel/*.md /usr/src/tuwunel/*/README.md"
+ARG sched_policy="--rr"
+ARG sched_prio=1
+
+WORKDIR /usr/src/
+ENV sched_policy=${sched_policy}
+ENV sched_prio=${sched_prio}
+RUN \
+--mount=type=cache,dst=lychee,sharing=locked \
+<<EOF
+    set -eux
+    cd lychee
+    rustup run ${rust_toolchain} sched_wrap.sh \
+        lychee \
+            --verbose \
+            --no-progress \
+            --offline \
+            --include-fragments \
+            --cache \
+            --max-cache-age "${lychee_cache_age}" \
+            --mode "${lychee_mode}" \
+            --exclude-path '/usr/src/tuwunel/development\.md' \
+            ${lychee_args}
+EOF

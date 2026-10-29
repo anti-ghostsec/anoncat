@@ -1,0 +1,25 @@
+[package]
+name = "tuwunel_macros"
+categories.workspace = true
+description.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lib]
+name = "tuwunel_macros"
+path = "mod.rs"
+proc-macro = true
+bench = false
+
+[dependencies]
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+itertools.workspace = true
+
+[lints]
+workspace = true

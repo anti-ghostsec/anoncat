@@ -1,0 +1,102 @@
+use axum::extract::State;
+use futures::TryFutureExt;
+use ruma::{
+	api::{
+		error::{ErrorKind, IncompatibleRoomVersionErrorData},
+		federation::membership::prepare_knock_event,
+	},
+	events::room::member::{MembershipState, RoomMemberEventContent},
+};
+use tuwunel_core::{Err, Error, Result, at, debug_warn};
+use tuwunel_matrix::{pdu::PduBuilder, room_version};
+
+use super::utils::require_known_room;
+use crate::Ruma;
+
+/// # `GET /_matrix/federation/v1/make_knock/{roomId}/{userId}`
+///
+/// Creates a knock template.
+pub(crate) async fn create_knock_event_template_route(
+	State(services): State<crate::State>,
+	body: Ruma<prepare_knock_event::v1::Request>,
+) -> Result<prepare_knock_event::v1::Response> {
+	require_known_room(&services, &body.room_id, body.origin()).await?;
+
+	if body.user_id.server_name() != body.origin() {
+		return Err!(Request(BadJson("Not allowed to knock on behalf of another server/user.")));
+	}
+
+	if let Some(server) = body.room_id.server_name()
+		&& services
+			.config
+			.is_forbidden_remote_server_name(server)
+	{
+		return Err!(Request(Forbidden("Server is banned on this homeserver.")));
+	}
+
+	let room_version_id = services
+		.state
+		.get_room_version(&body.room_id)
+		.await?;
+
+	if !body.ver.contains(&room_version_id) {
+		return Err(Error::BadRequest(
+			ErrorKind::IncompatibleRoomVersion(IncompatibleRoomVersionErrorData::new(
+				room_version_id,
+			)),
+			"Your homeserver does not support the features required to knock on this room.",
+		));
+	}
+
+	let room_version_rules = room_version::rules(&room_version_id)?;
+
+	if !room_version_rules.authorization.knocking {
+		return Err(Error::BadRequest(
+			ErrorKind::IncompatibleRoomVersion(IncompatibleRoomVersionErrorData::new(
+				room_version_id,
+			)),
+			"Room version does not support knocking.",
+		));
+	}
+
+	let state_lock = services.state.mutex.lock(&body.room_id).await;
+
+	if services
+		.state_accessor
+		.get_member(&body.room_id, &body.user_id)
+		.await
+		.is_ok_and(|content| content.membership == MembershipState::Ban)
+	{
+		debug_warn!(
+			user_id = %body.user_id,
+			room_id = %body.room_id,
+			"Banned remote user attempted to knock."
+		);
+
+		return Err!(Request(Forbidden("You cannot knock on a room you are banned from.")));
+	}
+
+	let pdu_json = services
+		.timeline
+		.create_hash_and_sign_event(
+			PduBuilder::state(
+				body.user_id.to_string(),
+				&RoomMemberEventContent::new(MembershipState::Knock),
+			),
+			&body.user_id,
+			&body.room_id,
+			&state_lock,
+		)
+		.map_ok(at!(1))
+		.await?;
+
+	drop(state_lock);
+
+	let event = services
+		.federation
+		.format_pdu_into(pdu_json, Some(&room_version_id))
+		.await;
+
+	// room v3 and above removed the "event_id" field from remote PDU format
+	Ok(prepare_knock_event::v1::Response { room_version: room_version_id, event })
+}
