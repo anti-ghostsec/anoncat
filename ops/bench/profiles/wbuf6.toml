@@ -1,0 +1,2 @@
+# Only the new option: 6 memtables per column instead of 2.
+rocksdb_max_write_buffer_number = 6

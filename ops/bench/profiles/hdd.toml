@@ -1,0 +1,2 @@
+# Only the spinning-disk switch: no compaction readahead, no parallel file opens at start.
+rocksdb_optimize_for_spinning_disks = true

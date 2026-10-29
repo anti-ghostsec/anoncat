@@ -1,0 +1,2 @@
+# Only tuwunel's own in-memory LRU caches (PDUs, auth chains, state keys...): 8x.
+cache_capacity_modifier = 8.0

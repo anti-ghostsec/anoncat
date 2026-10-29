@@ -2365,6 +2365,24 @@ pub struct Config {
 	#[serde(default)]
 	pub rocksdb_optimize_for_spinning_disks: bool,
 
+	/// Maximum number of in-memory write buffers (memtables) per column,
+	/// counting the one being written and those waiting to be flushed.
+	///
+	/// When a column has this many memtables still waiting for a flush,
+	/// RocksDB stops all writes to it until one finishes. At 3 or below there
+	/// is no gradual slowdown first: writes go straight from normal to
+	/// stopped. On spinning disks, where flushes are slow, a burst of writes
+	/// (such as a message in a room with thousands of members, which updates
+	/// every member's notification count) can hit that stop and stall the
+	/// server for seconds. Raising this lets such bursts be absorbed in
+	/// memory. Each memtable is at most its column's write buffer size
+	/// (2-64 MiB), and `db_write_buffer_capacity_mb` still bounds the total by
+	/// flushing early.
+	///
+	/// default: 2
+	#[serde(default = "default_rocksdb_max_write_buffer_number")]
+	pub rocksdb_max_write_buffer_number: i32,
+
 	/// Enables direct-io to increase database performance via unbuffered I/O.
 	///
 	/// For more details about direct I/O and RockDB, see:
@@ -6084,6 +6102,8 @@ fn default_rocksdb_log_level() -> String { "error".to_owned() }
 fn default_rocksdb_log_time_to_roll() -> usize { 0 }
 
 fn default_rocksdb_max_log_files() -> usize { 3 }
+
+fn default_rocksdb_max_write_buffer_number() -> i32 { 2 }
 
 fn default_rocksdb_max_log_file_size() -> usize {
 	// 4 megabytes

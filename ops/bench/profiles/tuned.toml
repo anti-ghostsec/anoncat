@@ -1,0 +1,6 @@
+# Everything together, plus 1 GiB of write buffers (memtables) instead of 112 MiB,
+# so bursts of writes become fewer, larger, sequential flushes to the HDD.
+rocksdb_optimize_for_spinning_disks = true
+db_cache_capacity_mb = 16384.0
+cache_capacity_modifier = 8.0
+db_write_buffer_capacity_mb = 1024.0

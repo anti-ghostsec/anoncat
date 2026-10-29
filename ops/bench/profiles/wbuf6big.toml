@@ -1,0 +1,3 @@
+# 6 memtables per column, and 1 GiB total write buffer instead of 112 MiB.
+rocksdb_max_write_buffer_number = 6
+db_write_buffer_capacity_mb = 1024.0
