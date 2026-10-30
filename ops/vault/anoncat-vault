@@ -1,0 +1,112 @@
+#!/bin/bash
+# anoncat-vault: the passphrase-only encrypted container holding all of
+# anoncat's data (database, media, logs, TLS keys).
+#
+# The data drive itself unlocks automatically with a key stored on this PC,
+# so taking the whole PC would expose it. This container has no stored key:
+# after every boot it stays locked, and anoncat stays stopped, until someone
+# runs `anoncat-vault unlock` and types the passphrase. The key then lives
+# only in kernel memory.
+#
+#   anoncat-vault create [SIZE]   make the container (default 400G), once
+#   anoncat-vault unlock          ask the passphrase, mount, start anoncat
+#   anoncat-vault lock            stop anoncat, unmount, forget the key
+#   anoncat-vault status          show whether it is unlocked and how full
+#
+# Run as root (sudo). The passphrase is read by cryptsetup from the terminal;
+# it is never stored, logged or passed on the command line.
+
+set -euo pipefail
+
+CONTAINER=${ANONCAT_VAULT_FILE:-/Drives/server/vault/anoncat.luks}
+MAPPER=anoncat-vault
+MOUNT=${ANONCAT_VAULT_MOUNT:-/Drives/server/data}
+OWNER=${ANONCAT_VAULT_OWNER:-anoncat}
+SERVICE=${ANONCAT_SERVICE:-anoncat.service}
+MOUNT_OPTS=noatime,nodev,nosuid,noexec
+
+die() { echo "anoncat-vault: $*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "run as root: sudo $0 $*"; }
+is_open() { [[ -e /dev/mapper/$MAPPER ]]; }
+is_mounted() { mountpoint -q "$MOUNT"; }
+have_service() { systemctl cat "$SERVICE" &>/dev/null; }
+
+create() {
+	local size=${1:-400G}
+	[[ -e $CONTAINER ]] && die "$CONTAINER already exists; refusing to overwrite it"
+	is_open && die "/dev/mapper/$MAPPER is already open"
+
+	echo "Creating a $size container at $CONTAINER."
+	echo "Choose a strong passphrase you will not forget: without it the data is gone."
+	install -d -m 0700 "$(dirname "$CONTAINER")"
+	# Allocated up front, so it can't fail later on a full disk.
+	fallocate -l "$size" "$CONTAINER"
+	chmod 0600 "$CONTAINER"
+
+	cryptsetup luksFormat --type luks2 --pbkdf argon2id --iter-time 4000 \
+		--label anoncat-vault --verify-passphrase "$CONTAINER"
+	cryptsetup open --type luks2 "$CONTAINER" "$MAPPER"
+	mkfs.ext4 -q -m 0 -L anoncat-data "/dev/mapper/$MAPPER"
+	mount_it
+	echo "Created and unlocked. anoncat's data goes in $MOUNT."
+}
+
+mount_it() {
+	install -d -m 0700 -o "$OWNER" -g "$OWNER" "$MOUNT"
+	e2fsck -p "/dev/mapper/$MAPPER" >/dev/null || [[ $? -le 1 ]] \
+		|| die "filesystem check found errors; run e2fsck -f /dev/mapper/$MAPPER by hand"
+	mount -o "$MOUNT_OPTS" "/dev/mapper/$MAPPER" "$MOUNT"
+	chown "$OWNER:$OWNER" "$MOUNT"
+	chmod 0700 "$MOUNT"
+}
+
+unlock() {
+	[[ -e $CONTAINER ]] || die "no container at $CONTAINER; run: $0 create"
+	if ! is_open; then
+		# Up to three tries, then cryptsetup gives up.
+		cryptsetup open --type luks2 --tries 3 "$CONTAINER" "$MAPPER"
+	fi
+	is_mounted || mount_it
+	echo "Unlocked: $MOUNT"
+	if have_service; then
+		systemctl start "$SERVICE"
+		echo "Started $SERVICE"
+	fi
+}
+
+lock() {
+	if have_service && systemctl is-active -q "$SERVICE"; then
+		systemctl stop "$SERVICE"
+		echo "Stopped $SERVICE"
+	fi
+	if is_mounted; then
+		umount "$MOUNT" || die "can't unmount $MOUNT; something still uses it (see: fuser -vm $MOUNT)"
+	fi
+	if is_open; then
+		cryptsetup close "$MAPPER"
+	fi
+	echo "Locked."
+}
+
+status() {
+	if is_mounted; then
+		echo "unlocked, mounted at $MOUNT"
+		df -h --output=size,used,avail,pcent "$MOUNT" | tail -1
+	elif is_open; then
+		echo "unlocked but not mounted"
+	elif [[ -e $CONTAINER ]]; then
+		echo "locked"
+	else
+		echo "not created"
+	fi
+}
+
+cmd=${1:-status}
+shift || true
+case $cmd in
+	create) need_root create; create "$@" ;;
+	unlock) need_root unlock; unlock ;;
+	lock) need_root lock; lock ;;
+	status) status ;;
+	*) sed -n '2,20p' "$0"; exit 2 ;;
+esac
