@@ -8,7 +8,7 @@
 # runs `anoncat-vault unlock` and types the passphrase. The key then lives
 # only in kernel memory.
 #
-#   anoncat-vault create [SIZE]   make the container (default 400G), once
+#   anoncat-vault create [SIZE]   make the container (default 800G), once
 #   anoncat-vault unlock          ask the passphrase, mount, start anoncat
 #   anoncat-vault lock            stop anoncat, unmount, forget the key
 #   anoncat-vault status          show whether it is unlocked and how full
@@ -32,7 +32,7 @@ is_mounted() { mountpoint -q "$MOUNT"; }
 have_service() { systemctl cat "$SERVICE" &>/dev/null; }
 
 create() {
-	local size=${1:-400G}
+	local size=${1:-800G}
 	[[ -e $CONTAINER ]] && die "$CONTAINER already exists; refusing to overwrite it"
 	is_open && die "/dev/mapper/$MAPPER is already open"
 
