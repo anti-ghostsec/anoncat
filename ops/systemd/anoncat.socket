@@ -13,4 +13,7 @@ NoDelay=true
 BindToDevice=wg0
 
 [Install]
-WantedBy=sockets.target
+# Bound to wg0, systemd stops this when the tunnel goes away (taking the
+# server with it, so nothing runs outside the VPN); this starts it again when
+# wg0 comes back.
+WantedBy=sockets.target sys-subsystem-net-devices-wg0.device

@@ -139,13 +139,19 @@ def save_state(state):
     os.replace(tmp, STATE_FILE)
 
 
+_applied = None
+
+
 def redirect(port):
-    """Make `inet anoncat` redirect exactly this forwarded port on wg0."""
+    """Make `inet anoncat` redirect exactly this forwarded port on wg0. Built
+    afresh once per start, then only when the port changes or the table is
+    gone."""
+    global _applied
     out = subprocess.run([NFT, "-j", "list", "set", "inet", "anoncat", "forwarded"],
                          capture_output=True, text=True)
     if out.returncode == 0:
         sets = [x["set"] for x in json.loads(out.stdout)["nftables"] if "set" in x]
-        if sets and sets[0].get("elem") == [port]:
+        if sets and sets[0].get("elem") == [port] and _applied == port:
             return
     # Declared first so the delete can't fail, then rebuilt whole: one
     # transaction, so there's never a moment with a half-made table.
@@ -155,11 +161,12 @@ table inet anoncat {{
     set forwarded {{ type inet_service; elements = {{ {port} }} }}
     chain prerouting {{
         type nat hook prerouting priority dstnat; policy accept;
-        iifname "wg0" tcp dport @forwarded redirect to :{LOCAL_PORT}
+        iifname "wg0" tcp dport @forwarded counter redirect to :{LOCAL_PORT}
     }}
 }}
 """
     subprocess.run([NFT, "-f", "-"], input=script, text=True, check=True)
+    _applied = port
     log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}")
 
 

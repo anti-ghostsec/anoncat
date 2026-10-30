@@ -111,7 +111,8 @@ systemctl restart zramswap
 swapon --show
 
 step "Start"
-systemctl enable anoncat.socket anoncat.service anoncat-tls-renew.timer
+# reenable: picks up changed [Install] sections too.
+systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer
 systemctl start anoncat.socket anoncat.service
 systemctl start anoncat-tls-renew.timer
 echo "waiting for anoncat to be ready..."

@@ -84,4 +84,5 @@ UMask=0077
 LimitNOFILE=65536
 
 [Install]
-WantedBy=multi-user.target
+# Back up after the VPN reconnects (see anoncat.socket).
+WantedBy=multi-user.target sys-subsystem-net-devices-wg0.device
