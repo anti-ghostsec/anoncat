@@ -17,6 +17,7 @@
 # it is never stored, logged or passed on the command line.
 
 set -euo pipefail
+PATH=/usr/sbin:/sbin:$PATH
 
 CONTAINER=${ANONCAT_VAULT_FILE:-/Drives/server/vault/anoncat.luks}
 MAPPER=anoncat-vault
@@ -28,6 +29,19 @@ MOUNT_OPTS=noatime,nodev,nosuid,noexec
 die() { echo "anoncat-vault: $*" >&2; exit 1; }
 need_root() { [[ $EUID -eq 0 ]] || die "run as root: sudo $0 $*"; }
 is_open() { [[ -e /dev/mapper/$MAPPER ]]; }
+
+# The loop device backing the container, if attached.
+loop_of() { losetup -j "$CONTAINER" -O NAME -n | head -1; }
+
+# Attaches the container with direct I/O, so its blocks are cached once (by
+# the vault's own filesystem and anoncat) rather than again by the drive
+# underneath, then opens it.
+open_vault() {
+	local loop
+	loop=$(loop_of)
+	[[ -n $loop ]] || loop=$(losetup --find --show --direct-io=on --sector-size 4096 "$CONTAINER")
+	cryptsetup open --type luks2 "$@" "$loop" "$MAPPER" || { losetup -d "$loop"; return 1; }
+}
 is_mounted() { mountpoint -q "$MOUNT"; }
 have_service() { systemctl cat "$SERVICE" &>/dev/null; }
 
@@ -56,7 +70,7 @@ create() {
 		--label anoncat-vault --verify-passphrase "$CONTAINER"
 	trap - EXIT
 
-	cryptsetup open --type luks2 "$CONTAINER" "$MAPPER"
+	open_vault
 	mkfs.ext4 -q -m 0 -L anoncat-data "/dev/mapper/$MAPPER"
 	mount_it
 	echo "Created and unlocked. anoncat's data goes in $MOUNT."
@@ -75,7 +89,7 @@ unlock() {
 	[[ -e $CONTAINER ]] || die "no container at $CONTAINER; run: $0 create"
 	if ! is_open; then
 		# Up to three tries, then cryptsetup gives up.
-		cryptsetup open --type luks2 --tries 3 "$CONTAINER" "$MAPPER"
+		open_vault --tries 3
 	fi
 	is_mounted || mount_it
 	echo "Unlocked: $MOUNT"
@@ -96,6 +110,9 @@ lock() {
 	if is_open; then
 		cryptsetup close "$MAPPER"
 	fi
+	local loop
+	loop=$(loop_of)
+	[[ -z $loop ]] || losetup -d "$loop"
 	echo "Locked."
 }
 
@@ -103,6 +120,9 @@ status() {
 	if is_mounted; then
 		echo "unlocked, mounted at $MOUNT"
 		df -h --output=size,used,avail,pcent "$MOUNT" | tail -1
+		local loop
+		loop=$(loop_of)
+		[[ -z $loop ]] || echo "direct I/O: $(cat "/sys/block/${loop#/dev/}/loop/dio")"
 	elif is_open; then
 		echo "unlocked but not mounted"
 	elif [[ -e $CONTAINER ]]; then
