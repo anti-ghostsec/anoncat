@@ -1,0 +1,3 @@
+# wbuf6 with a 16 GiB database cache: the RAM plan.
+rocksdb_max_write_buffer_number = 6
+db_cache_capacity_mb = 16384.0

@@ -6,6 +6,9 @@
                                      measure cold then warm, save results/<profile>[-tag].json
   bench.py compare <a> <b> [...]     print results side by side
 
+BENCH_SEED=big selects the larger dataset (its own seed, run copy and
+results), sized to outgrow the default caches; the default is "small".
+
 Cold numbers come first, right after start: with RocksDB's direct I/O the
 kernel's page cache doesn't hold the database, so they are read off the
 disk. Warm numbers are the same requests repeated.
@@ -29,18 +32,22 @@ import urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.expanduser(os.environ.get("ANONCAT_BIN", "~/.cache/anoncat-target/release/tuwunel"))
 ROOT = os.environ.get("ANONCAT_BENCH_DIR", "/Drives/server/bench")
-SEED_DB = os.path.join(ROOT, "seed-db")
-SEED_META = os.path.join(ROOT, "seed.json")
-RUN_DB = os.path.join(ROOT, "run-db")
-RESULTS = os.path.join(ROOT, "results")
+SEED = os.environ.get("BENCH_SEED", "small")
+PREFIX = "" if SEED == "small" else f"{SEED}-"
+SEED_DB = os.path.join(ROOT, f"{PREFIX}seed-db")
+SEED_META = os.path.join(ROOT, f"{PREFIX}seed.json")
+RUN_DB = os.path.join(ROOT, f"{PREFIX}run-db")
+RESULTS = os.path.join(ROOT, f"{PREFIX}results")
 HOST, PORT = "127.0.0.1", 8009
 SERVER = "bench.test"
 TOKEN = "bench-only-token"
 
-USERS = 1000
-ROOMS = 50
-ROOM_MEMBERS = 100
-MESSAGES = 50_000
+# users, members of the big room, other rooms, members each, messages, share in the big room
+SIZES = {
+    "small": (1000, 1000, 50, 100, 50_000, 0.2),
+    "big": (10_000, 1000, 500, 100, 600_000, 0.05),
+}
+USERS, BIG_MEMBERS, ROOMS, ROOM_MEMBERS, MESSAGES, BIG_SHARE = SIZES[SEED]
 WORKERS = 16
 
 BASE_CONFIG = f"""[global]
@@ -180,7 +187,8 @@ def seed():
         sys.exit(f"{SEED_DB} exists; delete it to reseed")
     os.makedirs(ROOT, exist_ok=True)
     rng = random.Random(42)
-    proc, _ = start_server(SEED_DB)
+    # Seeding is all writes; avoid the write stops of upstream's 2 memtables.
+    proc, _ = start_server(SEED_DB, "rocksdb_max_write_buffer_number = 6\n")
     try:
         print("seeding:", flush=True)
         users = pmap(register, range(USERS), "users")
@@ -188,23 +196,25 @@ def seed():
 
         big = ok("POST", "/_matrix/client/v3/createRoom",
                  {"preset": "public_chat", "name": "big"}, tokens[0])["room_id"]
-        pmap(lambda tok: ok("POST", f"/_matrix/client/v3/join/{q(big)}", {}, tok), tokens[1:], "big room joins")
+        pmap(lambda tok: ok("POST", f"/_matrix/client/v3/join/{q(big)}", {}, tok), tokens[1:BIG_MEMBERS],
+             "big room joins")
 
         rooms = pmap(lambda i: ok("POST", "/_matrix/client/v3/createRoom",
                                   {"preset": "public_chat", "name": f"room{i}"}, tokens[i])["room_id"],
                      range(ROOMS), "rooms")
-        # User 0 is in every room (the heavy sync account); the last user only
-        # in the big room (the light one). Room i was created by user i.
-        light = USERS - 1
-        members = {r: sorted({0, i, *rng.sample(range(1, light), ROOM_MEMBERS - 2)}) for i, r in enumerate(rooms)}
+        # User 0 is in every room (the heavy sync account); the last member of
+        # the big room only in it (the light one). Room i was created by user i.
+        light = BIG_MEMBERS - 1
+        others = [u for u in range(1, USERS) if u != light]
+        members = {r: sorted({0, i, *rng.sample(others, ROOM_MEMBERS - 2)}) for i, r in enumerate(rooms)}
         joins = [(r, u) for i, r in enumerate(rooms) for u in members[r] if u != i]
         pmap(lambda ru: ok("POST", f"/_matrix/client/v3/join/{q(ru[0])}", {}, tokens[ru[1]]), joins, "room joins")
 
         all_rooms = [big] + rooms
-        room_members = {big: list(range(USERS)), **members}
+        room_members = {big: list(range(BIG_MEMBERS)), **members}
         sends = []
         for n in range(MESSAGES):
-            room = big if n % 5 == 0 else rng.choice(rooms)
+            room = big if rng.random() < BIG_SHARE else rng.choice(rooms)
             sends.append((room, rng.choice(room_members[room]), n))
 
         def send(job):
