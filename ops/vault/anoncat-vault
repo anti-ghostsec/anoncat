@@ -33,18 +33,29 @@ have_service() { systemctl cat "$SERVICE" &>/dev/null; }
 
 create() {
 	local size=${1:-800G}
-	[[ -e $CONTAINER ]] && die "$CONTAINER already exists; refusing to overwrite it"
 	is_open && die "/dev/mapper/$MAPPER is already open"
+	if [[ -e $CONTAINER ]]; then
+		cryptsetup isLuks "$CONTAINER" \
+			&& die "$CONTAINER is already a vault; refusing to overwrite it"
+		# No LUKS header: the leftover of a create that was cancelled.
+		echo "Removing $CONTAINER left by an earlier create that didn't finish."
+		rm -f "$CONTAINER"
+	fi
 
 	echo "Creating a $size container at $CONTAINER."
 	echo "Choose a strong passphrase you will not forget: without it the data is gone."
+	echo "cryptsetup will ask you to confirm by typing YES in capital letters."
 	install -d -m 0700 "$(dirname "$CONTAINER")"
 	# Allocated up front, so it can't fail later on a full disk.
 	fallocate -l "$size" "$CONTAINER"
 	chmod 0600 "$CONTAINER"
 
+	# Until the container is formatted, a failure removes it again.
+	trap 'cryptsetup isLuks "$CONTAINER" 2>/dev/null || rm -f "$CONTAINER"' EXIT
 	cryptsetup luksFormat --type luks2 --pbkdf argon2id --iter-time 4000 \
 		--label anoncat-vault --verify-passphrase "$CONTAINER"
+	trap - EXIT
+
 	cryptsetup open --type luks2 "$CONTAINER" "$MAPPER"
 	mkfs.ext4 -q -m 0 -L anoncat-data "/dev/mapper/$MAPPER"
 	mount_it
