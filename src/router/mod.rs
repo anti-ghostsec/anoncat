@@ -1,5 +1,6 @@
 mod handle;
 mod layers;
+mod panel;
 mod request;
 mod router;
 mod run;

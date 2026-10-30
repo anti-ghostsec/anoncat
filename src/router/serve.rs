@@ -15,7 +15,7 @@ use std::{
 };
 
 use tokio::task::JoinSet;
-use tuwunel_core::{Err, Result, debug_info, error, info};
+use tuwunel_core::{Err, Result, debug_info, err, error, info};
 #[cfg(unix)]
 use tuwunel_core::{itertools::Itertools, utils::sys::is_ipv6_only};
 use tuwunel_service::Services;
@@ -145,6 +145,23 @@ pub(super) async fn serve(services: Arc<Services>, handle: ServerHandle) -> Resu
 		let plain_futures = plain::serve(&app, &handle.handle_ip, listeners)?;
 
 		futures.extend(plain_futures);
+	}
+
+	if let Some(addr) = config.admin_panel_address {
+		if !addr.ip().is_loopback() {
+			return Err!(Config(
+				"admin_panel_address",
+				"The admin panel is plain HTTP and must listen on a loopback address."
+			));
+		}
+
+		let listener = TcpListener::bind(addr)
+			.map_err(|e| err!(Config("admin_panel_address", "Failed to bind {addr}: {e}")))?;
+		listener.set_nonblocking(true)?;
+
+		let panel = super::panel::routes().merge(app.clone());
+		futures.extend(plain::serve(&panel, &handle.handle_ip, once(listener))?);
+		info!("Admin panel at http://{addr}/_anoncat/panel/");
 	}
 
 	for future in futures {

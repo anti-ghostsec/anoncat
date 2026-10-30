@@ -148,7 +148,7 @@ pub struct Config {
 	/// To disable, set this to "" (an empty string).
 	///
 	/// reloadable: yes
-	/// default: "💕"
+	/// default: ""
 	#[serde(default = "default_new_user_displayname_suffix")]
 	pub new_user_displayname_suffix: String,
 
@@ -2410,6 +2410,15 @@ pub struct Config {
 	/// default: true
 	#[serde(default = "true_fn")]
 	pub rocksdb_prewarm: bool,
+
+	/// Where the anoncat admin panel listens, e.g. "127.0.0.1:8450". It is
+	/// plain HTTP and must be a loopback address: open it in a browser on the
+	/// server itself at http://127.0.0.1:8450/_anoncat/panel/ and log in with
+	/// an admin account. The panel is never served on the public listeners.
+	/// Unset disables it.
+	///
+	/// example: "127.0.0.1:8450"
+	pub admin_panel_address: Option<std::net::SocketAddr>,
 
 	/// How often the cleanup runs. Each run applies the `cleanup_*` limits
 	/// below and posts what it deleted to the admin room. Durations take
@@ -6302,7 +6311,7 @@ fn default_url_preview_max_media_size() -> usize {
 
 fn default_url_preview_cache_ttl() -> u64 { 60 * 60 * 24 }
 
-fn default_new_user_displayname_suffix() -> String { "💕".to_owned() }
+fn default_new_user_displayname_suffix() -> String { String::new() }
 
 fn default_argon2_m_cost() -> u32 { 19 * 1024 }
 

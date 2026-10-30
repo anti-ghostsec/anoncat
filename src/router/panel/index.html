@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>anoncat admin</title>
+<link rel="stylesheet" href="panel.css">
+<script src="panel.js" defer></script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+	<form id="login-form" class="card login-card">
+		<h1>anoncat</h1>
+		<p class="muted">Sign in with a server admin account.</p>
+		<label>Username <input name="user" autocomplete="username" required></label>
+		<label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+		<button type="submit">Sign in</button>
+		<p id="login-error" class="error" role="alert"></p>
+	</form>
+</div>
+
+<div id="app" class="app" hidden>
+	<nav class="side">
+		<div class="brand">anoncat <span id="server-name" class="muted"></span></div>
+		<a href="#/dashboard" data-page="dashboard">Dashboard</a>
+		<a href="#/users" data-page="users">Users</a>
+		<a href="#/tokens" data-page="tokens">Invites</a>
+		<a href="#/rooms" data-page="rooms">Rooms</a>
+		<a href="#/media" data-page="media">Media</a>
+		<a href="#/federation" data-page="federation">Federation</a>
+		<a href="#/console" data-page="console">Console</a>
+		<div class="grow"></div>
+		<div class="muted small" id="whoami"></div>
+		<button id="logout" class="ghost">Sign out</button>
+	</nav>
+	<main id="main"></main>
+</div>
+
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="dialog"><form method="dialog" id="dialog-body"></form></dialog>
+</body>
+</html>

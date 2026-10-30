@@ -50,7 +50,7 @@
 #
 # reloadable: yes
 #
-#new_user_displayname_suffix = "💕"
+#new_user_displayname_suffix = ""
 
 # The default address (IPv4 or IPv6) tuwunel will listen on.
 #
@@ -2013,6 +2013,16 @@
 # the database for this to cover it.
 #
 #rocksdb_prewarm = true
+
+# Where the anoncat admin panel listens, e.g. "127.0.0.1:8450". It is
+# plain HTTP and must be a loopback address: open it in a browser on the
+# server itself at http://127.0.0.1:8450/_anoncat/panel/ and log in with
+# an admin account. The panel is never served on the public listeners.
+# Unset disables it.
+#
+# example: "127.0.0.1:8450"
+#
+#admin_panel_address =
 
 # How often the cleanup runs. Each run applies the `cleanup_*` limits
 # below and posts what it deleted to the admin room. Durations take

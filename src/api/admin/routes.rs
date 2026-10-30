@@ -21,6 +21,8 @@ pub fn build(server: &Server) -> Router<State> {
 	let router = register_synapse_admin_misc_routes(router);
 
 	router
+		.route("/_anoncat/admin/v1/command", post(admin::anoncat::anoncat_command_route))
+		.route("/_anoncat/admin/v1/status", get(admin::anoncat::anoncat_status_route))
 		.ruma_route(&admin::is_user_suspended_route)
 		.ruma_route(&admin::suspend_user_route)
 		.ruma_route(&admin::is_user_locked_route)

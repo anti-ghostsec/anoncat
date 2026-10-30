@@ -1,3 +1,4 @@
+pub(crate) mod anoncat;
 mod get_nonce;
 mod is_user_locked;
 mod is_user_suspended;
