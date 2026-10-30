@@ -445,6 +445,18 @@ pub struct Config {
 	#[serde(default = "default_stateinfo_cache_capacity")]
 	pub stateinfo_cache_capacity: u32,
 
+	/// Maximum number of users whose parsed push rules are kept in memory.
+	///
+	/// Every message is matched against the push rules of every local member
+	/// of its room, so without this a message in a room of 1,000 local users
+	/// reads and parses 1,000 rulesets. Like `stateinfo_cache_capacity`, this
+	/// is an in-process cache sized in entries; a default ruleset is a few
+	/// KiB. `cache_capacity_modifier` applies.
+	///
+	/// default: varies by system
+	#[serde(default = "default_pushrules_cache_capacity")]
+	pub pushrules_cache_capacity: u32,
+
 	/// Minimum time-to-live in seconds for room summary entries in the spaces
 	/// cache.
 	///
@@ -5951,6 +5963,8 @@ fn default_resolver_cache_capacity() -> u32 {
 fn default_mediaid_lazycontent_cache_capacity() -> u32 { 128 }
 
 fn default_stateinfo_cache_capacity() -> u32 { parallelism_scaled_u32(100) }
+
+fn default_pushrules_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
 
 fn default_spacehierarchy_cache_ttl_min() -> u64 { 60 * 60 * 3 }
 

@@ -289,6 +289,16 @@
 #
 #stateinfo_cache_capacity = varies by system
 
+# Maximum number of users whose parsed push rules are kept in memory.
+#
+# Every message is matched against the push rules of every local member
+# of its room, so without this a message in a room of 1,000 local users
+# reads and parses 1,000 rulesets. Like `stateinfo_cache_capacity`, this
+# is an in-process cache sized in entries; a default ruleset is a few
+# KiB. `cache_capacity_modifier` applies.
+#
+#pushrules_cache_capacity = varies by system
+
 # Minimum time-to-live in seconds for room summary entries in the spaces
 # cache.
 #

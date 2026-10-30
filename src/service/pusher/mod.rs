@@ -10,10 +10,13 @@ mod tests;
 
 use std::{
 	collections::BTreeMap,
-	sync::{Arc, LazyLock},
+	fmt::Write,
+	sync::{Arc, LazyLock, Mutex},
 };
 
+use async_trait::async_trait;
 use futures::{Stream, StreamExt, TryFutureExt, future::join};
+use lru_cache::LruCache;
 use ruma::{
 	DeviceId, OwnedDeviceId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId,
 	api::client::push::{Pusher, PusherKind, set_pusher::v3::PusherAction},
@@ -32,6 +35,7 @@ use tuwunel_core::{
 	utils::{
 		MutexMap,
 		future::TryExtExt,
+		math::usize_from_f64,
 		result::ErrLog,
 		stream::{BroadbandExt, IterStream, ReadyExt, TryIgnore, WidebandExt},
 	},
@@ -106,6 +110,16 @@ pub struct Service {
 	db: Data,
 	suppressed: suppressed::SuppressedQueue,
 	sent_badges: SentBadges,
+	rulesets: Mutex<Rulesets>,
+}
+
+/// Parsed push rules by user.
+///
+/// `generation` moves on every invalidation, so a ruleset read from the
+/// database before a change can't be stored after it.
+struct Rulesets {
+	cache: LruCache<OwnedUserId, Arc<Ruleset>>,
+	generation: u64,
 }
 
 struct Data {
@@ -118,8 +132,13 @@ struct Data {
 	roomuserid_lastnotificationread: Arc<Map>,
 }
 
+#[async_trait]
 impl crate::Service for Service {
 	fn build(args: &crate::Args<'_>) -> Result<Arc<Self>> {
+		let config = &args.server.config;
+		let rulesets_capacity =
+			f64::from(config.pushrules_cache_capacity) * config.cache_capacity_modifier;
+
 		Ok(Arc::new(Self {
 			services: args.services.clone(),
 			notification_increment_mutex: MutexMap::new(),
@@ -136,7 +155,25 @@ impl crate::Service for Service {
 			},
 			suppressed: suppressed::SuppressedQueue::default(),
 			sent_badges: SentBadges::default(),
+			rulesets: Rulesets {
+				cache: LruCache::new(usize_from_f64(rulesets_capacity)?),
+				generation: 0,
+			}
+			.into(),
 		}))
+	}
+
+	async fn memory_usage(&self, out: &mut (dyn Write + Send)) -> Result {
+		let len = self.rulesets.lock().expect("locked").cache.len();
+		writeln!(out, "- rulesets: {len} users")?;
+
+		Ok(())
+	}
+
+	async fn clear_cache(&self) {
+		let mut rulesets = self.rulesets.lock().expect("locked");
+		rulesets.cache.clear();
+		rulesets.generation = rulesets.generation.wrapping_add(1);
 	}
 
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
@@ -303,16 +340,45 @@ pub fn get_pushkeys<'a>(&'a self, sender: &'a UserId) -> impl Stream<Item = &str
 
 /// The push ruleset a user's notifications are evaluated against.
 ///
-/// A user without stored rules gets the server default ruleset.
+/// A user without stored rules gets the server default ruleset. Parsed
+/// rulesets are cached until the user's rules change.
 #[implement(Service)]
 #[tracing::instrument(skip(self), level = "debug")]
-pub async fn ruleset(&self, user_id: &UserId) -> Ruleset {
-	self.services
+pub async fn ruleset(&self, user_id: &UserId) -> Arc<Ruleset> {
+	let generation = {
+		let mut rulesets = self.rulesets.lock().expect("locked");
+		if let Some(ruleset) = rulesets.cache.get_mut(user_id) {
+			return ruleset.clone();
+		}
+
+		rulesets.generation
+	};
+
+	let ruleset: Arc<Ruleset> = self
+		.services
 		.account_data
 		.get_global(user_id, GlobalAccountDataEventType::PushRules)
 		.await
 		.log_err(Level::TRACE)
 		.map_or_else(|_| Ruleset::server_default(user_id), |ev: PushRulesEvent| ev.content.global)
+		.into();
+
+	let mut rulesets = self.rulesets.lock().expect("locked");
+	if rulesets.generation == generation {
+		rulesets
+			.cache
+			.insert(user_id.to_owned(), ruleset.clone());
+	}
+
+	ruleset
+}
+
+/// Drops a user's cached push rules. Called after they change.
+#[implement(Service)]
+pub fn invalidate_ruleset(&self, user_id: &UserId) {
+	let mut rulesets = self.rulesets.lock().expect("locked");
+	rulesets.cache.remove(user_id);
+	rulesets.generation = rulesets.generation.wrapping_add(1);
 }
 
 #[implement(Service)]

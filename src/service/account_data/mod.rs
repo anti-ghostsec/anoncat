@@ -142,6 +142,12 @@ pub async fn update(
 
 	txn.execute();
 
+	if room_id.is_none()
+		&& event_type.to_string() == GlobalAccountDataEventType::PushRules.to_string()
+	{
+		self.services.pusher.invalidate_ruleset(user_id);
+	}
+
 	Ok(())
 }
 
