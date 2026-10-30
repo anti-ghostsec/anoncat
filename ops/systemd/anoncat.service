@@ -7,6 +7,7 @@
 [Unit]
 Description=anoncat Matrix homeserver
 After=network-online.target ferro-drives.service anoncat.socket
+Wants=anoncat-netd.service
 Wants=network-online.target
 Requires=anoncat.socket
 RequiresMountsFor=/Drives/server/data
@@ -43,6 +44,11 @@ TimeoutStopSec=2min
 # This PC loses power when load spreads past ~5 cores.
 CPUAffinity=0-3
 CPUQuota=400%
+# There's no disk swap (it would hold decrypted data unencrypted). Over
+# MemoryHigh the kernel reclaims the server's caches and slows it rather than
+# letting the PC run out; MemoryMax is the hard stop.
+MemoryHigh=18G
+MemoryMax=22G
 
 # Hardening: nothing outside the vault is writable.
 NoNewPrivileges=yes

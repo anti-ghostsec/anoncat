@@ -1,0 +1,129 @@
+#!/bin/bash
+# anoncat-install: put anoncat live on this machine. Run as root, with the
+# vault unlocked and the VPN (wg0) up:
+#
+#   sudo ops/install/anoncat-install /path/to/release/tuwunel
+#
+# Safe to run again: each step checks before it changes anything, and
+# nothing that already exists in the vault (config, keys, certificates,
+# database) is overwritten. Later binary updates use anoncat-update instead.
+set -euo pipefail
+
+OPS=$(cd "$(dirname "$0")/.." && pwd)
+DATA=/Drives/server/data
+OLD_TLS=/Drives/server/tls
+OLD_KEY=/home/nully/.config/anoncat/dynu-key
+USER_=anoncat
+BIN=/usr/local/bin/anoncat
+LIB=/usr/local/lib/anoncat
+SBIN=/usr/local/sbin
+UNITS=(anoncat.socket anoncat.service anoncat-netd.service anoncat-tls-renew.service anoncat-tls-renew.timer)
+INPUT_RULE='iifname "wg0" tcp dport 8448 accept'
+
+die() { echo "anoncat-install: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ $# -eq 1 && -f $1 ]] || die "usage: $0 /path/to/release/tuwunel"
+mountpoint -q "$DATA" || die "$DATA isn't mounted; run: anoncat-vault unlock"
+ip link show wg0 &>/dev/null || die "wg0 is down; bring the VPN up first"
+id "$USER_" &>/dev/null || die "no $USER_ user"
+
+step "Binary"
+staged=$(mktemp "$BIN.staged.XXXXXX")
+trap 'rm -f "$staged"' EXIT
+cp "$1" "$staged"
+chown root:root "$staged"
+chmod 0755 "$staged"
+version=$(runuser -u "$USER_" -- "$staged" --version 2>/dev/null | head -1)
+[[ -n $version ]] || die "$1 doesn't run"
+if cmp -s "$staged" "$BIN"; then
+	echo "already installed: $version"
+else
+	mv -f "$staged" "$BIN"
+	echo "installed $version"
+fi
+
+step "Tools"
+install -d -m 0755 "$LIB"
+install -m 0755 "$OPS/anoncat-netd.py" "$OPS/acme-dynu-hook.py" "$LIB/"
+install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$SBIN/"
+echo "$LIB: anoncat-netd.py, acme-dynu-hook.py; $SBIN: anoncat-vault, anoncat-update"
+
+step "System config"
+install -d -m 0755 /etc/anoncat
+install -m 0644 "$OPS/systemd/resolv.conf" /etc/anoncat/resolv.conf
+install -m 0644 "$OPS/systemd/journald@anoncat.conf" /etc/systemd/journald@anoncat.conf
+for unit in "${UNITS[@]}"; do
+	install -m 0644 "$OPS/systemd/$unit" /etc/systemd/system/
+done
+systemctl daemon-reload
+echo "DNS via Proton for anoncat only, RAM-only logs, ${#UNITS[@]} units"
+
+step "Vault contents"
+install -d -m 0700 -o "$USER_" -g "$USER_" "$DATA/db" "$DATA/secrets" "$DATA/netd" "$DATA/tls"
+if [[ ! -e $DATA/tls/certificates ]]; then
+	[[ -d $OLD_TLS/certificates ]] || die "no certificate in $OLD_TLS to move into the vault"
+	cp -a "$OLD_TLS/." "$DATA/tls/"
+	echo "certificate copied into the vault"
+fi
+if [[ ! -e $DATA/secrets/dynu-key ]]; then
+	[[ -f $OLD_KEY ]] || die "no Dynu key at $OLD_KEY"
+	install -m 0600 "$OLD_KEY" "$DATA/secrets/dynu-key"
+	echo "Dynu key copied into the vault"
+fi
+if [[ ! -e $DATA/anoncat.toml ]]; then
+	token=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 32)
+	sed "s/@REGISTRATION_TOKEN@/$token/" "$OPS/config/anoncat.toml" > "$DATA/anoncat.toml"
+	chmod 0600 "$DATA/anoncat.toml"
+	echo "config written; registration token: $token"
+else
+	echo "config already there; left as it is"
+fi
+chown -R "$USER_:$USER_" "$DATA"
+
+step "Firewall"
+# Persisted in FerroOS's file and added live; the file isn't reloaded, since
+# its `flush ruleset` would also drop wg-quick's rules.
+if ! grep -qF "$INPUT_RULE" /etc/nftables.conf; then
+	cp -p /etc/nftables.conf "/etc/nftables.conf.before-anoncat"
+	sed -i "s|^\(\s*\)iif \"lo\" accept$|&\n\1# anoncat: the forwarded port, redirected to 8448 by anoncat-netd\n\1$INPUT_RULE|" /etc/nftables.conf
+	grep -qF "$INPUT_RULE" /etc/nftables.conf || die "couldn't add the input rule to /etc/nftables.conf"
+	nft -c -f /etc/nftables.conf || die "/etc/nftables.conf no longer parses; the original is /etc/nftables.conf.before-anoncat"
+	echo "added to /etc/nftables.conf (backup: /etc/nftables.conf.before-anoncat)"
+fi
+if ! nft list chain inet filter input | grep -qF "$INPUT_RULE"; then
+	nft add rule inet filter input "$INPUT_RULE"
+	echo "added to the running firewall"
+fi
+
+step "Memory: zram swap (in RAM, nothing written to disk)"
+if ! command -v zramswap &>/dev/null; then
+	apt-get install -y zram-tools
+fi
+cat > /etc/default/zramswap <<'ZRAM'
+# Compressed swap in RAM: nothing ever reaches a disk.
+ALGO=zstd
+PERCENT=25
+PRIORITY=100
+ZRAM
+systemctl restart zramswap
+swapon --show
+
+step "Start"
+systemctl enable anoncat.socket anoncat.service anoncat-tls-renew.timer
+systemctl start anoncat.socket anoncat.service
+systemctl start anoncat-tls-renew.timer
+echo "waiting for anoncat to be ready..."
+for _ in $(seq 120); do
+	[[ $(systemctl show -P ActiveState anoncat.service) == active ]] && break
+	[[ $(systemctl show -P ActiveState anoncat.service) == failed ]] && break
+	sleep 1
+done
+systemctl --no-pager status anoncat.service anoncat-netd.service | grep -E "●|Active:" || true
+echo
+echo "Logs:   journalctl --namespace=anoncat -f"
+echo "Panel:  http://127.0.0.1:8450/_anoncat/panel/"
+echo "Next:   register your account first (it becomes the admin), with the token above."
+echo "        Once everything works, delete the copies outside the vault:"
+echo "        $OLD_TLS and $OLD_KEY"

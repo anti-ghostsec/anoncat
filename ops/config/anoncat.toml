@@ -1,0 +1,58 @@
+# anoncat's configuration. Lives inside the vault at
+# /Drives/server/data/anoncat.toml (the installer puts it there and fills in
+# the registration token). Everything not set here keeps the default from
+# tuwunel-example.toml.
+
+[global]
+server_name = "anoncat.gleeze.com"
+database_path = "/Drives/server/data/db"
+
+# The public port is the systemd socket (anoncat.socket, 8448 bound to wg0,
+# fed by the forwarded port). This loopback listener is for local tools and
+# `anoncat --health-check`.
+address = ["127.0.0.1"]
+port = 8449
+
+# Admin panel, loopback only: http://127.0.0.1:8450/_anoncat/panel/
+admin_panel_address = "127.0.0.1:8450"
+
+# No proxy in front, so the client address is the connection's own; headers
+# can't fake it. Only used by in-memory rate limits.
+ip_source = "connect_info"
+
+log = "warn"
+
+# --- registration --------------------------------------------------------------
+# Accounts need a token: this one (from the installer) or invite tokens made in
+# the panel. The first account registered becomes the server admin.
+allow_registration = true
+registration_token = "@REGISTRATION_TOKEN@"
+
+# --- privacy -------------------------------------------------------------------
+# No notary: keys are fetched from each server itself, so matrix.org isn't told
+# which servers this one talks to.
+trusted_servers = []
+query_trusted_key_servers_first = false
+
+# Presence broadcasts when people are online; off, in and out.
+allow_local_presence = false
+allow_incoming_presence = false
+allow_outgoing_presence = false
+
+# Profiles only for signed-in users.
+require_auth_for_profile_requests = true
+
+# --- speed: the RAM-first profile (bench "ramfull") -----------------------------
+db_cache_capacity_mb = 16384.0
+cache_capacity_modifier = 8.0
+rocksdb_max_write_buffer_number = 6
+rocksdb_cache_compactions = true
+
+# --- cleanup ---------------------------------------------------------------------
+cleanup_remote_media_max_age = "30d"
+cleanup_disk_percent = 90
+cleanup_min_free_ram = "1 GiB"
+
+[global.tls]
+certs = "/Drives/server/data/tls/certificates/anoncat.gleeze.com.crt"
+key = "/Drives/server/data/tls/certificates/anoncat.gleeze.com.key"

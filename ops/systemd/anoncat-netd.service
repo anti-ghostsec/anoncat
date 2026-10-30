@@ -1,0 +1,46 @@
+# Keeps anoncat reachable through Proton's port forward: renews the NAT-PMP
+# lease, points Dynu DNS (A + SRV) at the exit address, and keeps the nftables
+# redirect from the forwarded port on wg0 to anoncat's socket. Runs while
+# anoncat runs; its key and state live in the vault.
+[Unit]
+Description=anoncat VPN port forward and DNS
+BindsTo=anoncat.service
+After=anoncat.service
+RequiresMountsFor=/Drives/server/data
+
+[Service]
+User=anoncat
+Group=anoncat
+ExecStart=/usr/bin/python3 -I /usr/local/lib/anoncat/anoncat-netd.py
+Environment=ANONCAT_REDIRECT=1
+Environment=ANONCAT_DYNU_KEY_FILE=/Drives/server/data/secrets/dynu-key
+Environment=ANONCAT_STATE_FILE=/Drives/server/data/netd/address.json
+Restart=always
+RestartSec=10
+
+# Only for nft; nothing else.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+# The VPN or nothing: Dynu is never contacted from the home IP.
+RestrictNetworkInterfaces=lo wg0
+BindReadOnlyPaths=/etc/anoncat/resolv.conf:/etc/resolv.conf
+LogNamespace=anoncat
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/Drives/server/data/netd
+ProtectHome=yes
+PrivateTmp=disconnected
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+UMask=0077
+CPUAffinity=0-3
+
+[Install]
+WantedBy=anoncat.service

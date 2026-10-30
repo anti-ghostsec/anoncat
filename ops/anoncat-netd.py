@@ -7,7 +7,10 @@ Every RENEW seconds it:
        A    anoncat.gleeze.com               -> Proton exit IP
        AAAA anoncat.gleeze.com               -> off (NAT-PMP forwards IPv4 only)
        SRV  _matrix-fed._tcp / _matrix._tcp  -> anoncat.gleeze.com:<port>
-  3. writes the current address to STATE_FILE for other tools.
+  3. writes the current address to STATE_FILE for other tools,
+  4. with ANONCAT_REDIRECT=1 (as the service runs it), keeps the nftables
+     table `inet anoncat` redirecting the forwarded port on wg0 to anoncat's
+     socket, re-creating it if something flushed the ruleset.
 
 DNS only ever receives the address Proton's gateway reports, never one
 looked up from the outside, so the home IP can't end up in DNS even if the
@@ -25,6 +28,7 @@ import json
 import os
 import socket
 import struct
+import subprocess
 import sys
 import time
 import urllib.request
@@ -39,6 +43,9 @@ TTL = 60
 SRV_NAMES = ("_matrix-fed._tcp", "_matrix._tcp")
 RENEW = 45
 LEASE = 60
+NFT = "/usr/sbin/nft"
+LOCAL_PORT = int(os.environ.get("ANONCAT_LOCAL_PORT", "8448"))
+REDIRECT = os.environ.get("ANONCAT_REDIRECT") == "1"
 
 
 def log(msg):
@@ -132,8 +139,34 @@ def save_state(state):
     os.replace(tmp, STATE_FILE)
 
 
+def redirect(port):
+    """Make `inet anoncat` redirect exactly this forwarded port on wg0."""
+    out = subprocess.run([NFT, "-j", "list", "set", "inet", "anoncat", "forwarded"],
+                         capture_output=True, text=True)
+    if out.returncode == 0:
+        sets = [x["set"] for x in json.loads(out.stdout)["nftables"] if "set" in x]
+        if sets and sets[0].get("elem") == [port]:
+            return
+    # Declared first so the delete can't fail, then rebuilt whole: one
+    # transaction, so there's never a moment with a half-made table.
+    script = f"""table inet anoncat
+delete table inet anoncat
+table inet anoncat {{
+    set forwarded {{ type inet_service; elements = {{ {port} }} }}
+    chain prerouting {{
+        type nat hook prerouting priority dstnat; policy accept;
+        iifname "wg0" tcp dport @forwarded redirect to :{LOCAL_PORT}
+    }}
+}}
+"""
+    subprocess.run([NFT, "-f", "-"], input=script, text=True, check=True)
+    log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}")
+
+
 def step(dry_run=False):
     ip, port = forward()
+    if REDIRECT and not dry_run:
+        redirect(port)
     state = load_state()
     if state.get("ip") == ip and state.get("port") == port:
         return

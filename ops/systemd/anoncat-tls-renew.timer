@@ -1,0 +1,10 @@
+[Unit]
+Description=Check anoncat's TLS certificate daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
