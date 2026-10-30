@@ -115,6 +115,8 @@ step "Start"
 systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer
 systemctl start anoncat.socket anoncat.service
 systemctl start anoncat-tls-renew.timer
+# netd is a script: a running copy keeps the old code until restarted.
+systemctl try-restart anoncat-netd.service
 echo "waiting for anoncat to be ready..."
 for _ in $(seq 120); do
 	[[ $(systemctl show -P ActiveState anoncat.service) == active ]] && break

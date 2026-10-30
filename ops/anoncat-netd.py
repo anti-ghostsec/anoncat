@@ -9,8 +9,10 @@ Every RENEW seconds it:
        SRV  _matrix-fed._tcp / _matrix._tcp  -> anoncat.gleeze.com:<port>
   3. writes the current address to STATE_FILE for other tools,
   4. with ANONCAT_REDIRECT=1 (as the service runs it), keeps the nftables
-     table `inet anoncat` redirecting the forwarded port on wg0 to anoncat's
-     socket, re-creating it if something flushed the ruleset.
+     table `inet anoncat` redirecting the forwarded connections on wg0 to
+     anoncat's socket, re-creating it if something flushed the ruleset.
+     Proton delivers them to the mapping's internal port (1), not to the
+     public port that DNS advertises.
 
 DNS only ever receives the address Proton's gateway reports, never one
 looked up from the outside, so the home IP can't end up in DNS even if the
@@ -71,19 +73,25 @@ def natpmp(payload, size):
 
 
 def forward():
-    """Return (exit_ip, port) from Proton, renewing the TCP and UDP mappings."""
+    """Return (exit_ip, public_port, local_port) from Proton, renewing the TCP
+    and UDP mappings. Connections to the public port arrive through wg0 on
+    the local port (the mapping's internal port, 1 by Proton's convention),
+    not on the public port."""
     ip = socket.inet_ntoa(natpmp(b"\x00\x00", 12)[8:12])
     if not ipaddress.ip_address(ip).is_global:
         raise RuntimeError(f"gateway reported a non-public exit address {ip}")
-    ports = set()
+    ports, local = set(), set()
     # Proton's convention: internal port 1, requested public port 0. Renewing
     # with the same request keeps the same port for as long as the tunnel lives.
     for op in (2, 1):  # TCP, UDP
         data = natpmp(struct.pack("!BBHHHI", 0, op, 0, 1, 0, LEASE), 16)
         ports.add(struct.unpack("!H", data[10:12])[0])
+        local.add(struct.unpack("!H", data[8:10])[0])
     if len(ports) != 1:
         raise RuntimeError(f"TCP and UDP got different ports: {sorted(ports)}")
-    return ip, ports.pop()
+    if len(local) != 1:
+        raise RuntimeError(f"TCP and UDP got different local ports: {sorted(local)}")
+    return ip, ports.pop(), local.pop()
 
 
 def dynu(method, path, body=None):
@@ -143,7 +151,7 @@ _applied = None
 
 
 def redirect(port):
-    """Make `inet anoncat` redirect exactly this forwarded port on wg0. Built
+    """Make `inet anoncat` redirect exactly this local port on wg0. Built
     afresh once per start, then only when the port changes or the table is
     gone."""
     global _applied
@@ -171,9 +179,9 @@ table inet anoncat {{
 
 
 def step(dry_run=False):
-    ip, port = forward()
+    ip, port, local = forward()
     if REDIRECT and not dry_run:
-        redirect(port)
+        redirect(local)
     state = load_state()
     if state.get("ip") == ip and state.get("port") == port:
         return
