@@ -1,0 +1,5 @@
+# The full RAM plan: 16 GiB cache, per-column caches x8, compaction output cached.
+rocksdb_max_write_buffer_number = 6
+db_cache_capacity_mb = 16384.0
+cache_capacity_modifier = 8.0
+rocksdb_cache_compactions = true

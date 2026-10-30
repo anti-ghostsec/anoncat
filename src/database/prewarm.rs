@@ -76,6 +76,13 @@ fn prewarm(maps: &[Arc<Map>]) -> Result {
 		}
 		it.status().map_err(map_err)?;
 
+		// Blocks are cached uncompressed, so a column can fill its cache even
+		// though its files fit; the rest of it is read from disk on demand.
+		let after = engine.property_integer(&map.cf(), CACHE_USAGE)?;
+		if after >= capacity.saturating_sub(capacity / 20) {
+			info!(column = map.name(), size, capacity, "Prewarm filled this column's cache");
+		}
+
 		columns = columns.saturating_add(1);
 		bytes = bytes.saturating_add(size);
 	}

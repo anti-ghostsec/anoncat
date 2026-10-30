@@ -31,7 +31,7 @@ fn descriptor_cf_options(
 ) -> Result<Options> {
 	set_compression(&mut desc, config);
 	set_preview_retention(&mut desc, config.url_preview_cache_ttl);
-	set_table_options(&mut opts, &desc, cache)?;
+	set_table_options(&mut opts, &desc, config, cache)?;
 
 	opts.set_min_write_buffer_number(1);
 	opts.set_max_write_buffer_number(config.rocksdb_max_write_buffer_number.max(2));
@@ -94,7 +94,12 @@ fn descriptor_cf_options(
 	Ok(opts)
 }
 
-fn set_table_options(opts: &mut Options, desc: &Descriptor, cache: Option<&Cache>) -> Result {
+fn set_table_options(
+	opts: &mut Options,
+	desc: &Descriptor,
+	config: &Config,
+	cache: Option<&Cache>,
+) -> Result {
 	let mut table = table_options(desc, cache.is_some());
 
 	if let Some(cache) = cache {
@@ -103,7 +108,13 @@ fn set_table_options(opts: &mut Options, desc: &Descriptor, cache: Option<&Cache
 		table.disable_cache();
 	}
 
-	let prepopulate = if desc.write_to_cache { "kFlushOnly" } else { "kDisable" };
+	let prepopulate = if config.rocksdb_cache_compactions && cache.is_some() {
+		"kFlushAndCompaction"
+	} else if desc.write_to_cache {
+		"kFlushOnly"
+	} else {
+		"kDisable"
+	};
 
 	let string = format!(
 		"{{block_based_table_factory={{num_file_reads_for_auto_readahead={0};\

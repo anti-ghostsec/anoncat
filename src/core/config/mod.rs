@@ -2410,6 +2410,22 @@ pub struct Config {
 	#[serde(default = "true_fn")]
 	pub rocksdb_prewarm: bool,
 
+	/// Put newly written database files into the block cache as they are
+	/// written, by compaction as well as by flushes.
+	///
+	/// Compaction constantly rewrites the database into new files, and with
+	/// direct IO nothing it writes is cached: data that was in RAM is read
+	/// back from the disk the next time it is used, one seek at a time on a
+	/// spinning disk. This includes everything `rocksdb_prewarm` loaded, as
+	/// soon as compaction rewrites it. Turn this on when
+	/// `db_cache_capacity_mb` (and `cache_capacity_modifier` for the
+	/// per-column caches) can hold most or all of the database; when only a
+	/// fraction fits, the new files would push hot data out of the cache.
+	///
+	/// default: false
+	#[serde(default)]
+	pub rocksdb_cache_compactions: bool,
+
 	/// Enables direct-io to increase database performance via unbuffered I/O.
 	///
 	/// For more details about direct I/O and RockDB, see:
