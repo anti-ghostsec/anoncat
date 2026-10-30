@@ -366,8 +366,11 @@ fn systemd_listeners() -> Result<(Vec<TcpListener>, Vec<UnixListener>)> {
 	let mut tcp = vec![];
 	let mut unix = vec![];
 
-	for fd in sd_notify::listen_fds()? {
+	for (fd, name) in sd_notify::listen_fds_with_names()? {
 		debug_assert!(fd >= 3, "fdno probably not a listener socket");
+
+		// Outlives this listener, so a restart can hand the socket on.
+		tuwunel_core::utils::sys::handover::keep(fd, &name)?;
 
 		let family = get_socket_family(fd)?;
 

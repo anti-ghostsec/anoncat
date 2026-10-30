@@ -1,0 +1,80 @@
+#!/bin/bash
+# anoncat-update: put a new anoncat binary live without stopping the service.
+#
+#   anoncat-update NEW_BINARY    install it and restart in place
+#   anoncat-update --rollback    go back to the binary before the last update
+#
+# The running server execs the new binary under the same PID while systemd's
+# socket stays open, so clients wait a few seconds instead of being refused.
+# If it isn't ready again within the timeout, the previous binary goes back.
+# Run as root.
+set -euo pipefail
+
+BIN=/usr/local/bin/anoncat
+PREV=$BIN.prev
+SERVICE=anoncat.service
+TIMEOUT=600
+
+die() { echo "anoncat-update: $*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+
+state() { systemctl show -P ActiveState "$SERVICE"; }
+mainpid() { systemctl show -P MainPID "$SERVICE"; }
+
+# A new file under the old name: the running process keeps its own copy open,
+# and the restart opens the new one.
+install_bin() {
+	install -m 0755 -o root -g root "$1" "$BIN.new"
+	mv -f "$BIN.new" "$BIN"
+}
+
+restart_in_place() {
+	local pid
+	pid=$(mainpid)
+	[[ $pid != 0 && $(state) == active ]] || die "$SERVICE isn't running"
+	local t=$SECONDS
+	# Returns once the new image reports ready (Type=notify-reload).
+	if timeout "$TIMEOUT" systemctl reload "$SERVICE" &&
+		[[ $(mainpid) == "$pid" && $(state) == active ]]; then
+		echo "Live on $("$BIN" --version 2>/dev/null | head -1) after $((SECONDS - t))s."
+		return 0
+	fi
+	return 1
+}
+
+rollback() {
+	[[ -x $PREV ]] || die "no previous binary at $PREV"
+	echo "Going back to the previous binary."
+	install_bin "$PREV"
+	if [[ $(state) == active ]] && restart_in_place; then
+		return 0
+	fi
+	systemctl restart "$SERVICE"
+	echo "Restarted $SERVICE on the previous binary."
+}
+
+case ${1:-} in
+--rollback)
+	rollback
+	;;
+""|-h|--help)
+	sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+	;;
+*)
+	new=$1
+	[[ -f $new && -x $new ]] || die "$new isn't an executable file"
+	"$new" --version >/dev/null 2>&1 || die "$new doesn't run (--version failed)"
+	cmp -s "$new" "$BIN" && die "$new is already the installed binary"
+
+	cp -p "$BIN" "$PREV"
+	install_bin "$new"
+	echo "Installed $("$BIN" --version | head -1); restarting in place..."
+	if ! restart_in_place; then
+		echo "The new binary didn't come up within ${TIMEOUT}s." >&2
+		journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true
+		rollback
+		exit 1
+	fi
+	;;
+esac

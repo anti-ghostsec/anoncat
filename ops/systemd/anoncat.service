@@ -14,14 +14,18 @@ RequiresMountsFor=/Drives/server/data
 ConditionPathIsMountPoint=/Drives/server/data
 
 [Service]
-Type=notify
+Type=notify-reload
 NotifyAccess=main
 WatchdogSec=30
 Environment="MALLOC_CONF=background_thread:false"
 User=anoncat
 Group=anoncat
 ExecStart=/usr/local/bin/anoncat -c /Drives/server/data/anoncat.toml
-ExecReload=/bin/kill -s USR1 $MAINPID
+# Reload = restart in place on the installed binary (ops/update/anoncat-update);
+# the socket stays open, so clients wait instead of failing, and
+# `systemctl reload` returns once the new binary is ready. Config only:
+# `systemctl kill -s USR1 anoncat`.
+ReloadSignal=SIGHUP
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=10min
@@ -55,7 +59,8 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=yes
+# Plugins are compiled to machine code at load time, which needs this.
+MemoryDenyWriteExecute=no
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=

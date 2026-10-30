@@ -20,6 +20,7 @@ pub async fn enable(server: Arc<Server>) {
 	let mut term = unix::signal(SignalKind::terminate()).expect("SIGTERM handler");
 	let mut usr1 = unix::signal(SignalKind::user_defined1()).expect("SIGUSR1 handler");
 	let mut usr2 = unix::signal(SignalKind::user_defined2()).expect("SIGUSR2 handler");
+	let mut hup = unix::signal(SignalKind::hangup()).expect("SIGHUP handler");
 	loop {
 		trace!("Installed signal handlers");
 		let sig: &'static str;
@@ -30,11 +31,16 @@ pub async fn enable(server: Arc<Server>) {
 			_ = term.recv() => { sig = "SIGTERM"; },
 			_ = usr1.recv() => { sig = "SIGUSR1"; },
 			_ = usr2.recv() => { sig = "SIGUSR2"; },
+			_ = hup.recv() => { sig = "SIGHUP"; },
 		}
 
 		warn!("Received {sig}");
 		let result = if RELOADING && sig == "SIGINT" {
 			server.server.reload()
+		} else if sig == "SIGHUP" {
+			// Restart in place, picking up a replaced executable; the listening
+			// sockets stay open meanwhile.
+			server.server.restart()
 		} else if matches!(sig, "SIGQUIT" | "SIGTERM") || (!CONSOLE && sig == "SIGINT") {
 			server.server.shutdown()
 		} else {

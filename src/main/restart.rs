@@ -7,7 +7,11 @@ use std::{
 	process::Command,
 };
 
-use tuwunel_core::{debug, info, utils, warn};
+use tuwunel_core::{
+	debug, info, utils,
+	utils::sys::handover,
+	warn,
+};
 
 const RESTORE_BACKUP: &str = "--restore-backup";
 
@@ -16,21 +20,27 @@ const LISTEN_VARS: [&str; 3] = ["LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"];
 #[cold]
 pub fn restart() -> ! {
 	let exe = utils::sys::current_exe().expect("program path must be available");
-	let envs: Vec<_> = strip_listen_fds(vars()).collect();
+	let mut envs: Vec<_> = strip_listen_fds(vars()).collect();
 	let args: Vec<_> = strip_restore_backup(args().skip(1)).collect();
 
-	debug!(?exe, ?args, ?envs, "Restart");
-
-	if LISTEN_VARS
-		.iter()
-		.any(|name| var_os(name).is_some())
-	{
+	// Sockets from the service manager stay open across the exec, so clients
+	// queue in the backlog rather than being refused while the next image
+	// starts.
+	let handover = handover::prepare_exec();
+	if handover.is_empty() && var_os("LISTEN_FDS").is_some() {
 		warn!(
-			"Sockets from the service manager are not carried across this restart; the next \
-			 image listens on its configured addresses alone until the service is restarted \
-			 through the service manager."
+			"Sockets from the service manager could not be carried across this restart; the \
+			 next image listens on its configured addresses alone."
 		);
 	}
+
+	envs.extend(
+		handover
+			.into_iter()
+			.map(|(name, value)| (name.to_owned(), value)),
+	);
+
+	debug!(?exe, ?args, ?envs, "Restart");
 
 	info!("Restart");
 
@@ -45,9 +55,10 @@ pub fn restart() -> ! {
 	panic!("{error:?}");
 }
 
-/// The exec keeps the process id and closes the descriptors the service
-/// manager passed, so the next image would accept that handover as its own and
-/// read whatever has since taken their numbers.
+/// The exec keeps the process id, and the descriptors the service manager
+/// passed are closed by now, so the next image would accept that handover as
+/// its own and read whatever has since taken their numbers. The kept sockets
+/// are described afresh by `handover::prepare_exec`.
 fn strip_listen_fds(
 	envs: impl IntoIterator<Item = (String, String)>,
 ) -> impl Iterator<Item = (String, String)> {
