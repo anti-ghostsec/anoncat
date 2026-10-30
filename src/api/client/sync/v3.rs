@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+	collections::{BTreeMap, HashMap, HashSet},
+	sync::Arc,
+};
 
 use axum::extract::State;
 use futures::{
@@ -6,7 +9,7 @@ use futures::{
 	future::{join, join3, join4, join5, try_join},
 };
 use ruma::{
-	DeviceId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
+	DeviceId, OwnedDeviceId, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UInt, UserId,
 	api::client::{
 		filter::FilterDefinition,
 		sync::sync_events::{
@@ -29,7 +32,8 @@ use ruma::{
 	serde::Raw,
 	uint,
 };
-use tokio::time;
+use tokio::{task::JoinSet, time};
+use tracing::Instrument;
 use tuwunel_core::{
 	Error, Result, at, debug,
 	debug::INFO_SPAN_LEVEL,
@@ -78,6 +82,9 @@ use crate::{
 
 struct SyncParams<'a> {
 	services: &'a Services,
+	/// The same services as an owned handle, for work spawned onto other
+	/// threads.
+	state: crate::State,
 	sender_user: &'a UserId,
 	sender_device: Option<&'a DeviceId>,
 	since: Option<u64>,
@@ -335,6 +342,7 @@ pub(crate) async fn sync_events_route(
 		if since.is_none_or(|since| since < next_batch) || full_state {
 			let response = build_sync_events(SyncParams {
 				services: &services,
+				state: services,
 				sender_user,
 				sender_device,
 				since,
@@ -420,6 +428,7 @@ async fn build_empty_response(
 async fn build_sync_events(
 	SyncParams {
 		services,
+		state,
 		sender_user,
 		sender_device,
 		since,
@@ -438,6 +447,7 @@ async fn build_sync_events(
 
 	let joined_rooms = collect_joined_rooms(
 		services,
+		state,
 		sender_user,
 		sender_device,
 		since,
@@ -570,53 +580,79 @@ async fn build_sync_events(
 	})
 }
 
+/// Loads every joined room, each as its own task.
+///
+/// A room takes about a millisecond of CPU to load, so a user in hundreds of
+/// rooms would otherwise wait on one thread for all of them. Dropping the
+/// returned future aborts the rooms not yet loaded.
 #[expect(clippy::too_many_arguments)]
-fn collect_joined_rooms<'a>(
-	services: &'a Services,
-	sender_user: &'a UserId,
-	sender_device: Option<&'a DeviceId>,
+async fn collect_joined_rooms(
+	services: &Services,
+	state: crate::State,
+	sender_user: &UserId,
+	sender_device: Option<&DeviceId>,
 	since: u64,
 	next_batch: u64,
 	full_state: bool,
 	state_after: StateAfter,
-	filter: &'a FilterDefinition,
-) -> impl Future<
-	Output = (BTreeMap<OwnedRoomId, JoinedRoom>, HashSet<OwnedUserId>, HashSet<OwnedUserId>),
-> + Send
-+ 'a {
-	services
+	filter: &FilterDefinition,
+) -> (BTreeMap<OwnedRoomId, JoinedRoom>, HashSet<OwnedUserId>, HashSet<OwnedUserId>) {
+	let sender_user: Arc<OwnedUserId> = Arc::new(sender_user.to_owned());
+	let sender_device: Option<Arc<OwnedDeviceId>> =
+		sender_device.map(|device| Arc::new(device.to_owned()));
+	let filter = Arc::new(filter.clone());
+
+	let mut tasks = JoinSet::new();
+	let rooms = services
 		.state_cache
-		.rooms_joined(sender_user)
+		.rooms_joined(&sender_user)
 		.ready_filter(|&room_id| filter.room.matches(room_id))
 		.map(ToOwned::to_owned)
-		.broad_filter_map(move |room_id| {
-			load_joined_room(
-				services,
-				sender_user,
-				sender_device,
-				room_id.clone(),
-				since,
-				next_batch,
-				full_state,
-				state_after,
-				filter,
-			)
-			.map_ok(move |(joined_room, dlu, jeu)| (room_id, joined_room, dlu, jeu))
-			.ok()
-		})
-		.ready_fold(
-			(BTreeMap::new(), HashSet::new(), HashSet::new()),
-			|(mut joined_rooms, mut device_list_updates, mut left_encrypted_users),
-			 (room_id, joined_room, dlu, leu)| {
-				device_list_updates.extend(dlu);
-				left_encrypted_users.extend(leu);
-				if !joined_room.is_empty() {
-					joined_rooms.insert(room_id, joined_room);
-				}
+		.collect::<Vec<_>>()
+		.await;
 
-				(joined_rooms, device_list_updates, left_encrypted_users)
-			},
-		)
+	for room_id in rooms {
+		let (sender_user, sender_device, filter) =
+			(sender_user.clone(), sender_device.clone(), filter.clone());
+
+		tasks.spawn(
+			async move {
+				load_joined_room(
+					&state,
+					&sender_user,
+					sender_device.as_deref().map(|device| &**device),
+					room_id.clone(),
+					since,
+					next_batch,
+					full_state,
+					state_after,
+					&filter,
+				)
+				.await
+				.ok()
+				.map(|(joined_room, dlu, leu)| (room_id, joined_room, dlu, leu))
+			}
+			.in_current_span(),
+		);
+	}
+
+	let (mut joined_rooms, mut device_list_updates, mut left_encrypted_users) =
+		(BTreeMap::new(), HashSet::new(), HashSet::new());
+
+	while let Some(loaded) = tasks.join_next().await {
+		let Some((room_id, joined_room, dlu, leu)) = loaded.expect("joined room task panicked")
+		else {
+			continue;
+		};
+
+		device_list_updates.extend(dlu);
+		left_encrypted_users.extend(leu);
+		if !joined_room.is_empty() {
+			joined_rooms.insert(room_id, joined_room);
+		}
+	}
+
+	(joined_rooms, device_list_updates, left_encrypted_users)
 }
 
 fn collect_left_rooms<'a>(
