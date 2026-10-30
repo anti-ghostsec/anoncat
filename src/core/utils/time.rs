@@ -118,6 +118,26 @@ pub fn parse_duration(duration: &str) -> Result<Duration> {
 		.map_err(|error| err!("'{duration:?}' is not a valid duration string: {error:?}"))
 }
 
+/// Accepts a duration string such as "30d", "12h" or "90s", or an integer
+/// number of seconds. "0" and 0 are a zero duration.
+pub fn deserialize_duration<'de, D>(de: D) -> std::result::Result<Duration, D::Error>
+where
+	D: serde::Deserializer<'de>,
+{
+	#[derive(serde::Deserialize)]
+	#[serde(untagged)]
+	enum Input {
+		Seconds(u64),
+		Text(String),
+	}
+
+	match <Input as serde::Deserialize>::deserialize(de)? {
+		| Input::Seconds(secs) => Ok(Duration::from_secs(secs)),
+		| Input::Text(text) if text.trim() == "0" => Ok(Duration::ZERO),
+		| Input::Text(text) => parse_duration(text.trim()).map_err(serde::de::Error::custom),
+	}
+}
+
 /// Checks whether a system time is at or before the current wall-clock time.
 ///
 /// Equality is considered passed. A time later than the sampled current time

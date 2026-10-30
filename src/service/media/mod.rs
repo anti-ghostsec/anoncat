@@ -769,6 +769,52 @@ impl Service {
 		Ok(deleted)
 	}
 
+	/// Deletes the oldest local uploads until all of them together take at most
+	/// `max_bytes`, sparing profile and room avatars. Returns the number deleted
+	/// and the bytes freed.
+	pub async fn delete_oldest_local_over(&self, max_bytes: u64) -> Result<(usize, u64)> {
+		let spared = self.avatar_mxcs().await;
+		let mut uploads: Vec<(OwnedMxcUri, u64, u64)> = self
+			.db
+			.all_uploads()
+			.broad_filter_map(async |(mxc, _)| {
+				let parts = mxc.parts().ok()?;
+				let Metadata { key, .. } = self.get_metadata(&parts).await?;
+				let object = self.head_meta(&key).await?;
+
+				Some((mxc, object.size, mtime_millis(&object)))
+			})
+			.collect()
+			.await;
+
+		uploads.sort_by_key(|&(_, _, mtime)| mtime);
+
+		let mut total = uploads
+			.iter()
+			.fold(0_u64, |total, &(_, size, _)| total.saturating_add(size));
+
+		let (mut deleted, mut freed) = (0_usize, 0_u64);
+		for (mxc, size, _) in uploads {
+			if total <= max_bytes {
+				break;
+			}
+
+			let Ok(parts) = mxc.parts() else {
+				continue;
+			};
+
+			if spared.contains(&mxc) || self.delete(&parts).await.is_err() {
+				continue;
+			}
+
+			total = total.saturating_sub(size);
+			freed = freed.saturating_add(size);
+			deleted = deleted.saturating_add(1);
+		}
+
+		Ok((deleted, freed))
+	}
+
 	/// The MXCs of every local user's profile avatar and every room's avatar,
 	/// the spare-set honoured by `keep_profiles`.
 	async fn avatar_mxcs(&self) -> HashSet<OwnedMxcUri> {

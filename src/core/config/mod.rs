@@ -23,6 +23,7 @@ use std::{
 	collections::{BTreeMap, BTreeSet},
 	net::IpAddr,
 	path::{Path, PathBuf},
+	time::Duration,
 };
 
 use bytesize::ByteSize;
@@ -2410,6 +2411,74 @@ pub struct Config {
 	#[serde(default = "true_fn")]
 	pub rocksdb_prewarm: bool,
 
+	/// How often the cleanup runs. Each run applies the `cleanup_*` limits
+	/// below and posts what it deleted to the admin room. Durations take
+	/// suffixes: "90s", "30m", "1h", "7d".
+	///
+	/// default: "1h"
+	#[serde(
+		default = "default_cleanup_interval",
+		deserialize_with = "utils::time::deserialize_duration"
+	)]
+	pub cleanup_interval: Duration,
+
+	/// Delete media downloaded from other servers this long after it was
+	/// fetched. Users in federated rooms can make this server fetch anything,
+	/// so it is the biggest source of files nobody here chose to keep; it is
+	/// fetched again if someone asks for it later. "0" keeps it forever.
+	///
+	/// default: "30d"
+	#[serde(
+		default = "default_cleanup_remote_media_max_age",
+		deserialize_with = "utils::time::deserialize_duration"
+	)]
+	pub cleanup_remote_media_max_age: Duration,
+
+	/// Delete media uploaded by this server's users this long after upload.
+	/// Profile and room avatars are kept. "0" keeps it forever.
+	///
+	/// default: "0"
+	#[serde(default, deserialize_with = "utils::time::deserialize_duration")]
+	pub cleanup_local_media_max_age: Duration,
+
+	/// Keep this server's uploads under this total size (e.g. "50 GiB") by
+	/// deleting the oldest first. Profile and room avatars are kept. 0 means
+	/// no limit.
+	///
+	/// default: 0
+	#[serde(default, deserialize_with = "deserialize_bytesize_u64")]
+	pub cleanup_local_media_max_size: u64,
+
+	/// Delete messages and other non-state events older than this from this
+	/// server's copy of every room. Room state (membership, names,
+	/// permissions) is kept, since rooms can't work without it. Other servers
+	/// in a federated room keep their own copies. "0" keeps history forever.
+	///
+	/// default: "0"
+	#[serde(default, deserialize_with = "utils::time::deserialize_duration")]
+	pub cleanup_message_max_age: Duration,
+
+	/// When the disk holding the database is fuller than this percentage,
+	/// delete remote media older than 7 days, then 3, then 1, then all of it,
+	/// until it isn't, and alert the admin room if that is not enough. 0
+	/// disables the guard.
+	///
+	/// default: 90
+	#[serde(default = "default_cleanup_disk_percent")]
+	pub cleanup_disk_percent: u64,
+
+	/// When the system has less memory available than this (e.g. "1 GiB"),
+	/// clear the server's caches and alert the admin room, at most once an
+	/// hour. There is usually no swap, so running out kills the server. 0
+	/// disables the guard.
+	///
+	/// default: "1 GiB"
+	#[serde(
+		default = "default_cleanup_min_free_ram",
+		deserialize_with = "deserialize_bytesize_u64"
+	)]
+	pub cleanup_min_free_ram: u64,
+
 	/// Put newly written database files into the block cache as they are
 	/// written, by compaction as well as by flushes.
 	///
@@ -3804,10 +3873,12 @@ pub struct Config {
 	/// Save original events before applying redaction to them.
 	///
 	/// They can be retrieved with `admin debug get-retained-pdu` or MSC2815.
+	/// Off by default in anoncat: a deleted message should be gone, not kept
+	/// on the server's disk.
 	///
 	/// reloadable: yes
-	/// default: true
-	#[serde(default = "true_fn")]
+	/// default: false
+	#[serde(default)]
 	pub save_unredacted_events: bool,
 
 	/// Redaction retention period in seconds.
@@ -5981,6 +6052,14 @@ fn default_mediaid_lazycontent_cache_capacity() -> u32 { 128 }
 fn default_stateinfo_cache_capacity() -> u32 { parallelism_scaled_u32(100) }
 
 fn default_pushrules_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
+
+fn default_cleanup_interval() -> Duration { Duration::from_secs(60 * 60) }
+
+fn default_cleanup_remote_media_max_age() -> Duration { Duration::from_secs(30 * 24 * 60 * 60) }
+
+fn default_cleanup_disk_percent() -> u64 { 90 }
+
+fn default_cleanup_min_free_ram() -> u64 { 1 << 30 }
 
 fn default_spacehierarchy_cache_ttl_min() -> u64 { 60 * 60 * 3 }
 

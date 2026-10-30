@@ -343,6 +343,20 @@ pub fn available_space(path: &Path) -> Result<u64> {
 	Ok(u64_from_u128_saturating(available))
 }
 
+/// Size in bytes of the filesystem holding `path`, counting space reserved for
+/// privileged processes.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+pub fn total_space(path: &Path) -> Result<u64> {
+	use nix::sys::statvfs::statvfs;
+
+	use crate::utils::math::u64_from_u128_saturating;
+
+	let stat = statvfs(path)?;
+	let total = u128::from(stat.blocks()).saturating_mul(stat.fragment_size().into());
+
+	Ok(u64_from_u128_saturating(total))
+}
+
 /// Get the space in bytes the calling user may still write to the volume
 /// holding `path`.
 ///

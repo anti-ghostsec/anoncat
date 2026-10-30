@@ -2014,6 +2014,51 @@
 #
 #rocksdb_prewarm = true
 
+# How often the cleanup runs. Each run applies the `cleanup_*` limits
+# below and posts what it deleted to the admin room. Durations take
+# suffixes: "90s", "30m", "1h", "7d".
+#
+#cleanup_interval = "1h"
+
+# Delete media downloaded from other servers this long after it was
+# fetched. Users in federated rooms can make this server fetch anything,
+# so it is the biggest source of files nobody here chose to keep; it is
+# fetched again if someone asks for it later. "0" keeps it forever.
+#
+#cleanup_remote_media_max_age = "30d"
+
+# Delete media uploaded by this server's users this long after upload.
+# Profile and room avatars are kept. "0" keeps it forever.
+#
+#cleanup_local_media_max_age = "0"
+
+# Keep this server's uploads under this total size (e.g. "50 GiB") by
+# deleting the oldest first. Profile and room avatars are kept. 0 means
+# no limit.
+#
+#cleanup_local_media_max_size = 0
+
+# Delete messages and other non-state events older than this from this
+# server's copy of every room. Room state (membership, names,
+# permissions) is kept, since rooms can't work without it. Other servers
+# in a federated room keep their own copies. "0" keeps history forever.
+#
+#cleanup_message_max_age = "0"
+
+# When the disk holding the database is fuller than this percentage,
+# delete remote media older than 7 days, then 3, then 1, then all of it,
+# until it isn't, and alert the admin room if that is not enough. 0
+# disables the guard.
+#
+#cleanup_disk_percent = 90
+
+# When the system has less memory available than this (e.g. "1 GiB"),
+# clear the server's caches and alert the admin room, at most once an
+# hour. There is usually no swap, so running out kills the server. 0
+# disables the guard.
+#
+#cleanup_min_free_ram = "1 GiB"
+
 # Put newly written database files into the block cache as they are
 # written, by compaction as well as by flushes.
 #
@@ -3295,10 +3340,12 @@
 # Save original events before applying redaction to them.
 #
 # They can be retrieved with `admin debug get-retained-pdu` or MSC2815.
+# Off by default in anoncat: a deleted message should be gone, not kept
+# on the server's disk.
 #
 # reloadable: yes
 #
-#save_unredacted_events = true
+#save_unredacted_events = false
 
 # Redaction retention period in seconds.
 #

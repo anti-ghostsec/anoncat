@@ -2,6 +2,7 @@ mod admin_notice;
 mod backup_database;
 mod checkpoint_database;
 mod clear_caches;
+mod cleanup;
 mod delete_backups;
 mod list_backups;
 mod list_features;
@@ -80,6 +81,10 @@ pub(super) enum ServerCommand {
 
 	/// - Clears all of Tuwunel's caches
 	ClearCaches,
+
+	/// - Run the scheduled cleanup now (media and history expiry, disk and
+	///   memory guards) and show what it deleted
+	Cleanup,
 
 	/// - Performs an online backup of the database (only available for RocksDB
 	///   at the moment)

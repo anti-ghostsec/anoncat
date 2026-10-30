@@ -11,6 +11,7 @@ mod test_utils;
 pub mod account_data;
 pub mod admin;
 pub mod appservice;
+pub mod cleanup;
 pub mod client;
 pub mod config;
 pub mod deactivate;
