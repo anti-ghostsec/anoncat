@@ -3,7 +3,7 @@ use futures::FutureExt;
 use ruma::api::client::account::{ThirdPartyIdRemovalStatus, deactivate};
 use tuwunel_core::{Result, info};
 
-use crate::{ClientIp, Ruma, router::auth_uiaa};
+use crate::{Ruma, router::auth_uiaa};
 
 /// # `POST /_matrix/client/r0/account/deactivate`
 ///
@@ -16,10 +16,9 @@ use crate::{ClientIp, Ruma, router::auth_uiaa};
 /// - Forgets all to-device events
 /// - Triggers device list updates
 /// - Removes ability to log in again
-#[tracing::instrument(skip_all, fields(%client), name = "deactivate")]
+#[tracing::instrument(skip_all, name = "deactivate")]
 pub(crate) async fn deactivate_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<deactivate::v3::Request>,
 ) -> Result<deactivate::v3::Response> {
 	let ref sender_user = auth_uiaa(&services, &body).await?;

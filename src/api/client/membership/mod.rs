@@ -8,7 +8,6 @@ mod leave;
 mod members;
 mod unban;
 
-use std::net::IpAddr;
 
 use axum::extract::State;
 use futures::{FutureExt, StreamExt};
@@ -57,7 +56,6 @@ pub(crate) async fn banned_room_check(
 	user_id: &UserId,
 	room_id: &RoomId,
 	orig_room_id: Option<&RoomOrAliasId>,
-	client_ip: IpAddr,
 ) -> Result {
 	if services.admin.user_is_admin(user_id).await {
 		return Ok(());
@@ -84,7 +82,7 @@ pub(crate) async fn banned_room_check(
 			 join a banned room or banned room server name: {room_id}"
 		);
 
-		maybe_deactivate(services, user_id, client_ip)
+		maybe_deactivate(services, user_id)
 			.await
 			.log_err()
 			.ok();
@@ -95,15 +93,14 @@ pub(crate) async fn banned_room_check(
 	Ok(())
 }
 
-async fn maybe_deactivate(services: &Services, user_id: &UserId, client_ip: IpAddr) -> Result {
+async fn maybe_deactivate(services: &Services, user_id: &UserId) -> Result {
 	if services
 		.server
 		.config
 		.auto_deactivate_banned_room_attempts
 	{
 		let notice = format!(
-			"Automatically deactivating user {user_id} due to attempted banned room join from \
-			 IP {client_ip}"
+			"Automatically deactivating user {user_id} due to attempted banned room join"
 		);
 
 		warn!("{notice}");

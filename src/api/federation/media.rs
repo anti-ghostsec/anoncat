@@ -17,11 +17,11 @@ use crate::{ClientIp, Ruma};
 	name = "media_get",
 	level = "debug",
 	skip_all,
-	fields(%client)
+
 )]
 pub(crate) async fn get_content_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content::v1::Request>,
 ) -> Result<get_content::v1::Response> {
 	let mxc = Mxc {
@@ -57,11 +57,11 @@ pub(crate) async fn get_content_route(
 	name = "media_thumbnail_get",
 	level = "debug",
 	skip_all,
-	fields(%client)
+
 )]
 pub(crate) async fn get_content_thumbnail_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	body: Ruma<get_content_thumbnail::v1::Request>,
 ) -> Result<get_content_thumbnail::v1::Response> {
 	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;

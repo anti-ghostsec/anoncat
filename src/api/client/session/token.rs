@@ -12,7 +12,7 @@ use tuwunel_core::{Err, Result, utils::random_string};
 use tuwunel_service::Services;
 
 use super::TOKEN_LENGTH;
-use crate::{ClientIp, Ruma, router::auth_uiaa};
+use crate::{Ruma, router::auth_uiaa};
 
 pub(super) async fn handle_login(
 	services: &Services,
@@ -34,10 +34,9 @@ pub(super) async fn handle_login(
 /// to log in with the m.login.token flow.
 ///
 /// <https://spec.matrix.org/v1.13/client-server-api/#post_matrixclientv1loginget_token>
-#[tracing::instrument(skip_all, fields(%client), name = "login_token")]
+#[tracing::instrument(skip_all, name = "login_token")]
 pub(crate) async fn login_token_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_login_token::v1::Request>,
 ) -> Result<get_login_token::v1::Response> {
 	if !services.config.login_via_existing_session || !services.config.login_via_token {

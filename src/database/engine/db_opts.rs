@@ -56,7 +56,10 @@ pub(crate) fn db_options(config: &Config, env: &Env, row_cache: &Cache) -> Resul
 
 	// Files
 	opts.set_table_cache_num_shard_bits(7);
-	opts.set_wal_size_limit_mb(1024);
+	// No WAL archive: it kept up to 1 GiB of old write-ahead logs, and with
+	// them old values of everything since overwritten, deleted or redacted.
+	opts.set_wal_size_limit_mb(0);
+	opts.set_wal_ttl_seconds(0);
 	opts.set_max_total_wal_size(1024 * 1024 * 512);
 	opts.set_writable_file_max_buffer_size(1024 * 1024 * 2);
 	if !config.rocksdb_allow_fallocate {

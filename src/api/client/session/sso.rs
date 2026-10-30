@@ -1,6 +1,6 @@
 mod uiaa;
 
-use std::{borrow::Cow, collections::BTreeMap, net::IpAddr, time::Duration};
+use std::{borrow::Cow, collections::BTreeMap, time::Duration};
 
 use axum::{
 	extract::State,
@@ -64,7 +64,7 @@ use url::Url;
 
 pub(crate) use self::uiaa::{sso_complete_js_route, sso_css_route, sso_fallback_route};
 use super::TOKEN_LENGTH;
-use crate::{ClientIp, Ruma, RumaResponse, router::ACCOUNT_HEAD};
+use crate::{Ruma, RumaResponse, router::ACCOUNT_HEAD};
 
 /// Grant phase query string.
 #[derive(Debug, Serialize)]
@@ -179,11 +179,9 @@ fn decode_apple_userinfo_from_id_token(session: &Session) -> Result<UserInfo> {
 	name = "sso_login",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn sso_login_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<sso_login::v3::Request>,
 ) -> Result<sso_login::v3::Response> {
 	if services.config.sso_custom_providers_page {
@@ -201,7 +199,7 @@ pub(crate) async fn sso_login_route(
 		.get_default_id()
 		.unwrap_or_default();
 
-	handle_sso_login(&services, &client, default_idp_id, redirect_url, None, action)
+	handle_sso_login(&services, default_idp_id, redirect_url, None, action)
 		.map_ok(|response| sso_login::v3::Response {
 			location: response.location,
 			cookie: response.cookie,
@@ -220,25 +218,22 @@ pub(crate) async fn sso_login_route(
 	skip_all,
 	ret(level = "debug")
 	fields(
-		%client,
 		idp_id = body.body.idp_id,
 	),
 )]
 pub(crate) async fn sso_login_with_provider_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<sso_login_with_provider::v3::Request>,
 ) -> Result<sso_login_with_provider::v3::Response> {
 	let idp_id = body.body.idp_id;
 	let redirect_url = body.body.redirect_url;
 	let action = body.body.action;
 
-	handle_sso_login(&services, &client, idp_id, redirect_url, None, action).await
+	handle_sso_login(&services, idp_id, redirect_url, None, action).await
 }
 
 async fn handle_sso_login(
 	services: &Services,
-	_client: &IpAddr,
 	idp_id: String,
 	redirect_url: String,
 	user_id: Option<OwnedUserId>,
@@ -378,14 +373,12 @@ fn grant_session_cookie_path(callback_url: Option<&Url>) -> &str {
 	level = "debug",
 	skip_all,
 	fields(
-		%client,
 		cookie = ?body.cookie,
 		body = ?body.body,
 	),
 )]
 pub(crate) async fn sso_callback_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<sso_callback::unstable::Request>,
 ) -> Result<Response> {
 	let sess_id = body
@@ -550,7 +543,6 @@ pub(crate) async fn sso_callback_route(
 	if let Some(next_idp_id) = next_idp_id {
 		let next = handle_sso_login(
 			&services,
-			&client,
 			next_idp_id,
 			redirect_url.into(),
 			Some(user_id),

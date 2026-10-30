@@ -3,7 +3,7 @@ use futures::StreamExt;
 use ruma::api::client::session::{logout, logout_all};
 use tuwunel_core::Result;
 
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `POST /_matrix/client/v3/logout`
 ///
@@ -14,10 +14,9 @@ use crate::{ClientIp, Ruma};
 ///   last seen ts)
 /// - Forgets to-device events
 /// - Triggers device list updates
-#[tracing::instrument(skip_all, fields(%client), name = "logout")]
+#[tracing::instrument(skip_all, name = "logout")]
 pub(crate) async fn logout_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<logout::v3::Request>,
 ) -> Result<logout::v3::Response> {
 	services
@@ -41,10 +40,9 @@ pub(crate) async fn logout_route(
 /// Note: This is equivalent to calling [`GET
 /// /_matrix/client/r0/logout`](fn.logout_route.html) from each device of this
 /// user.
-#[tracing::instrument(skip_all, fields(%client), name = "logout")]
+#[tracing::instrument(skip_all, name = "logout")]
 pub(crate) async fn logout_all_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<logout_all::v3::Request>,
 ) -> Result<logout_all::v3::Response> {
 	services

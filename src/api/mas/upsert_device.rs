@@ -35,7 +35,6 @@ pub(crate) async fn upsert_device_route(
 				(None, None),
 				None,
 				body.display_name.as_deref(),
-				None,
 			)
 			.await?;
 

@@ -175,7 +175,7 @@ async fn ordinary_invite(client: &Client<'_>, user: &UserId) -> Result {
 
 	services
 		.users
-		.create_device(server_user, None, (Some(SERVER_TOKEN), None), None, None, None)
+		.create_device(server_user, None, (Some(SERVER_TOKEN), None), None, None)
 		.await?;
 
 	let server_client = Client {

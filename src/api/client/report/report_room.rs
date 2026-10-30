@@ -3,15 +3,14 @@ use ruma::api::client::room::report_room;
 use tuwunel_core::{Err, Result, info};
 
 use super::REASON_MAX_LEN;
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `POST /_matrix/client/v3/rooms/{roomId}/report`
 ///
 /// Reports an abusive room to homeserver admins
-#[tracing::instrument(skip_all, fields(%client), name = "report_room")]
+#[tracing::instrument(skip_all, name = "report_room")]
 pub(crate) async fn report_room_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<report_room::v3::Request>,
 ) -> Result<report_room::v3::Response> {
 	let sender_user = body.sender_user();

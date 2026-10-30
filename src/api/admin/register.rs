@@ -8,7 +8,7 @@ use synapse_admin_api::register_users::shared_secret_register as register;
 use tuwunel_core::{Err, Result, err};
 use tuwunel_service::users::{Register, device::generate_refresh_token};
 
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 type HmacSha1 = Hmac<Sha1>;
 
@@ -19,7 +19,6 @@ type HmacSha1 = Hmac<Sha1>;
 /// the same name.
 pub(crate) async fn admin_register_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<register::v1::Request>,
 ) -> Result<register::v1::Response> {
 	let Some(shared_secret) = services.admin.register_shared_secret() else {
@@ -88,7 +87,6 @@ pub(crate) async fn admin_register_route(
 			(Some(&access_token), expires_in),
 			refresh_token.as_deref(),
 			body.initial_device_display_name.as_deref(),
-			Some(client),
 		)
 		.await?;
 

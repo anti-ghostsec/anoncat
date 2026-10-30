@@ -323,7 +323,7 @@ pub(crate) async fn create_devices(
 
 	for &device_id in device_ids {
 		users
-			.create_device(user_id, Some(device_id), (None, None), None, None, None)
+			.create_device(user_id, Some(device_id), (None, None), None, None)
 			.await?;
 	}
 

@@ -86,7 +86,7 @@ async fn exercise(services: &Services, base: &str) -> Result {
 
 	services
 		.users
-		.create_device(&user_id, Some(device_id), (Some(ACCESS_TOKEN), None), None, None, None)
+		.create_device(&user_id, Some(device_id), (Some(ACCESS_TOKEN), None), None, None)
 		.await?;
 
 	let client = Client { services, base, token: ACCESS_TOKEN };

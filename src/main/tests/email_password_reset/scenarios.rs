@@ -106,7 +106,7 @@ pub(super) async fn first_phase(
 	create_devices(&services, &user_a, &A_INITIAL_TOKENS).await?;
 	let b_device = services
 		.users
-		.create_device(&user_b, None, (Some(B_TOKEN), None), None, None, None)
+		.create_device(&user_b, None, (Some(B_TOKEN), None), None, None)
 		.await?;
 
 	assert_eq!(
@@ -990,7 +990,7 @@ async fn create_devices(services: &Services, user_id: &UserId, tokens: &[&str]) 
 	for &token in tokens {
 		services
 			.users
-			.create_device(user_id, None, (Some(token), None), None, None, None)
+			.create_device(user_id, None, (Some(token), None), None, None)
 			.await?;
 	}
 

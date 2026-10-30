@@ -294,7 +294,6 @@ async fn open_session(services: &Services) -> Result {
 			(Some(SESSION_TOKEN), None),
 			None,
 			None,
-			None,
 		)
 		.await
 		.map(drop)

@@ -61,7 +61,6 @@ pub async fn set_dehydrated_device(&self, user_id: &UserId, request: Request) ->
 			(None, None),
 			None,
 			request.initial_device_display_name.as_deref(),
-			None,
 		)
 		.await?;
 

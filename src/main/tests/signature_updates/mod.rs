@@ -92,7 +92,7 @@ pub(super) async fn store_device_signer(&self, services: &Services, device: &Dev
 
 	services
 		.users
-		.create_device(&self.sender, Some(device), (None, None), None, None, None)
+		.create_device(&self.sender, Some(device), (None, None), None, None)
 		.await?;
 
 	let key = json!({"user_id": self.sender, "device_id": device,

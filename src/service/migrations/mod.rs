@@ -43,6 +43,7 @@ use self::{
 use crate::Services;
 
 mod account_status;
+mod clear_device_ips;
 mod clear_servername_status;
 mod clear_state_local_error_memos;
 mod conduit;
@@ -413,6 +414,7 @@ async fn migrate(services: &Services, foreign_lineage: bool) -> Result {
 	until_finished(services, token_expiry::ADOPT_MARKER, migrate_token_expiry).await?;
 
 	run_once(services, redactions::MARKER, restore_redactions).await?;
+	run_once(services, clear_device_ips::MARKER, clear_device_ips::clear_device_ips).await?;
 
 	services.server.check_running()?;
 

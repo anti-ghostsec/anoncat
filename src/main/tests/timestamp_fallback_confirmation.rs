@@ -186,7 +186,7 @@ async fn exercise(
 
 	services
 		.users
-		.create_device(&user_id, None, (Some(token), None), None, None, None)
+		.create_device(&user_id, None, (Some(token), None), None, None)
 		.await?;
 
 	services
@@ -195,7 +195,6 @@ async fn exercise(
 			&services.globals.server_user,
 			None,
 			(Some(admin_token), None),
-			None,
 			None,
 			None,
 		)

@@ -7,7 +7,7 @@ use tuwunel_core::{Result, warn};
 use tuwunel_service::membership::Join;
 
 use super::banned_room_check;
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/join`
 ///
@@ -17,17 +17,16 @@ use crate::{ClientIp, Ruma};
 ///   rules locally
 /// - If the server does not know about the room: asks other servers over
 ///   federation
-#[tracing::instrument(skip_all, fields(%client), name = "join")]
+#[tracing::instrument(skip_all, name = "join")]
 pub(crate) async fn join_room_by_id_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<join_room_by_id::v3::Request>,
 ) -> Result<join_room_by_id::v3::Response> {
 	let sender_user = body.sender_user();
 
 	let room_id: &RoomId = &body.room_id;
 
-	banned_room_check(&services, sender_user, room_id, None, client).await?;
+	banned_room_check(&services, sender_user, room_id, None).await?;
 
 	let extra_content = extra_member_content(body.json_body.as_ref());
 
@@ -67,10 +66,9 @@ pub(crate) async fn join_room_by_id_route(
 /// - If the server does not know about the room: use the server name query
 ///   param if specified. if not specified, asks other servers over federation
 ///   via room alias server name and room ID server name
-#[tracing::instrument(skip_all, fields(%client), name = "join")]
+#[tracing::instrument(skip_all, name = "join")]
 pub(crate) async fn join_room_by_id_or_alias_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<join_room_by_id_or_alias::v3::Request>,
 ) -> Result<join_room_by_id_or_alias::v3::Response> {
 	let sender_user = body.sender_user();
@@ -81,7 +79,7 @@ pub(crate) async fn join_room_by_id_or_alias_route(
 		.maybe_resolve_with_servers(&body.room_id_or_alias, Some(&body.via))
 		.await?;
 
-	banned_room_check(&services, sender_user, &room_id, Some(&body.room_id_or_alias), client)
+	banned_room_check(&services, sender_user, &room_id, Some(&body.room_id_or_alias))
 		.await?;
 
 	let extra_content = extra_member_content(body.json_body.as_ref());

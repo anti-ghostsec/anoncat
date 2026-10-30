@@ -238,7 +238,7 @@ async fn contenders_wait_for_the_device_lock(services: &Services) -> Result {
 		let update = pin!(
 			services
 				.users
-				.update_device_last_seen(&user, device, None, None)
+				.update_device_last_seen(&user, device, None)
 		);
 
 		let removal = pin!(services.users.remove_device(&user, device));
@@ -327,7 +327,7 @@ async fn metadata_updates_keep_removal(services: &Services) -> Result {
 
 	let seen = services
 		.users
-		.update_device_last_seen(&user, device, None, None)
+		.update_device_last_seen(&user, device, None)
 		.await;
 
 	let renamed = services
@@ -485,7 +485,6 @@ async fn session(
 			Some(device),
 			(Some(&access), expires_in),
 			Some(&refresh),
-			None,
 			None,
 		)
 		.await?;

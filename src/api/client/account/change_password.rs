@@ -10,7 +10,7 @@ use ruma::{
 };
 use tuwunel_core::{Err, Error, Result, info, utils::ReadyExt};
 
-use crate::{ClientIp, Ruma, router::auth_uiaa};
+use crate::{Ruma, router::auth_uiaa};
 
 /// # `POST /_matrix/client/r0/account/password`
 ///
@@ -32,10 +32,9 @@ use crate::{ClientIp, Ruma, router::auth_uiaa};
 ///   last seen ts)
 /// - Forgets to-device events
 /// - Triggers device list updates
-#[tracing::instrument(skip_all, fields(%client), name = "change_password")]
+#[tracing::instrument(skip_all, name = "change_password")]
 pub(crate) async fn change_password_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<change_password::v3::Request>,
 ) -> Result<change_password::v3::Response> {
 	let sender_user = match (body.sender_user.as_ref(), body.auth.as_ref()) {

@@ -30,7 +30,7 @@ pub(crate) async fn admin_create_device_route(
 
 	services
 		.users
-		.create_device(user_id, Some(device_id), (None, None), None, None, None)
+		.create_device(user_id, Some(device_id), (None, None), None, None)
 		.await?;
 
 	Ok(create_device::Response {})

@@ -98,7 +98,6 @@ async fn exercise(services: &Services, base: &str) -> Result {
 			(Some(ACCESS_TOKEN), None),
 			None,
 			None,
-			None,
 		)
 		.await?;
 

@@ -5,15 +5,14 @@ use tuwunel_matrix::pdu::PduEvent;
 use tuwunel_service::Services;
 
 use super::REASON_MAX_LEN;
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}`
 ///
 /// Reports an inappropriate event to homeserver admins
-#[tracing::instrument(skip_all, fields(%client), name = "report_event")]
+#[tracing::instrument(skip_all, name = "report_event")]
 pub(crate) async fn report_event_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<report_content::v3::Request>,
 ) -> Result<report_content::v3::Response> {
 	let sender_user = body.sender_user();

@@ -24,7 +24,7 @@ use tuwunel_service::{
 	media::{Animate, CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, MXC_LENGTH, Media},
 };
 
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `GET /_matrix/client/v1/media/config`
 pub(crate) async fn get_media_config_route(
@@ -46,11 +46,9 @@ pub(crate) async fn get_media_config_route(
 	name = "media_upload",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn create_content_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<create_content::v3::Request>,
 ) -> Result<create_content::v3::Response> {
 	let user = body.sender_user();
@@ -83,11 +81,9 @@ pub(crate) async fn create_content_route(
 	name = "media_create_mxc",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn create_mxc_uri_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<create_mxc_uri::v1::Request>,
 ) -> Result<create_mxc_uri::v1::Response> {
 	let user = body.sender_user();
@@ -123,11 +119,9 @@ pub(crate) async fn create_mxc_uri_route(
 	name = "media_upload_async",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn create_content_async_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<create_content_async::v3::Request>,
 ) -> Result<create_content_async::v3::Response> {
 	let user = body.sender_user();
@@ -158,11 +152,9 @@ pub(crate) async fn create_content_async_route(
 	name = "media_thumbnail_get",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn get_content_thumbnail_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v1::Request>,
 ) -> Result<get_content_thumbnail::v1::Response> {
 	let user = body.sender_user();
@@ -196,11 +188,9 @@ pub(crate) async fn get_content_thumbnail_route(
 	name = "media_get",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn get_content_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v1::Request>,
 ) -> Result<get_content::v1::Response> {
 	let mxc = Mxc {
@@ -230,11 +220,9 @@ pub(crate) async fn get_content_route(
 	name = "media_get_af",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn get_content_as_filename_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v1::Request>,
 ) -> Result<get_content_as_filename::v1::Response> {
 	let mxc = Mxc {
@@ -264,11 +252,9 @@ pub(crate) async fn get_content_as_filename_route(
 	name = "url_preview",
 	level = "debug",
 	skip_all,
-	fields(%client),
 )]
 pub(crate) async fn get_media_preview_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v1::Request>,
 ) -> Result<get_media_preview::v1::Response> {
 	let sender_user = body.sender_user();

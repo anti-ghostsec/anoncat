@@ -12,7 +12,7 @@ use ruma::{
 use tuwunel_core::{Err, Result, err, utils::BoolExt};
 use tuwunel_service::{Services, presence::Ping, profile::Propagation};
 
-use crate::{ClientIp, Ruma, utils::may_set_displayname};
+use crate::{Ruma, utils::may_set_displayname};
 
 /// Resolve a `PropagateTo` request value against the server default.
 ///
@@ -122,7 +122,6 @@ pub(crate) async fn get_profile_field_route(
 /// This also handles the avatar_url and displayname being updated.
 pub(crate) async fn set_profile_field_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<set_profile_field::v3::Request>,
 ) -> Result<set_profile_field::v3::Response> {
 	let sender_user = body.sender_user();
@@ -153,7 +152,6 @@ pub(crate) async fn set_profile_field_route(
 	// Presence update
 	let ping = Ping {
 		device_id: body.sender_device.as_deref(),
-		client_ip: Some(client),
 		appservice: body.appservice_info.as_ref(),
 		..Default::default()
 	};
@@ -173,7 +171,6 @@ pub(crate) async fn set_profile_field_route(
 /// This also handles the avatar_url and displayname being updated.
 pub(crate) async fn delete_profile_field_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<delete_profile_field::v3::Request>,
 ) -> Result<delete_profile_field::v3::Response> {
 	let sender_user = body.sender_user();
@@ -199,7 +196,6 @@ pub(crate) async fn delete_profile_field_route(
 	// Presence update
 	let ping = Ping {
 		device_id: body.sender_device.as_deref(),
-		client_ip: Some(client),
 		appservice: body.appservice_info.as_ref(),
 		..Default::default()
 	};

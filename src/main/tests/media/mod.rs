@@ -277,7 +277,7 @@ pub(crate) async fn register(
 
 	services
 		.users
-		.create_device(&user_id, None, (Some(token), None), None, None, None)
+		.create_device(&user_id, None, (Some(token), None), None, None)
 		.await?;
 
 	Ok(user_id)

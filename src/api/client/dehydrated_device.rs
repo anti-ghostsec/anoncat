@@ -7,17 +7,16 @@ use ruma::api::client::dehydrated_device::{
 };
 use tuwunel_core::{Err, Result, at, utils::result::IsErrOr};
 
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 const MAX_BATCH_EVENTS: usize = 50;
 
 /// # `PUT /_matrix/client/../dehydrated_device`
 ///
 /// Creates or overwrites the user's dehydrated device.
-#[tracing::instrument(skip_all, fields(%client))]
+#[tracing::instrument(skip_all)]
 pub(crate) async fn put_dehydrated_device_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<put_dehydrated_device::Request>,
 ) -> Result<put_dehydrated_device::Response> {
 	let sender_user = body
@@ -38,10 +37,9 @@ pub(crate) async fn put_dehydrated_device_route(
 /// # `DELETE /_matrix/client/../dehydrated_device`
 ///
 /// Deletes the user's dehydrated device without replacement.
-#[tracing::instrument(skip_all, fields(%client))]
+#[tracing::instrument(skip_all)]
 pub(crate) async fn delete_dehydrated_device_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<delete_dehydrated_device::Request>,
 ) -> Result<delete_dehydrated_device::Response> {
 	let sender_user = body.sender_user();
@@ -62,10 +60,9 @@ pub(crate) async fn delete_dehydrated_device_route(
 /// # `GET /_matrix/client/../dehydrated_device`
 ///
 /// Gets the user's dehydrated device
-#[tracing::instrument(skip_all, fields(%client))]
+#[tracing::instrument(skip_all)]
 pub(crate) async fn get_dehydrated_device_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_dehydrated_device::Request>,
 ) -> Result<get_dehydrated_device::Response> {
 	let sender_user = body.sender_user();
@@ -84,10 +81,9 @@ pub(crate) async fn get_dehydrated_device_route(
 /// # `POST /_matrix/client/../dehydrated_device/{device_id}/events`
 ///
 /// Paginates the events of the dehydrated device.
-#[tracing::instrument(skip_all, fields(%client))]
+#[tracing::instrument(skip_all)]
 pub(crate) async fn get_dehydrated_events_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_events::Request>,
 ) -> Result<get_events::Response> {
 	let sender_user = body.sender_user();

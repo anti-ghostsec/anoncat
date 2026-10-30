@@ -112,7 +112,7 @@ async fn register_guest(
 
 	services
 		.users
-		.create_device(&user_id, None, (Some(token), None), None, None, None)
+		.create_device(&user_id, None, (Some(token), None), None, None)
 		.await?;
 
 	Ok(user_id)

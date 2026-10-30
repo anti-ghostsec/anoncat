@@ -6,9 +6,9 @@ use ruma::{
 		update_device::{self, v3::Response as UpdateDeviceResponse},
 	},
 };
-use tuwunel_core::{Err, Result, debug, err, utils::string::to_small_string};
+use tuwunel_core::{Err, Result, debug, err};
 
-use crate::{ClientIp, Ruma, router::auth_uiaa};
+use crate::{Ruma, router::auth_uiaa};
 
 /// # `GET /_matrix/client/r0/devices/{deviceId}`
 ///
@@ -31,10 +31,9 @@ pub(crate) async fn get_device_route(
 /// Updates the metadata on a given device of the sender user, or creates the
 /// device when called by an appservice with MSC4190 enabled, returning 201 on
 /// creation and 200 on update.
-#[tracing::instrument(skip_all, fields(%client), name = "update_device")]
+#[tracing::instrument(skip_all, name = "update_device")]
 pub(crate) async fn update_device_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<update_device::v3::Request>,
 ) -> Result<UpdateDeviceResponse> {
 	let sender_user = body.sender_user();
@@ -49,7 +48,7 @@ pub(crate) async fn update_device_route(
 		let notify = renamed.is_some();
 		let device = Device {
 			display_name: renamed.or(device.display_name),
-			last_seen_ip: Some(to_small_string(client)),
+			last_seen_ip: None,
 			last_seen_ts: Some(MilliSecondsSinceUnixEpoch::now()),
 			..device
 		};
@@ -86,7 +85,6 @@ pub(crate) async fn update_device_route(
 					(None, None),
 					None,
 					body.display_name.as_deref(),
-					Some(client),
 				)
 				.await?;
 

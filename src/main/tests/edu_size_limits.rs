@@ -62,7 +62,7 @@ async fn exercise(services: &Services, base: &str) -> Result {
 
 		services
 			.users
-			.create_device(&user_id, Some(&device_id), (None, None), None, None, None)
+			.create_device(&user_id, Some(&device_id), (None, None), None, None)
 			.await
 	};
 

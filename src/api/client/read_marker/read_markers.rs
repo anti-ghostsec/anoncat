@@ -12,7 +12,7 @@ use tuwunel_service::presence::Ping;
 use super::{
 	ensure_receipt_visible, reset_and_refresh_badge, set_fully_read, set_private_marker,
 };
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/read_markers`
 ///
@@ -23,7 +23,6 @@ use crate::{ClientIp, Ruma};
 ///   EDU
 pub(crate) async fn set_read_marker_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<set_read_marker::v3::Request>,
 ) -> Result<set_read_marker::v3::Response> {
 	let sender_user = body.sender_user();
@@ -77,7 +76,6 @@ pub(crate) async fn set_read_marker_route(
 
 			let ping = Ping {
 				device_id: body.sender_device.as_deref(),
-				client_ip: Some(client),
 				appservice: body.appservice_info.as_ref(),
 				..Default::default()
 			};

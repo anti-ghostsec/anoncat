@@ -198,7 +198,7 @@ async fn local_user(services: &Services, localpart: &str, token: &str) -> Result
 
 	services
 		.users
-		.create_device(&user_id, None, (Some(token), None), None, None, None)
+		.create_device(&user_id, None, (Some(token), None), None, None)
 		.await?;
 
 	Ok(user_id)

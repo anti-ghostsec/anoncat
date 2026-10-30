@@ -10,15 +10,14 @@ use ruma::{
 use tuwunel_core::{Err, Result};
 
 use super::banned_room_check;
-use crate::{ClientIp, Ruma, utils::invite_check};
+use crate::{Ruma, utils::invite_check};
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/invite`
 ///
 /// Tries to send an invite event into the room.
-#[tracing::instrument(skip_all, fields(%client), name = "invite")]
+#[tracing::instrument(skip_all, name = "invite")]
 pub(crate) async fn invite_user_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<invite_user::v3::Request>,
 ) -> Result<invite_user::v3::Response> {
 	let sender_user = body.sender_user();
@@ -27,7 +26,7 @@ pub(crate) async fn invite_user_route(
 
 	invite_check(&services, sender_user, room_id).await?;
 
-	banned_room_check(&services, sender_user, room_id, None, client).await?;
+	banned_room_check(&services, sender_user, room_id, None).await?;
 
 	let InvitationRecipient::UserId(InviteUserId { user_id, reason }) = &body.recipient else {
 		return Err!(Request(ThreepidDenied("Third party identifiers are not implemented")));

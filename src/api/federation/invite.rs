@@ -44,10 +44,10 @@ struct ExtractIsDirect {
 /// # `PUT /_matrix/federation/v2/invite/{roomId}/{eventId}`
 ///
 /// Invites a remote user to a room.
-#[tracing::instrument(skip_all, fields(%client), name = "invite")]
+#[tracing::instrument(skip_all, name = "invite")]
 pub(crate) async fn create_invite_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
+	ClientIp(_client): ClientIp,
 	mut body: Ruma<create_invite::v2::Request>,
 ) -> Result<create_invite::v2::Response> {
 	services

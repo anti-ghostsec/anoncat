@@ -3,7 +3,7 @@ mod data;
 // Write/update pipeline lives in pipeline.rs.
 mod pipeline;
 
-use std::{collections::HashMap, net::IpAddr, sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use futures::{
@@ -33,7 +33,6 @@ use crate::appservice::RegistrationInfo;
 #[derive(Default)]
 pub struct Ping<'a> {
 	pub device_id: Option<&'a DeviceId>,
-	pub client_ip: Option<IpAddr>,
 	pub new_state: Option<&'a PresenceState>,
 	pub appservice: Option<&'a RegistrationInfo>,
 }

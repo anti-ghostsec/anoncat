@@ -1,5 +1,4 @@
 use std::{
-	net::IpAddr,
 	time::{Duration, SystemTime},
 };
 
@@ -16,7 +15,6 @@ use tuwunel_core::{
 		future::OptionFutureExt,
 		random_string,
 		stream::{IterStream, TryIgnore},
-		string::to_small_string,
 		time::{
 			duration_since_epoch, timepoint_from_epoch, timepoint_from_now, timepoint_has_passed,
 		},
@@ -56,7 +54,6 @@ pub async fn create_device(
 	(access_token, expires_in): (Option<&str>, Option<Duration>),
 	refresh_token: Option<&str>,
 	initial_device_display_name: Option<&str>,
-	client_ip: Option<IpAddr>,
 ) -> Result<OwnedDeviceId> {
 	let device_id = resolve_device_id(device_id);
 
@@ -77,7 +74,8 @@ pub async fn create_device(
 		device_id: device_id.clone(),
 		display_name: initial_device_display_name.map(Into::into),
 		last_seen_ts: Some(MilliSecondsSinceUnixEpoch::now()),
-		last_seen_ip: client_ip.map(to_small_string),
+		// anoncat never records where users connect from.
+		last_seen_ip: None,
 	})
 	.await;
 
@@ -937,22 +935,20 @@ pub async fn remove_to_device_events<Until>(
 		.await;
 }
 
-/// Records when and from where a device was last seen.
+/// Records when a device was last seen.
 ///
-/// An address is kept from an earlier sighting when none is given, and the
-/// time defaults to now. The device list is not notified.
+/// The time defaults to now. anoncat never records where a device connects
+/// from, and this drops any address an older version stored. The device list
+/// is not notified.
 #[implement(super::Service)]
 pub async fn update_device_last_seen(
 	&self,
 	user_id: &UserId,
 	device_id: &DeviceId,
-	last_seen_ip: Option<IpAddr>,
 	last_seen_ts: Option<MilliSecondsSinceUnixEpoch>,
 ) -> Result {
 	self.update_device_metadata(user_id, device_id, |device| {
-		let last_seen_ip = last_seen_ip
-			.map(to_small_string)
-			.or(device.last_seen_ip);
+		let last_seen_ip = None;
 
 		let last_seen_ts = last_seen_ts
 			.unwrap_or_else(MilliSecondsSinceUnixEpoch::now)

@@ -20,7 +20,7 @@ pub(crate) mod users;
 use futures::future::join3;
 use ruma::UserId;
 pub(crate) use tuwunel_api::router::require_admin;
-use tuwunel_api::router::{ClientIp, Ruma, RumaAdmin, RumaResponse, State};
+use tuwunel_api::router::{Ruma, RumaAdmin, RumaResponse, State};
 use tuwunel_core::{Config, Err, Result};
 
 pub(crate) use self::{

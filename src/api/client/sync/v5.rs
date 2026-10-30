@@ -50,7 +50,7 @@ use self::{
 	range::collect as collect_ranges,
 };
 use super::share_encrypted_room;
-use crate::{ClientIp, Ruma, utils::poll_deadline};
+use crate::{Ruma, utils::poll_deadline};
 
 #[derive(Copy, Clone)]
 struct SyncInfo<'a> {
@@ -108,7 +108,6 @@ type ListIds = SmallVec<[ListId; 1]>;
 )]
 pub(crate) async fn sync_events_v5_route(
 	Extension(interrupted): Extension<Arc<Notify>>,
-	ClientIp(client): ClientIp,
 	State(ref services): State<crate::State>,
 	body: Ruma<Request>,
 ) -> Result<Response> {
@@ -137,7 +136,6 @@ pub(crate) async fn sync_events_v5_route(
 	let conn = conn_val.lock();
 	let ping = Ping {
 		device_id: sender_device,
-		client_ip: Some(client),
 		new_state: Some(&request.set_presence),
 		appservice: body.appservice_info.as_ref(),
 	};

@@ -35,16 +35,15 @@ pub(crate) use self::{
 	token::login_token_route,
 };
 use super::TOKEN_LENGTH;
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `GET /_matrix/client/v3/login`
 ///
 /// Get the supported login types of this server. One of these should be used as
 /// the `type` field when logging in.
-#[tracing::instrument(skip_all, fields(%client), name = "login")]
+#[tracing::instrument(skip_all, name = "login")]
 pub(crate) async fn get_login_types_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	_body: Ruma<get_login_types::v3::Request>,
 ) -> Result<get_login_types::v3::Response> {
 	let get_login_token = services.config.login_via_existing_session;
@@ -117,11 +116,9 @@ pub(crate) async fn get_login_types_route(
 	name = "login",
 	level = "debug",
 	skip_all,
-	fields(client = %client_ip),
 )]
 pub(crate) async fn login_route(
 	State(services): State<crate::State>,
-	ClientIp(client_ip): ClientIp,
 	body: Ruma<login::v3::Request>,
 ) -> Result<login::v3::Response> {
 	let user_id = match &body.login_info {
@@ -178,7 +175,6 @@ pub(crate) async fn login_route(
 				(Some(&access_token), expires_in),
 				refresh_token.as_deref(),
 				body.initial_device_display_name.as_deref(),
-				Some(client_ip),
 			)
 			.await?
 	};

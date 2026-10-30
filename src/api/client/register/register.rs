@@ -1,4 +1,4 @@
-use std::{fmt::Write, net::IpAddr};
+use std::fmt::Write;
 
 use axum::extract::State;
 use ruma::{
@@ -17,7 +17,7 @@ use tuwunel_service::{
 };
 
 use super::{SESSION_ID_LENGTH, is_matrix_appservice_irc};
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 const RANDOM_USER_ID_LENGTH: usize = 10;
 
@@ -39,10 +39,9 @@ const RANDOM_USER_ID_LENGTH: usize = 10;
 /// - If `inhibit_login` is false: Creates a device and returns device id and
 ///   access_token
 #[expect(clippy::doc_markdown)]
-#[tracing::instrument(skip_all, fields(%client), name = "register")]
+#[tracing::instrument(skip_all, name = "register")]
 pub(crate) async fn register_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<register::v3::Request>,
 ) -> Result<register::v3::Response> {
 	let is_guest = body.kind == RegistrationKind::Guest;
@@ -131,14 +130,13 @@ pub(crate) async fn register_route(
 			(Some(&access_token), expires_in),
 			refresh_token.as_deref(),
 			body.initial_device_display_name.as_deref(),
-			Some(client),
 		)
 		.await?;
 
 	debug_info!(%user_id, %device_id, "User account was created");
 
 	if body.appservice_info.is_none() && (!is_guest || services.config.log_guest_registrations) {
-		announce_new_user(services, &user_id, &body, is_guest, &client).await?;
+		announce_new_user(services, &user_id, &body, is_guest).await?;
 	}
 
 	Ok(register::v3::Response {
@@ -486,11 +484,10 @@ async fn announce_new_user(
 	user_id: &UserId,
 	body: &Ruma<register::v3::Request>,
 	is_guest: bool,
-	client: &IpAddr,
 ) -> Result {
 	let mut notice = String::from(if is_guest { "New guest user" } else { "New user" });
 
-	write!(notice, " \"{user_id}\" registered on this server from IP {client}")?;
+	write!(notice, " \"{user_id}\" registered on this server")?;
 
 	if let Some(device_name) = body.initial_device_display_name.as_deref() {
 		write!(notice, " with device name {device_name}")?;

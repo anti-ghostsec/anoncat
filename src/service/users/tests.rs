@@ -407,7 +407,7 @@ async fn device_removal_keeps_its_connections() -> Result {
 	assert!(sync.is_connection_stored(&key).await);
 
 	users
-		.create_device(user_id, Some(device_id), (None, None), None, None, None)
+		.create_device(user_id, Some(device_id), (None, None), None, None)
 		.await?;
 
 	let resumed = sync.load_or_init_connection(&key).await?;

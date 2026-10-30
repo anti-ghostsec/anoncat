@@ -5,7 +5,7 @@ use ruma::{
 };
 use tuwunel_core::{Err, Result};
 
-use crate::{ClientIp, Ruma, router::auth_uiaa};
+use crate::{Ruma, router::auth_uiaa};
 
 /// # `POST /_matrix/client/v3/account/3pid/add`
 ///
@@ -13,10 +13,9 @@ use crate::{ClientIp, Ruma, router::auth_uiaa};
 ///
 /// - Requires UIAA to confirm account ownership
 /// - Consumes a previously validated email verification session
-#[tracing::instrument(skip_all, fields(%client), name = "add_3pid")]
+#[tracing::instrument(skip_all, name = "add_3pid")]
 pub(crate) async fn add_3pid_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<add_3pid::v3::Request>,
 ) -> Result<Response> {
 	if !services.sendmail.is_enabled() {

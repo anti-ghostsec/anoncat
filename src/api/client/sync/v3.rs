@@ -75,7 +75,7 @@ use super::{
 	stand_in_leave, strip_prev_state, timeline_prev_batch,
 };
 use crate::{
-	ClientIp, Ruma, ignored_filter, is_empty_account_data_event,
+	Ruma, ignored_filter, is_empty_account_data_event,
 	utils::{normalize_profile_fields, sync_deadline},
 	with_membership,
 };
@@ -263,7 +263,6 @@ impl From<(bool, bool)> for StateAfter {
 )]
 pub(crate) async fn sync_events_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<sync_events::v3::Request>,
 ) -> Result<sync_events::v3::Response> {
 	let sender_user = body.sender_user();
@@ -290,7 +289,6 @@ pub(crate) async fn sync_events_route(
 
 	let ping = Ping {
 		device_id: body.sender_device.as_deref(),
-		client_ip: Some(client),
 		new_state: Some(set_presence),
 		appservice: body.appservice_info.as_ref(),
 	};

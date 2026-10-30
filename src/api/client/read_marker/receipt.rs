@@ -12,14 +12,13 @@ use tuwunel_service::presence::Ping;
 use super::{
 	ensure_receipt_visible, reset_and_refresh_badge, set_fully_read, set_private_marker,
 };
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `POST /_matrix/client/r0/rooms/{roomId}/receipt/{receiptType}/{eventId}`
 ///
 /// Sets private read marker and public read receipt EDU.
 pub(crate) async fn create_receipt_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<create_receipt::v3::Request>,
 ) -> Result<create_receipt::v3::Response> {
 	let sender_user = body.sender_user();
@@ -122,7 +121,6 @@ pub(crate) async fn create_receipt_route(
 
 			let ping = Ping {
 				device_id: body.sender_device.as_deref(),
-				client_ip: Some(client),
 				appservice: body.appservice_info.as_ref(),
 				..Default::default()
 			};

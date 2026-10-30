@@ -26,7 +26,7 @@ async fn exercise_case(services: &Services, base: &str, case: &str) -> Result {
 
 	let device = services
 		.users
-		.create_device(&user, None, (Some(&token), None), None, None, None)
+		.create_device(&user, None, (Some(&token), None), None, None)
 		.await?;
 
 	let url = format!("{base}/_matrix/client/v3/keys/device_signing/upload");

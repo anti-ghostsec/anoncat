@@ -255,7 +255,7 @@ impl Service {
 		let update_device_seen = args.device_id.map_async(|device_id| {
 			self.services
 				.users
-				.update_device_last_seen(user_id, device_id, args.client_ip, None)
+				.update_device_last_seen(user_id, device_id, None)
 		});
 
 		let new_state = args.new_state.unwrap_or(&PresenceState::Online);

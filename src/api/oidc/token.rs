@@ -235,7 +235,6 @@ async fn issue_tokens(services: &Services, grant: ApprovedGrant<'_>) -> Result<R
 			(Some(&access_token), expires_in),
 			Some(&refresh_token),
 			Some(device_display_name),
-			None,
 		)
 		.await?;
 

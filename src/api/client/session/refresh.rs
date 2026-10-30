@@ -2,17 +2,16 @@ use axum::extract::State;
 use ruma::api::client::session::refresh_token::v3::{Request, Response};
 use tuwunel_core::{Err, Result, debug_info, err};
 
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `POST /_matrix/client/v3/refresh`
 ///
 /// Refresh an access token.
 ///
 /// <https://spec.matrix.org/v1.15/client-server-api/#post_matrixclientv3refresh>
-#[tracing::instrument(skip_all, fields(%client), name = "refresh_token")]
+#[tracing::instrument(skip_all, name = "refresh_token")]
 pub(crate) async fn refresh_token_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<Request>,
 ) -> Result<Response> {
 	let refresh_token_claim = body.body.refresh_token;

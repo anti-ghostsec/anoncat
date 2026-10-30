@@ -3,14 +3,13 @@ use ruma::api::client::typing::create_typing_event;
 use tuwunel_core::{Err, Result, utils, utils::math::Tried};
 use tuwunel_service::presence::Ping;
 
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `PUT /_matrix/client/r0/rooms/{roomId}/typing/{userId}`
 ///
 /// Sets the typing state of the sender user.
 pub(crate) async fn create_typing_event_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<create_typing_event::v3::Request>,
 ) -> Result<create_typing_event::v3::Response> {
 	use create_typing_event::v3::Typing;
@@ -68,7 +67,6 @@ pub(crate) async fn create_typing_event_route(
 	// ping presence
 	let ping = Ping {
 		device_id: body.sender_device.as_deref(),
-		client_ip: Some(client),
 		appservice: body.appservice_info.as_ref(),
 		..Default::default()
 	};

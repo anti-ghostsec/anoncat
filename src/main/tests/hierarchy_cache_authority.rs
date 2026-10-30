@@ -144,7 +144,7 @@ async fn exercise(args: Exercise<'_>) -> Result {
 
 	services
 		.users
-		.create_device(&user, None, (Some(token), None), None, None, None)
+		.create_device(&user, None, (Some(token), None), None, None)
 		.await?;
 
 	let room_id = create_room(services, base, token).await?;

@@ -19,7 +19,7 @@ use tuwunel_core::{
 };
 use tuwunel_service::media::{Animate, CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, Media};
 
-use crate::{ClientIp, Ruma, RumaResponse};
+use crate::{Ruma, RumaResponse};
 
 /// # `GET /_matrix/media/v3/config`
 ///
@@ -36,10 +36,9 @@ pub(crate) async fn get_media_config_legacy_route(
 /// # `GET /_matrix/media/v3/preview_url`
 ///
 /// Returns URL preview.
-#[tracing::instrument(skip_all, fields(%client), name = "url_preview_legacy", level = "debug")]
+#[tracing::instrument(skip_all, name = "url_preview_legacy", level = "debug")]
 pub(crate) async fn get_media_preview_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_media_preview::v3::Request>,
 ) -> Result<get_media_preview::v3::Response> {
 	let sender_user = body.sender_user();
@@ -84,10 +83,9 @@ pub(crate) async fn get_media_preview_legacy_route(
 /// - Only redirects if `allow_redirect` is true
 /// - Uses client-provided `timeout_ms` if available, else defaults to 20
 ///   seconds
-#[tracing::instrument(skip_all, fields(%client), name = "media_get_legacy", level = "debug")]
+#[tracing::instrument(skip_all, name = "media_get_legacy", level = "debug")]
 pub(crate) async fn get_content_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_content::v3::Request>,
 ) -> Result<Response> {
 	let mxc = Mxc {
@@ -170,10 +168,9 @@ pub(crate) async fn get_content_legacy_route(
 /// - Only redirects if `allow_redirect` is true
 /// - Uses client-provided `timeout_ms` if available, else defaults to 20
 ///   seconds
-#[tracing::instrument(skip_all, fields(%client), name = "media_get_legacy", level = "debug")]
+#[tracing::instrument(skip_all, name = "media_get_legacy", level = "debug")]
 pub(crate) async fn get_content_as_filename_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_content_as_filename::v3::Request>,
 ) -> Result<Response> {
 	let mxc = Mxc {
@@ -256,10 +253,9 @@ pub(crate) async fn get_content_as_filename_legacy_route(
 /// - Only redirects if `allow_redirect` is true
 /// - Uses client-provided `timeout_ms` if available, else defaults to 20
 ///   seconds
-#[tracing::instrument(skip_all, fields(%client), name = "media_thumbnail_get_legacy", level = "debug")]
+#[tracing::instrument(skip_all, name = "media_thumbnail_get_legacy", level = "debug")]
 pub(crate) async fn get_content_thumbnail_legacy_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_content_thumbnail::v3::Request>,
 ) -> Result<Response> {
 	let mxc = Mxc {

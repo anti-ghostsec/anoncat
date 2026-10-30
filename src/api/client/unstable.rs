@@ -4,7 +4,7 @@ use futures::StreamExt;
 use ruma::{OwnedRoomId, UInt, api::client::membership::mutual_rooms};
 use tuwunel_core::{Err, Result, err};
 
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// Maximum number of rooms returned in a single `mutual_rooms` page.
 const PAGE_SIZE: usize = 1000;
@@ -15,10 +15,9 @@ const PAGE_SIZE: usize = 1000;
 /// Gets all the rooms the sender shares with the specified user.
 ///
 /// An implementation of [MSC2666](https://github.com/matrix-org/matrix-spec-proposals/pull/2666)
-#[tracing::instrument(skip_all, fields(%client), name = "mutual_rooms")]
+#[tracing::instrument(skip_all, name = "mutual_rooms")]
 pub(crate) async fn get_mutual_rooms_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<mutual_rooms::v1::Request>,
 ) -> Result<mutual_rooms::v1::Response> {
 	let sender_user = body.sender_user();

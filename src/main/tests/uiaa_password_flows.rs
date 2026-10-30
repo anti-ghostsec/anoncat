@@ -108,7 +108,7 @@ async fn exercise(services: &Services, base: &str, ldap_enabled: bool) -> Result
 		let token = format!("uiaa-password-flow-test-access-token-{localpart}");
 		services
 			.users
-			.create_device(&user_id, None, (Some(&token), None), None, None, None)
+			.create_device(&user_id, None, (Some(&token), None), None, None)
 			.await?;
 
 		let response = services
@@ -167,7 +167,7 @@ async fn exercise_retention(services: &Services, base: &str) -> Result {
 
 	let sender = services
 		.users
-		.create_device(&user_id, None, (Some(token), None), None, None, None)
+		.create_device(&user_id, None, (Some(token), None), None, None)
 		.await?;
 
 	let client = &services.client.clients.default;
@@ -177,7 +177,7 @@ async fn exercise_retention(services: &Services, base: &str) -> Result {
 	for (padding, emptied) in [(0, false), (8192, false), (0, true)] {
 		let target = services
 			.users
-			.create_device(&user_id, None, (None, None), None, None, None)
+			.create_device(&user_id, None, (None, None), None, None)
 			.await?;
 
 		let initial = json!({"devices": [target], "padding": "x".repeat(padding)});

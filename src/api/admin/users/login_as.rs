@@ -51,7 +51,6 @@ pub(crate) async fn admin_login_as_route(
 			(Some(&access_token), expires_in),
 			None,
 			Some("Admin login"),
-			None,
 		)
 		.await?;
 

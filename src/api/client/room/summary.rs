@@ -22,7 +22,7 @@ use tuwunel_service::{
 	federation::feds::{Fault, Opts, OutcomeExt, Record},
 };
 
-use crate::{ClientIp, Ruma, RumaResponse};
+use crate::{Ruma, RumaResponse};
 
 /// # `GET /_matrix/client/unstable/im.nheko.summary/rooms/{roomIdOrAlias}/summary`
 ///
@@ -35,10 +35,9 @@ use crate::{ClientIp, Ruma, RumaResponse};
 /// An implementation of [MSC3266](https://github.com/matrix-org/matrix-spec-proposals/pull/3266)
 pub(crate) async fn get_room_summary_legacy(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_summary::v1::Request>,
 ) -> Result<RumaResponse<Response>> {
-	get_room_summary(State(services), ClientIp(client), body)
+	get_room_summary(State(services), body)
 		.boxed()
 		.await
 		.map(RumaResponse)
@@ -49,10 +48,9 @@ pub(crate) async fn get_room_summary_legacy(
 /// Returns a short description of the state of a room.
 ///
 /// An implementation of [MSC3266](https://github.com/matrix-org/matrix-spec-proposals/pull/3266)
-#[tracing::instrument(skip_all, fields(%client), name = "room_summary")]
+#[tracing::instrument(skip_all, name = "room_summary")]
 pub(crate) async fn get_room_summary(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_summary::v1::Request>,
 ) -> Result<Response> {
 	let (room_id, servers) = services

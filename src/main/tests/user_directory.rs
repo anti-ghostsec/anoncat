@@ -151,7 +151,7 @@ async fn exercise(services: &Services, base: &str, case: &Case) -> Result {
 	services.users.create(agent, None, None).await?;
 	services
 		.users
-		.create_device(agent, None, (Some(AGENT_TOKEN), None), None, None, None)
+		.create_device(agent, None, (Some(AGENT_TOKEN), None), None, None)
 		.await?;
 
 	assert_exclusive(services, agent, "did not register the agent into an exclusive namespace")

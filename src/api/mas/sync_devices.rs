@@ -60,7 +60,7 @@ pub(crate) async fn sync_devices_route(
 		.broad_and_then(async |device_id| {
 			services
 				.users
-				.create_device(&user_id, Some(device_id.as_ref()), (None, None), None, None, None)
+				.create_device(&user_id, Some(device_id.as_ref()), (None, None), None, None)
 				.await
 				.map(|_| ())
 		})

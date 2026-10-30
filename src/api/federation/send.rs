@@ -75,7 +75,6 @@ type Deliveries = SmallVec<[(OwnedDeviceId, u64); 1]>;
 	fields(
 		txn = str_truncated(body.transaction_id.as_str(), 20),
 		origin = body.origin().as_str(),
-		%client,
 	),
 )]
 pub(crate) async fn send_transaction_message_route(

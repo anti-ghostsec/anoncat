@@ -3,7 +3,7 @@ use ruma::{UserId, api::client::account::get_username_availability};
 use tuwunel_core::{Err, Result};
 
 use super::is_matrix_appservice_irc;
-use crate::{ClientIp, Ruma};
+use crate::Ruma;
 
 /// # `GET /_matrix/client/v3/register/available`
 ///
@@ -16,10 +16,9 @@ use crate::{ClientIp, Ruma};
 ///
 /// Note: This will not reserve the username, so the username might become
 /// invalid when trying to register
-#[tracing::instrument(skip_all, fields(%client), name = "register_available")]
+#[tracing::instrument(skip_all, name = "register_available")]
 pub(crate) async fn get_register_available_route(
 	State(services): State<crate::State>,
-	ClientIp(client): ClientIp,
 	body: Ruma<get_username_availability::v3::Request>,
 ) -> Result<get_username_availability::v3::Response> {
 	let is_irc = is_matrix_appservice_irc(body.appservice_info.as_ref());
