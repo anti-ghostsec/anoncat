@@ -6,7 +6,15 @@
 //! scattered seeks into a few long sequential reads and leaves the blocks in
 //! the block cache.
 
-use std::{ffi::CStr, sync::Arc, time::Instant};
+use std::{
+	ffi::CStr,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
+	thread::JoinHandle,
+	time::Instant,
+};
 
 use tuwunel_core::{Result, debug, info, warn};
 
@@ -20,24 +28,49 @@ const SST_SIZE: &CStr = c"rocksdb.total-sst-files-size";
 /// transferring rather than seeking.
 const READAHEAD: usize = 4 << 20;
 
+/// Keys scanned between checks for a stop request.
+const STOP_CHECK_KEYS: usize = 1024;
+
+/// The running prewarm. Dropping it stops the scan and waits for the thread,
+/// so the maps it holds are released before the database closes.
+pub(crate) struct Prewarm {
+	stop: Arc<AtomicBool>,
+	thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Prewarm {
+	fn drop(&mut self) {
+		self.stop.store(true, Ordering::Relaxed);
+		if let Some(thread) = self.thread.take() {
+			thread.join().ok();
+		}
+	}
+}
+
 /// Starts the prewarm on its own thread; the server does not wait for it.
-pub(crate) fn spawn(maps: Vec<Arc<Map>>) {
+pub(crate) fn spawn(maps: Vec<Arc<Map>>) -> Option<Prewarm> {
+	let stop = Arc::new(AtomicBool::new(false));
+	let stopping = stop.clone();
 	let spawned = std::thread::Builder::new()
 		.name("prewarm".into())
 		.spawn(move || {
-			if let Err(e) = prewarm(&maps) {
+			if let Err(e) = prewarm(&maps, &stopping) {
 				warn!("Database prewarm stopped: {e}");
 			}
 		});
 
-	if let Err(e) = spawned {
-		warn!("Database prewarm not started: {e}");
+	match spawned {
+		| Ok(thread) => Some(Prewarm { stop, thread: Some(thread) }),
+		| Err(e) => {
+			warn!("Database prewarm not started: {e}");
+			None
+		},
 	}
 }
 
 /// Scans columns smallest first, skipping any that would not fit in what is
 /// left of its block cache, so the scan never evicts what it already loaded.
-fn prewarm(maps: &[Arc<Map>]) -> Result {
+fn prewarm(maps: &[Arc<Map>], stop: &AtomicBool) -> Result {
 	let started = Instant::now();
 	let mut maps = maps
 		.iter()
@@ -49,7 +82,7 @@ fn prewarm(maps: &[Arc<Map>]) -> Result {
 	let (mut columns, mut bytes, mut skipped) = (0_usize, 0_u64, 0_usize);
 	for (size, map) in maps {
 		let engine = map.engine();
-		if !engine.ctx.server.is_running() {
+		if stop.load(Ordering::Relaxed) || !engine.ctx.server.is_running() {
 			return Ok(());
 		}
 
@@ -71,8 +104,16 @@ fn prewarm(maps: &[Arc<Map>]) -> Result {
 
 		let mut it = engine.db.raw_iterator_cf_opt(&map.cf(), opts);
 		it.seek_to_first();
+		let mut keys = 0_usize;
 		while it.valid() {
 			it.next();
+			keys = keys.wrapping_add(1);
+			if keys % STOP_CHECK_KEYS == 0
+				&& (stop.load(Ordering::Relaxed) || !engine.ctx.server.is_running())
+			{
+				debug!(column = map.name(), "Prewarm stopped for shutdown");
+				return Ok(());
+			}
 		}
 		it.status().map_err(map_err)?;
 

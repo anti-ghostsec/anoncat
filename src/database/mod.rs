@@ -54,6 +54,9 @@ use crate::maps::{Indexed, Maps, MapsKey, MapsVal, open as open_maps};
 /// preserve that ownership relationship for individual reads and atomic
 /// transactions.
 pub struct Database {
+	/// Declared first so it drops first: stopping the prewarm releases the
+	/// maps it scans before the engine closes.
+	_prewarm: Option<prewarm::Prewarm>,
 	maps: Maps,
 	indexed: Indexed,
 	/// The RocksDB engine backing every map in this database.
@@ -82,14 +85,19 @@ impl Database {
 
 		engine.set_cf_index(cf_index);
 
-		if server.config.rocksdb_prewarm
+		let prewarm = (server.config.rocksdb_prewarm
 			&& !server.config.rocksdb_read_only
-			&& !server.config.rocksdb_secondary
-		{
-			prewarm::spawn(maps.values().cloned().collect());
-		}
+			&& !server.config.rocksdb_secondary)
+			.then(|| prewarm::spawn(maps.values().cloned().collect()))
+			.flatten();
 
-		Ok(Arc::new(Self { maps, indexed, engine, _ctx: ctx }))
+		Ok(Arc::new(Self {
+			_prewarm: prewarm,
+			maps,
+			indexed,
+			engine,
+			_ctx: ctx,
+		}))
 	}
 
 	#[inline]
