@@ -88,6 +88,25 @@ pub fn new(args: Option<&Args>, runtime: Option<&Runtime>) -> Result<Arc<Self>, 
 	}))
 }
 
+/// A test's database is deleted when the database closes, but a shutdown that
+/// races a task still holding it leaves it open and the directory behind. The
+/// test is over once its server goes, so the directory goes with it. Guarded
+/// like the close-time cleanup: the `cleanup` test directive on a server named
+/// localhost.
+impl Drop for Server {
+	fn drop(&mut self) {
+		let config = &self.server.config;
+		if !config.test.contains("cleanup") || !config.server_name.as_str().starts_with("localhost")
+		{
+			return;
+		}
+
+		if config.database_path.is_dir() {
+			std::fs::remove_dir_all(&config.database_path).ok();
+		}
+	}
+}
+
 pub(crate) fn config_sources(args: &Args) -> Sources {
 	// Taken out of the retained copy rather than cloned beside it, so the paths
 	// have one home.

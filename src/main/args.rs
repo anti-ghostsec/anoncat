@@ -321,7 +321,16 @@ pub fn default_test(name: &[&str]) -> Self {
 	Self::default()
 		.with_tests(name)
 		.with_option("server_name=\"localhost\"")
-		.with_database_path(&test_database_root().join(random_string(32)))
+		.with_database_path(&test_database_root().join(format!("{}-{}", test_binary(), random_string(32))))
+}
+
+/// Names a test database after the binary that made it, so a leftover is
+/// traceable to its test.
+fn test_binary() -> String {
+	std::env::current_exe()
+		.ok()
+		.and_then(|exe| exe.file_stem().map(|s| s.to_string_lossy().into_owned()))
+		.unwrap_or_default()
 }
 
 /// Returns these arguments with the database path override appended.
