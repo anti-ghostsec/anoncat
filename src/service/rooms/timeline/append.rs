@@ -214,6 +214,8 @@ where
 		.log_err()
 		.ok();
 
+	self.services.plugins.notify(pdu);
+
 	self.append_pdu_effects(pdu_id, pdu, shortroomid, count, state_lock)
 		.await?;
 

@@ -59,8 +59,9 @@ pub async fn send_message(&self, message_content: RoomMessageEventContent) -> Re
 	self.send_to_room(message_content, &room_id).await
 }
 
+/// Sends a message to a room as the server's bot account.
 #[implement(super::Service)]
-async fn send_to_room(&self, content: RoomMessageEventContent, room_id: &RoomId) -> Result {
+pub async fn send_to_room(&self, content: RoomMessageEventContent, room_id: &RoomId) -> Result {
 	let user_id = &self.services.globals.server_user;
 
 	self.respond_to_room(content, room_id, user_id)

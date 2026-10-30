@@ -24,6 +24,7 @@ pub mod login_ratelimit;
 pub mod media;
 pub mod membership;
 pub mod oauth;
+pub mod plugins;
 pub mod presence;
 pub mod profile;
 pub mod pusher;

@@ -290,6 +290,19 @@ version = "0.5"
 [workspace.dependencies.lru-cache]
 version = "0.1"
 
+# anoncat plugins: sandboxed WebAssembly components. No parallel
+# compilation: it spreads work over every core, and this host must not
+# load more than four.
+[workspace.dependencies.wasmtime]
+version = "48"
+default-features = false
+features = ["runtime", "cranelift", "component-model", "std"]
+
+[workspace.dependencies.wasmtime-wasi]
+version = "48"
+default-features = false
+features = ["p2"]
+
 [workspace.dependencies.maplit]
 version = "1.0"
 

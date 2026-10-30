@@ -1,0 +1,9 @@
+# Manifest for the wordfilter example plugin.
+enabled = false
+description = "Blocks messages containing listed words; counts messages per room."
+check_events = true
+send_messages = false
+events = ["m.room.message"]
+
+[config]
+words = ["badword", "spamlink.example"]

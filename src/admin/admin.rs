@@ -8,6 +8,7 @@ use crate::{
 	debug::{self, DebugCommand},
 	federation::{self, FederationCommand},
 	media::{self, MediaCommand},
+	plugins::{self, PluginsCommand},
 	query::{self, QueryCommand},
 	room::{self, RoomCommand},
 	server::{self, ServerCommand},
@@ -72,6 +73,10 @@ pub(super) enum AdminCommand {
 	#[command(subcommand)]
 	/// - Commands for managing registration tokens
 	Token(TokenCommand),
+
+	#[command(subcommand)]
+	/// - Load, unload and call WebAssembly plugins
+	Plugins(PluginsCommand),
 }
 
 #[tracing::instrument(skip_all, name = "command")]
@@ -88,5 +93,6 @@ pub(super) async fn process(command: AdminCommand, context: &Context<'_>) -> Res
 		| Debug(command) => debug::process(command, context).await,
 		| Query(command) => query::process(command, context).await,
 		| Token(command) => token::process(command, context).await,
+		| Plugins(command) => plugins::process(command, context).await,
 	}
 }

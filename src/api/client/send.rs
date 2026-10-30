@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use axum::extract::State;
 use futures::future::try_join4;
 use ruma::{
-	DeviceId, RoomId, TransactionId, UserId,
+	DeviceId, MilliSecondsSinceUnixEpoch, RoomId, TransactionId, UserId,
 	api::client::message::{
 		send_message_event, send_message_event::v3::Response as SendMessageResponse,
 	},
@@ -20,7 +20,7 @@ use tuwunel_core::{
 	Err, Result, debug_warn, err, result::NotFound, utils::string_from_bytes, warn,
 };
 use tuwunel_matrix::{Event, PduEvent, pdu::PduBuilder};
-use tuwunel_service::Services;
+use tuwunel_service::{Services, plugins::PluginEvent};
 
 use crate::{Ruma, utils::is_self_redaction};
 
@@ -107,6 +107,21 @@ pub(crate) async fn send_message_event_route(
 			return Err!(Request(UserSuspended("Can only redact own events while suspended.")));
 		}
 	}
+
+	// Plugins with the check_events capability may refuse it.
+	services
+		.plugins
+		.check(PluginEvent {
+			event_id: String::new(),
+			room_id: body.room_id.to_string(),
+			sender: sender_user.to_string(),
+			kind: body.event_type.to_string(),
+			state_key: None,
+			content: body.body.body.json().get().to_owned(),
+			origin_server_ts: MilliSecondsSinceUnixEpoch::now().get().into(),
+		})
+		.await
+		.map_err(|reason| err!(Request(Forbidden("{reason}"))))?;
 
 	let state_lock = services.state.mutex.lock(&body.room_id).await;
 	let event_type = body.event_type.to_cow_str();

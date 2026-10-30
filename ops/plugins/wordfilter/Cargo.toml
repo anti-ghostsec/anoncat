@@ -1,0 +1,22 @@
+[package]
+name = "wordfilter"
+version = "0.1.0"
+edition = "2024"
+description = "Example anoncat plugin: blocks messages with listed words, counts messages per room"
+publish = false
+
+# Built on its own, not as part of the server's workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.55"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

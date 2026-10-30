@@ -304,6 +304,10 @@ pub(super) static MAPS: &[Descriptor] = &[
 		..descriptor::RANDOM
 	},
 	Descriptor {
+		name: "pluginid_kv",
+		..descriptor::RANDOM_SMALL
+	},
+	Descriptor {
 		name: "publicroomids",
 		..descriptor::RANDOM_SMALL
 	},

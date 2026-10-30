@@ -12,6 +12,7 @@ pub(crate) mod debug;
 mod event_fetcher;
 pub(crate) mod federation;
 pub(crate) mod media;
+pub(crate) mod plugins;
 pub(crate) mod query;
 pub(crate) mod room;
 pub(crate) mod server;
