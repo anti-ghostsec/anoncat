@@ -1,7 +1,7 @@
 # Systemd holds anoncat's listening socket, so connections queue instead of
 # being refused while the server restarts or updates. The port is the local
-# end of the VPN port forward (anoncat-netd redirects the forwarded port on
-# wg0 to it); the firewall only lets it in on wg0.
+# end of the VPN port forward: an nftables rule redirects the forwarded port
+# on wg0 to it. Bound to wg0, so nothing reaches it from the LAN.
 [Unit]
 Description=anoncat Matrix homeserver socket
 
@@ -10,6 +10,7 @@ ListenStream=8448
 BindIPv6Only=both
 Backlog=1024
 NoDelay=true
+BindToDevice=wg0
 
 [Install]
 WantedBy=sockets.target

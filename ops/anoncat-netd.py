@@ -20,6 +20,7 @@ Usage:
   anoncat-netd.py --show     print the domain's current Dynu settings and records
 """
 
+import ipaddress
 import json
 import os
 import socket
@@ -44,11 +45,18 @@ def log(msg):
     print(time.strftime("%Y-%m-%d %H:%M:%S"), msg, flush=True)
 
 
-def natpmp(payload):
+def natpmp(payload, size):
+    """One NAT-PMP request to Proton's gateway over wg0. Only a well-formed
+    answer to this request from the gateway counts: a spoofed reply from the
+    LAN must never get an address published."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"wg0")
         s.settimeout(3)
         s.sendto(payload, (GATEWAY, 5351))
-        data = s.recv(64)
+        while True:
+            data, sender = s.recvfrom(64)
+            if sender == (GATEWAY, 5351) and len(data) >= size and data[1] == 128 + payload[1]:
+                break
     rc = struct.unpack("!H", data[2:4])[0]
     if rc != 0:
         raise RuntimeError(f"NAT-PMP error code {rc}")
@@ -57,12 +65,14 @@ def natpmp(payload):
 
 def forward():
     """Return (exit_ip, port) from Proton, renewing the TCP and UDP mappings."""
-    ip = socket.inet_ntoa(natpmp(b"\x00\x00")[8:12])
+    ip = socket.inet_ntoa(natpmp(b"\x00\x00", 12)[8:12])
+    if not ipaddress.ip_address(ip).is_global:
+        raise RuntimeError(f"gateway reported a non-public exit address {ip}")
     ports = set()
     # Proton's convention: internal port 1, requested public port 0. Renewing
     # with the same request keeps the same port for as long as the tunnel lives.
     for op in (2, 1):  # TCP, UDP
-        data = natpmp(struct.pack("!BBHHHI", 0, op, 0, 1, 0, LEASE))
+        data = natpmp(struct.pack("!BBHHHI", 0, op, 0, 1, 0, LEASE), 16)
         ports.add(struct.unpack("!H", data[10:12])[0])
     if len(ports) != 1:
         raise RuntimeError(f"TCP and UDP got different ports: {sorted(ports)}")

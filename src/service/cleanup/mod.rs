@@ -13,7 +13,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{StreamExt, pin_mut};
-use ruma::{MilliSecondsSinceUnixEpoch, OwnedRoomId, api::Direction};
+use ruma::{MilliSecondsSinceUnixEpoch, OwnedRoomId};
 use tuwunel_core::{
 	Result, debug_info, implement, info,
 	utils::{
@@ -184,20 +184,33 @@ async fn purge_history_older_than(&self, max_age: Duration) -> (usize, usize) {
 		.collect()
 		.await;
 
+	let admin_room = self.services.admin.get_admin_room().await.ok();
 	let (mut events, mut purged_rooms) = (0_usize, 0_usize);
 	for room_id in rooms {
 		if !self.services.server.is_running() {
 			break;
 		}
 
-		// The newest event at or before the cutoff; everything before it goes.
-		let boundary = self
-			.services
-			.timeline
-			.pdus_near_ts(None, &room_id, cutoff, Direction::Backward);
+		// The admin room's history is the record of what admins did.
+		if admin_room.as_deref() == Some(&*room_id) {
+			continue;
+		}
 
-		pin_mut!(boundary);
-		let Some(Ok((boundary, _))) = boundary.next().await else {
+		// Walk the timeline in the order events arrived and stop at the first
+		// one newer than the cutoff: everything before it goes. Timestamps are
+		// chosen by the sending server, so an old-looking event can only end
+		// the walk early (purging less), never pull the boundary forward.
+		let timeline = self.services.timeline.pdus(None, &room_id, None);
+		pin_mut!(timeline);
+		let mut boundary = None;
+		while let Some(Ok((count, pdu))) = timeline.next().await {
+			boundary = Some(count);
+			if pdu.origin_server_ts > cutoff.get() {
+				break;
+			}
+		}
+
+		let Some(boundary) = boundary else {
 			continue;
 		};
 

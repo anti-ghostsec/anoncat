@@ -54,6 +54,13 @@ pub(super) async fn serve(services: Arc<Services>, handle: ServerHandle) -> Resu
 
 	let (app, _guard) = layers::build(&services)?;
 
+	// Admin APIs answer only on the loopback panel listener; everything else
+	// (public port, unix socket) gets the router without them.
+	let panel_app = config
+		.admin_panel_address
+		.map(|addr| super::panel::panel_router(app.clone(), addr));
+	let app = super::panel::public_router(app, panel_app.is_some());
+
 	let mut join_set = JoinSet::new();
 
 	let socket_path = &config.unix_socket_path;
@@ -159,8 +166,8 @@ pub(super) async fn serve(services: Arc<Services>, handle: ServerHandle) -> Resu
 			.map_err(|e| err!(Config("admin_panel_address", "Failed to bind {addr}: {e}")))?;
 		listener.set_nonblocking(true)?;
 
-		let panel = super::panel::routes().merge(app.clone());
-		futures.extend(plain::serve(&panel, &handle.handle_ip, once(listener))?);
+		let panel = panel_app.as_ref().expect("built when admin_panel_address is set");
+		futures.extend(plain::serve(panel, &handle.handle_ip, once(listener))?);
 		info!("Admin panel at http://{addr}/_anoncat/panel/");
 	}
 

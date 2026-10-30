@@ -7,17 +7,21 @@
 # The running server execs the new binary under the same PID while systemd's
 # socket stays open, so clients wait a few seconds instead of being refused.
 # If it isn't ready again within the timeout, the previous binary goes back.
-# Run as root.
+# Run as root. The new binary is copied to a root-owned file before it is
+# checked, and only ever run as the anoncat user, never as root.
 set -euo pipefail
 
 BIN=/usr/local/bin/anoncat
 PREV=$BIN.prev
 SERVICE=anoncat.service
+RUN_AS=anoncat
 TIMEOUT=600
 
 die() { echo "anoncat-update: $*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "run as root"
+
+version() { runuser -u "$RUN_AS" -- "$1" --version 2>/dev/null | head -1; }
 
 state() { systemctl show -P ActiveState "$SERVICE"; }
 mainpid() { systemctl show -P MainPID "$SERVICE"; }
@@ -37,7 +41,7 @@ restart_in_place() {
 	# Returns once the new image reports ready (Type=notify-reload).
 	if timeout "$TIMEOUT" systemctl reload "$SERVICE" &&
 		[[ $(mainpid) == "$pid" && $(state) == active ]]; then
-		echo "Live on $("$BIN" --version 2>/dev/null | head -1) after $((SECONDS - t))s."
+		echo "Live on $(version "$BIN") after $((SECONDS - t))s."
 		return 0
 	fi
 	return 1
@@ -62,14 +66,20 @@ case ${1:-} in
 	sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
 	;;
 *)
-	new=$1
-	[[ -f $new && -x $new ]] || die "$new isn't an executable file"
-	"$new" --version >/dev/null 2>&1 || die "$new doesn't run (--version failed)"
-	cmp -s "$new" "$BIN" && die "$new is already the installed binary"
+	[[ -f $1 ]] || die "$1 isn't a file"
+	# Checked and installed from this copy only, so the file can't be swapped
+	# between the check and the install.
+	staged=$(mktemp "$BIN.staged.XXXXXX")
+	trap 'rm -f "$staged"' EXIT
+	cp "$1" "$staged"
+	chown root:root "$staged"
+	chmod 0755 "$staged"
+	[[ -n $(version "$staged") ]] || die "$1 doesn't run (--version failed)"
+	cmp -s "$staged" "$BIN" && die "$1 is already the installed binary"
 
 	cp -p "$BIN" "$PREV"
-	install_bin "$new"
-	echo "Installed $("$BIN" --version | head -1); restarting in place..."
+	install_bin "$staged"
+	echo "Installed $(version "$BIN"); restarting in place..."
 	if ! restart_in_place; then
 		echo "The new binary didn't come up within ${TIMEOUT}s." >&2
 		journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true

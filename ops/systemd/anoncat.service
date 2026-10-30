@@ -14,6 +14,15 @@ RequiresMountsFor=/Drives/server/data
 ConditionPathIsMountPoint=/Drives/server/data
 
 [Service]
+# The killswitch for the server's own traffic: the kernel lets it use only
+# loopback and the VPN, so if wg0 goes down it goes offline instead of
+# reaching anything from the home IP.
+RestrictNetworkInterfaces=lo wg0
+# DNS straight to Proton's resolver inside the tunnel, never the home router.
+BindReadOnlyPaths=/etc/anoncat/resolv.conf:/etc/resolv.conf
+# Logs kept in RAM only (journalctl --namespace=anoncat); see
+# ops/systemd/journald@anoncat.conf.
+LogNamespace=anoncat
 Type=notify-reload
 NotifyAccess=main
 WatchdogSec=30
@@ -40,7 +49,8 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/Drives/server/data
 ProtectHome=yes
-PrivateTmp=yes
+# Its own /tmp and /var/tmp, both in RAM.
+PrivateTmp=disconnected
 PrivateDevices=yes
 PrivateMounts=yes
 PrivateUsers=yes

@@ -24,6 +24,7 @@ MAPPER=anoncat-vault
 MOUNT=${ANONCAT_VAULT_MOUNT:-/Drives/server/data}
 OWNER=${ANONCAT_VAULT_OWNER:-anoncat}
 SERVICE=${ANONCAT_SERVICE:-anoncat.service}
+SOCKET=${ANONCAT_SOCKET:-anoncat.socket}
 MOUNT_OPTS=noatime,nodev,nosuid,noexec
 
 die() { echo "anoncat-vault: $*" >&2; exit 1; }
@@ -51,9 +52,12 @@ create() {
 	if [[ -e $CONTAINER ]]; then
 		cryptsetup isLuks "$CONTAINER" \
 			&& die "$CONTAINER is already a vault; refusing to overwrite it"
-		# No LUKS header: the leftover of a create that was cancelled.
-		echo "Removing $CONTAINER left by an earlier create that didn't finish."
-		rm -f "$CONTAINER"
+		# No LUKS header: a create that didn't finish, or a damaged vault whose
+		# header might still be restored from a backup. Kept, never deleted.
+		local kept
+		kept="$CONTAINER.broken-$(date +%Y%m%d-%H%M%S)"
+		mv "$CONTAINER" "$kept"
+		echo "Moved $CONTAINER (no LUKS header) to $kept; delete it once you're sure it's not needed."
 	fi
 
 	echo "Creating a $size container at $CONTAINER."
@@ -94,14 +98,16 @@ unlock() {
 	is_mounted || mount_it
 	echo "Unlocked: $MOUNT"
 	if have_service; then
-		systemctl start "$SERVICE"
+		systemctl start "$SOCKET" "$SERVICE"
 		echo "Started $SERVICE"
 	fi
 }
 
 lock() {
-	if have_service && systemctl is-active -q "$SERVICE"; then
-		systemctl stop "$SERVICE"
+	# The socket too: a connection arriving before the unmount would start the
+	# server again and keep the vault busy.
+	if have_service; then
+		systemctl stop "$SOCKET" "$SERVICE"
 		echo "Stopped $SERVICE"
 	fi
 	if is_mounted; then

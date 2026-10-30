@@ -8,22 +8,30 @@
 //!
 //! Events reach plugins through a queue, so a slow or broken plugin never
 //! holds up the server; only `check-event`, which can refuse a local user's
-//! message, runs inline, under a short time limit and failing open.
+//! message, runs inline, on its own instance, under a short time limit, and
+//! failing open unless the manifest says `check_fail_closed`.
+//!
+//! A call that traps (time or memory limit, panic) leaves its instance
+//! unusable, so a fresh one is started in its place; a plugin that keeps
+//! failing is unloaded and the admin room told.
 
 use std::{
-	collections::BTreeMap,
+	collections::{BTreeMap, VecDeque},
 	path::PathBuf,
-	sync::{Arc, Mutex, RwLock},
-	time::Duration,
+	sync::{
+		Arc, Mutex, RwLock,
+		atomic::{AtomicU32, Ordering},
+	},
+	time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
 use ruma::{OwnedRoomId, RoomId, events::room::message::RoomMessageEventContent};
 use serde::Deserialize;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::timeout};
 use tuwunel_core::{Err, Result, debug, err, error, implement, info, toml, warn};
 use tuwunel_database::Map;
-use tuwunel_matrix::{Event, PduEvent};
+use tuwunel_matrix::{Event, PduEvent, pdu::MAX_PDU_BYTES};
 use wasmtime::{
 	Config, Engine, Store, StoreLimits, StoreLimitsBuilder,
 	component::{Component, HasSelf, Linker, ResourceTable},
@@ -52,9 +60,23 @@ const CHECK_TICKS: u64 = 20;
 const EVENT_TICKS: u64 = 100;
 const COMMAND_TICKS: u64 = 1000;
 
+/// How long a message waits for a busy checker before it counts as a failed
+/// check. Waiting holds no thread.
+const CHECK_WAIT: Duration = Duration::from_millis(500);
+
+/// Failures in a row before a plugin is unloaded instead of restarted.
+const MAX_FAILURES: u32 = 3;
+
 const MEMORY_LIMIT: usize = 64 << 20;
+const TABLE_LIMIT: usize = 10_000;
 const EVENT_QUEUE: usize = 1024;
 const SEND_QUEUE: usize = 256;
+
+/// Messages one plugin instance may send per minute.
+const SEND_RATE: usize = 20;
+const KV_KEY_LIMIT: usize = 1024;
+const KV_VALUE_LIMIT: usize = 64 << 10;
+const LOG_LIMIT: usize = 2048;
 
 pub struct Service {
 	services: Arc<crate::services::OnceServices>,
@@ -77,6 +99,9 @@ pub struct Manifest {
 	pub description: String,
 	/// May refuse local users' messages (`check-event`).
 	pub check_events: bool,
+	/// Refuse a message when the check fails or times out, instead of
+	/// allowing it.
+	pub check_fail_closed: bool,
 	/// May send messages as the server's bot account.
 	pub send_messages: bool,
 	/// Event types delivered to `on-event`; "*" for all, empty for none.
@@ -89,7 +114,26 @@ pub struct Manifest {
 pub struct Loaded {
 	pub name: String,
 	pub manifest: Manifest,
-	instance: Mutex<Instance>,
+	factory: Factory,
+	/// For `check-event` only, so events and commands never hold up sends.
+	checker: Option<Slot>,
+	/// For `on-event` and `on-command`.
+	worker: Slot,
+	failures: AtomicU32,
+}
+
+type Slot = Arc<tokio::sync::Mutex<Instance>>;
+
+/// Starts instances of one compiled plugin.
+struct Factory {
+	engine: Engine,
+	linker: Linker<State>,
+	component: Component,
+	name: String,
+	manifest: Manifest,
+	kv: Arc<Map>,
+	sends: mpsc::Sender<Outgoing>,
+	runtime: tokio::runtime::Handle,
 }
 
 struct Instance {
@@ -103,6 +147,7 @@ struct State {
 	send_messages: bool,
 	kv: Arc<Map>,
 	sends: mpsc::Sender<Outgoing>,
+	sent: VecDeque<Instant>,
 	runtime: tokio::runtime::Handle,
 	wasi: WasiCtx,
 	table: ResourceTable,
@@ -251,63 +296,91 @@ pub async fn load(self: &Arc<Self>, name: &str) -> Result {
 
 	let manifest = self.manifest(name)?;
 	let path = self.dir().join(format!("{name}.wasm"));
-	let this = self.clone();
+	let engine = self.engine.clone();
+	let linker = self.linker.clone();
+	let kv = self.kv.clone();
+	let sends = self.sends.clone();
+	let runtime = tokio::runtime::Handle::current();
 	let name = name.to_owned();
 
-	let loaded = tokio::task::spawn_blocking(move || this.instantiate(name, manifest, &path))
-		.await
-		.map_err(|e| err!("Plugin load task: {e}"))??;
+	let loaded = tokio::task::spawn_blocking(move || -> Result<Loaded> {
+		let component = Component::from_file(&engine, &path)
+			.map_err(|e| err!("Can't compile {}: {e}", path.display()))?;
 
-	let loaded = Arc::new(loaded);
-	let config = serde_json::to_string(&loaded.manifest.config)?;
-	let init = self
-		.call(&loaded, INIT_TICKS, move |b, s| b.call_init(s, &config))
-		.await?;
+		let factory = Factory {
+			engine,
+			linker,
+			component,
+			name: name.clone(),
+			manifest: manifest.clone(),
+			kv,
+			sends,
+			runtime,
+		};
 
-	if let Err(reason) = init {
-		return Err!("Plugin {} refused to start: {reason}", loaded.name);
-	}
+		let worker = factory.start()?;
+		let checker = manifest
+			.check_events
+			.then(|| factory.start())
+			.transpose()?;
+
+		Ok(Loaded {
+			name,
+			manifest,
+			factory,
+			checker: checker.map(|i| Arc::new(tokio::sync::Mutex::new(i))),
+			worker: Arc::new(tokio::sync::Mutex::new(worker)),
+			failures: AtomicU32::new(0),
+		})
+	})
+	.await
+	.map_err(|e| err!("Plugin load task: {e}"))??;
 
 	self.plugins
 		.write()
 		.expect("locked")
-		.insert(loaded.name.clone(), loaded);
+		.insert(loaded.name.clone(), Arc::new(loaded));
 
 	Ok(())
 }
 
-#[implement(Service)]
-fn instantiate(&self, name: String, manifest: Manifest, path: &std::path::Path) -> Result<Loaded> {
-	let component = Component::from_file(&self.engine, path)
-		.map_err(|e| err!("Can't compile {}: {e}", path.display()))?;
+impl Factory {
+	/// A fresh instance, started with the manifest's config. Blocking.
+	fn start(&self) -> Result<Instance> {
+		let state = State {
+			name: self.name.clone(),
+			send_messages: self.manifest.send_messages,
+			kv: self.kv.clone(),
+			sends: self.sends.clone(),
+			sent: VecDeque::new(),
+			runtime: self.runtime.clone(),
+			// Nothing: no files, environment, arguments, network or stdio.
+			wasi: WasiCtxBuilder::new().build(),
+			table: ResourceTable::new(),
+			limits: StoreLimitsBuilder::new()
+				.memory_size(MEMORY_LIMIT)
+				.memories(4)
+				.table_elements(TABLE_LIMIT)
+				.tables(16)
+				.instances(8)
+				.build(),
+		};
 
-	let state = State {
-		name: name.clone(),
-		send_messages: manifest.send_messages,
-		kv: self.kv.clone(),
-		sends: self.sends.clone(),
-		runtime: tokio::runtime::Handle::current(),
-		// Nothing: no files, environment, arguments, network or stdio.
-		wasi: WasiCtxBuilder::new().build(),
-		table: ResourceTable::new(),
-		limits: StoreLimitsBuilder::new()
-			.memory_size(MEMORY_LIMIT)
-			.instances(8)
-			.build(),
-	};
+		let mut store = Store::new(&self.engine, state);
+		store.limiter(|state| &mut state.limits);
+		store.set_epoch_deadline(INIT_TICKS);
 
-	let mut store = Store::new(&self.engine, state);
-	store.limiter(|state| &mut state.limits);
-	store.set_epoch_deadline(INIT_TICKS);
+		let bindings = Plugin::instantiate(&mut store, &self.component, &self.linker)
+			.map_err(|e| err!("Can't start plugin {}: {e}", self.name))?;
 
-	let bindings = Plugin::instantiate(&mut store, &component, &self.linker)
-		.map_err(|e| err!("Can't start {}: {e}", path.display()))?;
-
-	Ok(Loaded {
-		name,
-		manifest,
-		instance: Mutex::new(Instance { store, bindings }),
-	})
+		let config = serde_json::to_string(&self.manifest.config)?;
+		store.set_epoch_deadline(INIT_TICKS);
+		match bindings.call_init(&mut store, &config) {
+			| Ok(Ok(())) => Ok(Instance { store, bindings }),
+			| Ok(Err(reason)) => Err!("Plugin {} refused to start: {reason}", self.name),
+			| Err(e) => Err!("Plugin {} failed to start: {e:#}", self.name),
+		}
+	}
 }
 
 /// Unloads a plugin. Calls already running finish first.
@@ -328,12 +401,15 @@ pub async fn command(&self, name: &str, args: Vec<String>) -> Result<String> {
 		return Err!(Request(NotFound("No plugin {name} is loaded.")));
 	};
 
-	self.call(&plugin, COMMAND_TICKS, move |b, s| b.call_on_command(s, &args))
-		.await
+	self.call(&plugin, &plugin.worker, COMMAND_TICKS, None, move |b, s| {
+		b.call_on_command(s, &args)
+	})
+	.await
 }
 
 /// Asks the plugins allowed to check events whether a local user may send
-/// this. The first refusal wins; a plugin that fails or times out allows it.
+/// this. The first refusal wins; a plugin that fails or times out allows it,
+/// unless its manifest says `check_fail_closed`.
 #[implement(Service)]
 pub async fn check(&self, event: PluginEvent) -> Result<(), String> {
 	let checkers: Vec<_> = self
@@ -349,15 +425,31 @@ pub async fn check(&self, event: PluginEvent) -> Result<(), String> {
 		return Ok(());
 	}
 
+	// No event this big is accepted anyway, and handing one over would only
+	// let a sender push a plugin past its limits.
+	if event.content.len() > MAX_PDU_BYTES {
+		return Err("The message is too large.".to_owned());
+	}
+
 	let event = Arc::new(event);
 	for plugin in checkers {
+		let Some(slot) = plugin.checker.as_ref() else {
+			continue;
+		};
+
 		let event = event.clone();
 		match self
-			.call(&plugin, CHECK_TICKS, move |b, s| b.call_check_event(s, &event))
+			.call(&plugin, slot, CHECK_TICKS, Some(CHECK_WAIT), move |b, s| {
+				b.call_check_event(s, &event)
+			})
 			.await
 		{
 			| Ok(Verdict::Allow) => {},
 			| Ok(Verdict::Reject(reason)) => return Err(reason),
+			| Err(e) if plugin.manifest.check_fail_closed => {
+				debug!(plugin = %plugin.name, "check-event failed, refusing: {e}");
+				return Err("The message couldn't be checked; try again.".to_owned());
+			},
 			| Err(e) => debug!(plugin = %plugin.name, "check-event failed, allowing: {e}"),
 		}
 	}
@@ -369,6 +461,15 @@ pub async fn check(&self, event: PluginEvent) -> Result<(), String> {
 /// when the queue is full the event is dropped for plugins.
 #[implement(Service)]
 pub fn notify(&self, pdu: &PduEvent) {
+	// The bot's own messages are what plugins send; handing them back would
+	// let a plugin answer itself forever. Oversized content is skipped for the
+	// same reason as in `check`.
+	if pdu.sender() == self.services.globals.server_user
+		|| pdu.content().get().len() > MAX_PDU_BYTES
+	{
+		return;
+	}
+
 	let kind = pdu.kind().to_string();
 	let wanted = self
 		.plugins
@@ -414,7 +515,9 @@ async fn deliver(&self, event: Arc<PluginEvent>) {
 	for plugin in plugins {
 		let event = event.clone();
 		if let Err(e) = self
-			.call(&plugin, EVENT_TICKS, move |b, s| b.call_on_event(s, &event))
+			.call(&plugin, &plugin.worker, EVENT_TICKS, None, move |b, s| {
+				b.call_on_event(s, &event)
+			})
 			.await
 		{
 			debug!(plugin = %plugin.name, "on-event failed: {e}");
@@ -424,7 +527,9 @@ async fn deliver(&self, event: Arc<PluginEvent>) {
 
 #[implement(Service)]
 async fn send(&self, send: Outgoing) {
-	let content = RoomMessageEventContent::text_plain(send.body);
+	// A notice: clients show it as a bot's, and the admin command parser
+	// ignores notices, so a plugin can never run admin commands.
+	let content = RoomMessageEventContent::notice_plain(send.body);
 	if let Err(e) = self
 		.services
 		.admin
@@ -435,46 +540,88 @@ async fn send(&self, send: Outgoing) {
 	}
 }
 
-/// Runs one call into a plugin on a blocking thread, under a time limit.
+/// Runs one call into a plugin instance on a blocking thread, under a time
+/// limit. With `wait`, a busy instance counts as a failure after that long;
+/// the waiting holds no thread.
 ///
-/// A call that fails (a trap: timeout, memory limit, panic) leaves the
-/// instance unusable, so the plugin is unloaded at once and the admin room
-/// is told; `!admin plugins load` starts it fresh.
+/// A trap leaves the instance unusable, so a fresh one replaces it; after
+/// `MAX_FAILURES` in a row, or if it can't be restarted, the plugin is
+/// unloaded and the admin room told.
 #[implement(Service)]
-async fn call<R, F>(&self, plugin: &Arc<Loaded>, ticks: u64, f: F) -> Result<R>
+async fn call<R, F>(
+	&self,
+	plugin: &Arc<Loaded>,
+	slot: &Slot,
+	ticks: u64,
+	wait: Option<Duration>,
+	f: F,
+) -> Result<R>
 where
 	R: Send + 'static,
 	F: FnOnce(&Plugin, &mut Store<State>) -> wasmtime::Result<R> + Send + 'static,
 {
+	let guard = match wait {
+		| None => slot.clone().lock_owned().await,
+		| Some(wait) => timeout(wait, slot.clone().lock_owned())
+			.await
+			.map_err(|_| err!("Plugin {} is busy", plugin.name))?,
+	};
+
 	let target = plugin.clone();
 	let result = tokio::task::spawn_blocking(move || {
-		let mut instance = target.instance.lock().expect("locked");
+		let mut instance = guard;
 		let Instance { store, bindings } = &mut *instance;
 		store.set_epoch_deadline(ticks);
-		f(bindings, store)
+		f(bindings, store).map_err(|e| {
+			let restarted = target
+				.factory
+				.start()
+				.map(|fresh| *instance = fresh);
+
+			(e, restarted)
+		})
 	})
 	.await
 	.map_err(|e| err!("Plugin call task: {e}"))?;
 
 	match result {
-		| Ok(value) => Ok(value),
-		| Err(e) => {
-			// Only the instance that failed: a reload may already have replaced it.
-			let current = self
-				.plugins
-				.read()
-				.expect("locked")
-				.get(&plugin.name)
-				.is_some_and(|loaded| Arc::ptr_eq(loaded, plugin));
+		| Ok(value) => {
+			plugin.failures.store(0, Ordering::Relaxed);
+			Ok(value)
+		},
+		| Err((e, restarted)) => {
+			let failures = plugin
+				.failures
+				.fetch_add(1, Ordering::Relaxed)
+				.saturating_add(1);
 
-			if current && self.unload(&plugin.name).is_ok() {
-				let notice = format!("Plugin {} failed and was unloaded: {e:#}", plugin.name);
-				error!("{notice}");
-				self.services.admin.notify_loud(&notice).await;
+			if restarted.is_err() || failures >= MAX_FAILURES {
+				self.retire(plugin, &e).await;
+			} else {
+				warn!(plugin = %plugin.name, "Plugin call failed; restarted it: {e:#}");
 			}
 
 			Err!("Plugin {} failed: {e:#}", plugin.name)
 		},
+	}
+}
+
+/// Unloads a failing plugin, unless a reload has already replaced it.
+#[implement(Service)]
+async fn retire(&self, plugin: &Arc<Loaded>, e: &wasmtime::Error) {
+	let removed = {
+		let mut plugins = self.plugins.write().expect("locked");
+		let current = plugins
+			.get(&plugin.name)
+			.is_some_and(|loaded| Arc::ptr_eq(loaded, plugin));
+
+		current.then(|| plugins.remove(&plugin.name)).flatten()
+	};
+
+	if removed.is_some() {
+		let notice = format!("Plugin {} kept failing and was unloaded: {e:#}", plugin.name);
+		error!("{notice}");
+		self.services.admin.notify_loud(&notice).await;
 	}
 }
 
@@ -491,6 +638,18 @@ impl types::Host for State {}
 impl host::Host for State {
 	fn log(&mut self, level: host::Level, message: String) {
 		let plugin = &self.name;
+		// One line, bounded: a plugin can't flood the log or forge entries.
+		let mut message: String = message
+			.chars()
+			.map(|c| if c.is_control() { ' ' } else { c })
+			.collect();
+		if message.len() > LOG_LIMIT {
+			let mut end = LOG_LIMIT;
+			while !message.is_char_boundary(end) {
+				end = end.saturating_sub(1);
+			}
+			message.truncate(end);
+		}
 		match level {
 			| host::Level::Error => error!(%plugin, "{message}"),
 			| host::Level::Warn => warn!(%plugin, "{message}"),
@@ -508,6 +667,11 @@ impl host::Host for State {
 	}
 
 	fn kv_set(&mut self, key: String, value: Vec<u8>) {
+		if key.len() > KV_KEY_LIMIT || value.len() > KV_VALUE_LIMIT {
+			warn!(plugin = %self.name, "Plugin storage write refused: over {KV_VALUE_LIMIT} bytes");
+			return;
+		}
+
 		self.kv.insert(&kv_key(&self.name, &key), &value);
 	}
 
@@ -518,13 +682,29 @@ impl host::Host for State {
 			return Err("this plugin lacks the send_messages capability".into());
 		}
 
+		let now = Instant::now();
+		while self
+			.sent
+			.front()
+			.is_some_and(|sent| now.duration_since(*sent) > Duration::from_secs(60))
+		{
+			self.sent.pop_front();
+		}
+
+		if self.sent.len() >= SEND_RATE {
+			return Err(format!("over {SEND_RATE} messages a minute"));
+		}
+
 		let room_id = RoomId::parse(&room_id)
 			.map_err(|e| format!("bad room ID: {e}"))?
 			.to_owned();
 
 		self.sends
 			.try_send(Outgoing { plugin: self.name.clone(), room_id, body })
-			.map_err(|_| "too many messages queued".to_owned())
+			.map_err(|_| "too many messages queued".to_owned())?;
+
+		self.sent.push_back(now);
+		Ok(())
 	}
 }
 

@@ -1,10 +1,15 @@
 //! The anoncat admin panel: a static web app built into the binary, served
 //! only on the loopback `admin_panel_address` listener. It talks to the
-//! server's own admin APIs on the same origin.
+//! server's own admin APIs on the same origin. Those admin APIs are served
+//! only there too: the public listeners get a router without them.
+
+use std::net::SocketAddr;
 
 use axum::{
 	Router,
-	http::{HeaderValue, header},
+	extract::Request,
+	http::{HeaderValue, StatusCode, header},
+	middleware::{self, Next},
 	response::{IntoResponse, Redirect, Response},
 	routing::get,
 };
@@ -18,7 +23,49 @@ const STYLE: &str = include_str!("panel.css");
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; \
                    connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
 
-pub(crate) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
+/// The panel listener: the panel's files plus the whole app, for requests that
+/// name the loopback address in `Host`. Anything else is a page elsewhere that
+/// rebound its own hostname to this port (DNS rebinding), so it's refused.
+pub(crate) fn panel_router(app: Router, addr: SocketAddr) -> Router {
+	let port = addr.port();
+	let allowed: [String; 3] = [addr.to_string(), format!("localhost:{port}"), format!("[::1]:{port}")];
+	let allowed = std::sync::Arc::new(allowed);
+
+	routes().merge(app).layer(middleware::from_fn(move |req: Request, next: Next| {
+		let allowed = allowed.clone();
+		async move {
+			let host = req
+				.headers()
+				.get(header::HOST)
+				.and_then(|host| host.to_str().ok())
+				.map(str::to_ascii_lowercase);
+
+			if !host.is_some_and(|host| allowed.contains(&host)) {
+				return StatusCode::MISDIRECTED_REQUEST.into_response();
+			}
+
+			next.run(req).await
+		}
+	}))
+}
+
+/// The public listeners: the app without anoncat's admin API, and without the
+/// Synapse admin API when the panel is where admins work.
+pub(crate) fn public_router(app: Router, panel: bool) -> Router {
+	app.layer(middleware::from_fn(move |req: Request, next: Next| {
+		let path = req.uri().path();
+		let admin = path.starts_with("/_anoncat/") || (panel && path.starts_with("/_synapse/admin"));
+		async move {
+			if admin {
+				return StatusCode::NOT_FOUND.into_response();
+			}
+
+			next.run(req).await
+		}
+	}))
+}
+
+fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
 	Router::new()
 		.route("/_anoncat/panel", get(async || { Redirect::permanent("/_anoncat/panel/") }))
 		.route("/_anoncat/panel/", get(async || { asset(INDEX, "text/html; charset=utf-8") }))

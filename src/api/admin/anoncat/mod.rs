@@ -31,6 +31,8 @@ async fn require_admin_token(services: &crate::State, headers: &HeaderMap) -> Re
 		return Err(Error::unknown_token(true, "Access token has expired."));
 	}
 
+	// A locked account is shut out here as on every other route.
+	services.users.locked_check(&user_id).await?;
 	super::require_admin(services, &user_id).await?;
 
 	Ok(user_id)

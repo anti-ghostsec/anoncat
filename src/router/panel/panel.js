@@ -6,6 +6,8 @@
 "use strict";
 
 const TOKEN_KEY = "anoncat.token";
+const DEVICE_KEY = "anoncat.device";
+const PANEL_DEVICE = "anoncat admin panel";
 const USER_KEY = "anoncat.user";
 const PAGE_SIZE = 50;
 
@@ -381,7 +383,7 @@ function mediaItem(m) {
 	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
 	const thumb = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, m.type || "media"));
 	thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
-	if (!m.type || m.type.startsWith("image/")) loadThumb(thumb, server, mediaId);
+	if (!m.type || RASTER.has(m.type)) loadThumb(thumb, server, mediaId);
 	const item = h("div", { class: "media-item" },
 		thumb,
 		h("div", { class: "mono muted" }, m.name || mediaId),
@@ -393,6 +395,8 @@ function mediaItem(m) {
 	return item;
 }
 
+const RASTER = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"]);
+
 // Thumbnails need the access token, which <img> can't send, so fetch them
 // and show a blob: URL.
 async function loadThumb(el, server, mediaId) {
@@ -400,7 +404,11 @@ async function loadThumb(el, server, mediaId) {
 		const res = await fetch(`/_matrix/client/v1/media/thumbnail/${enc(server)}/${enc(mediaId)}?width=320&height=240&method=scale&allow_remote=false`,
 			{ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit" });
 		if (!res.ok) return;
-		const url = URL.createObjectURL(await res.blob());
+		// Only raster images become blob: URLs; an SVG or HTML one would be a
+		// document on the panel's own origin.
+		const blob = await res.blob();
+		if (!RASTER.has(blob.type)) return;
+		const url = URL.createObjectURL(blob);
 		el.replaceChildren(h("img", { src: url, alt: "" }));
 	} catch { /* leave the placeholder */ }
 }
@@ -449,7 +457,7 @@ function navigate(page, params = {}) {
 
 async function render() {
 	const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
-	const page = pages[path] ? path : "dashboard";
+	const page = Object.hasOwn(pages, path) ? path : "dashboard";
 	for (const a of document.querySelectorAll(".side a")) a.classList.toggle("active", a.dataset.page === page);
 	const main = $("#main");
 	main.replaceChildren(h("p", { class: "muted" }, "Loading…"));
@@ -473,10 +481,22 @@ function showLogin(message = "") {
 	$("#login-error").textContent = message;
 }
 
+// Every sign-in is a new device with its own admin token. A tab closed
+// without signing out leaves that token valid, so each sign-in removes the
+// panel's earlier devices: at most one panel token is ever live.
+async function revokeOldSessions(userId, current) {
+	const list = await api("GET", `/_synapse/admin/v2/users/${enc(userId)}/devices`);
+	const old = (list.devices || [])
+		.filter((d) => d.display_name === PANEL_DEVICE && d.device_id !== current)
+		.map((d) => d.device_id);
+	if (old.length) await api("POST", `/_synapse/admin/v2/users/${enc(userId)}/delete_devices`, { devices: old });
+}
+
 async function signOut(callServer = true) {
 	if (callServer) await api("POST", "/_matrix/client/v3/logout", {}).catch(() => {});
 	sessionStorage.removeItem(TOKEN_KEY);
 	sessionStorage.removeItem(USER_KEY);
+	sessionStorage.removeItem(DEVICE_KEY);
 	showLogin(callServer ? "" : "Session ended; sign in again.");
 }
 
@@ -489,13 +509,15 @@ $("#login-form").addEventListener("submit", async (e) => {
 			type: "m.login.password",
 			identifier: { type: "m.id.user", user: form.get("user") },
 			password: form.get("password"),
-			initial_device_display_name: "anoncat admin panel",
+			initial_device_display_name: PANEL_DEVICE,
 		});
 		sessionStorage.setItem(TOKEN_KEY, res.access_token);
 		sessionStorage.setItem(USER_KEY, res.user_id);
+		sessionStorage.setItem(DEVICE_KEY, res.device_id);
 		e.target.reset();
 		try {
 			await api("GET", "/_anoncat/admin/v1/status");
+			await revokeOldSessions(res.user_id, res.device_id);
 		} catch {
 			await signOut(true);
 			return showLogin("That account isn't a server admin.");
