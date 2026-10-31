@@ -230,11 +230,22 @@ def publish_pages(port):
     bring its files up to date; a push deploys them."""
     user, _ = codeberg_login()
     repo = f"/repos/{user}/{PAGES_REPO}"
-    if codeberg("GET", repo, ok_missing=True) is None:
-        codeberg("POST", "/user/repos", {"name": PAGES_REPO, "private": False, "auto_init": True,
-                                         "default_branch": PAGES_BRANCH,
-                                         "description": f"Matrix discovery for {DOMAIN}"})
-        log(f"pages: created codeberg.org/{user}/{PAGES_REPO}")
+    info = codeberg("GET", repo, ok_missing=True)
+    if info is None:
+        # Creating a repository takes the token's "user" scope as well; a
+        # repository-only token can't, so the admin makes it once by hand.
+        try:
+            info = codeberg("POST", "/user/repos", {"name": PAGES_REPO, "private": False,
+                                                    "auto_init": True, "default_branch": PAGES_BRANCH,
+                                                    "description": f"Matrix discovery for {DOMAIN}"})
+            log(f"pages: created codeberg.org/{user}/{PAGES_REPO}")
+        except RuntimeError as e:
+            raise RuntimeError(f"create a public repository named '{PAGES_REPO}' on Codeberg "
+                               f"(tick 'Initialize repository'), then this continues by itself: {e}") from None
+    if codeberg("GET", f"{repo}/branches/{PAGES_BRANCH}", ok_missing=True) is None:
+        codeberg("POST", f"{repo}/branches", {"new_branch_name": PAGES_BRANCH,
+                                              "old_branch_name": info["default_branch"]})
+        log(f"pages: created the {PAGES_BRANCH} branch")
     hook_url = f"http://{DOMAIN}/"
     hooks = codeberg("GET", f"{repo}/hooks") or []
     if not any(h.get("config", {}).get("url") == hook_url for h in hooks):
