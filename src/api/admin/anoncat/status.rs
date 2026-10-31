@@ -6,6 +6,7 @@ use tuwunel_core::{
 	Result,
 	utils::sys::storage::{available_space, total_space},
 };
+use tuwunel_service::cleanup::Limits;
 
 #[derive(Serialize)]
 pub(crate) struct Response {
@@ -17,19 +18,8 @@ pub(crate) struct Response {
 	ram_total: Option<u64>,
 	ram_available: Option<u64>,
 	rss: Option<u64>,
-	cleanup: Cleanup,
-}
-
-/// The cleanup limits in force, as configured.
-#[derive(Serialize)]
-struct Cleanup {
-	interval_secs: u64,
-	remote_media_max_age_secs: u64,
-	local_media_max_age_secs: u64,
-	local_media_max_size: u64,
-	message_max_age_secs: u64,
-	disk_percent: u64,
-	min_free_ram: u64,
+	/// The cleanup limits in force (panel overrides, else the config).
+	cleanup: Limits,
 }
 
 pub(crate) async fn anoncat_status_route(
@@ -51,15 +41,7 @@ pub(crate) async fn anoncat_status_route(
 		ram_total: kib_field(&meminfo, "MemTotal:"),
 		ram_available: kib_field(&meminfo, "MemAvailable:"),
 		rss: kib_field(&status, "VmRSS:"),
-		cleanup: Cleanup {
-			interval_secs: config.cleanup_interval.as_secs(),
-			remote_media_max_age_secs: config.cleanup_remote_media_max_age.as_secs(),
-			local_media_max_age_secs: config.cleanup_local_media_max_age.as_secs(),
-			local_media_max_size: config.cleanup_local_media_max_size,
-			message_max_age_secs: config.cleanup_message_max_age.as_secs(),
-			disk_percent: config.cleanup_disk_percent,
-			min_free_ram: config.cleanup_min_free_ram,
-		},
+		cleanup: services.cleanup.limits(),
 	}))
 }
 
