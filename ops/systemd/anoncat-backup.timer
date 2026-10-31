@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up anoncat's database daily
+
+[Timer]
+OnCalendar=*-*-* 04:30
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

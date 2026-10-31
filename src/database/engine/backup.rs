@@ -97,6 +97,37 @@ pub fn backup_list(&self) -> Result<impl Iterator<Item = String> + Send> {
 	Ok(list)
 }
 
+/// One backup as RocksDB records it.
+#[derive(Clone, Copy, Debug)]
+pub struct BackupInfo {
+	/// The backup's number, as `list-backups` shows it.
+	pub id: u32,
+	/// Seconds since the Unix epoch.
+	pub timestamp: i64,
+	/// Bytes in files this backup added; files shared with older backups
+	/// count only once, in the backup that first stored them.
+	pub size: u64,
+	/// Files the backup is made of.
+	pub files: u32,
+}
+
+/// The backups recorded, oldest first. An empty repository is an empty list.
+#[implement(Engine)]
+pub fn backup_info(&self) -> Result<Vec<BackupInfo>> {
+	let info = backup_engine(&self.ctx)?
+		.get_backup_info()
+		.into_iter()
+		.map(|info| BackupInfo {
+			id: info.backup_id,
+			timestamp: info.timestamp,
+			size: info.size,
+			files: info.num_files,
+		})
+		.collect();
+
+	Ok(info)
+}
+
 /// Returns the number of backups currently recorded.
 ///
 /// The count comes from RocksDB's backup metadata. An empty repository produces

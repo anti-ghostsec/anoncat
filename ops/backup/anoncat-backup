@@ -1,0 +1,175 @@
+#!/bin/bash
+# anoncat-backup: online database backups, kept inside the vault, plus the
+# LUKS header backup that has to live somewhere else.
+#
+#   anoncat-backup run            ask the running server for a backup, wait
+#                                 for it (the timer runs this daily)
+#   anoncat-backup list           the stored backups
+#   anoncat-backup header DEST    save the vault's LUKS header to DEST, which
+#                                 must be outside the vault (then copy it off
+#                                 this machine)
+#   anoncat-backup restore [ID]   replace the database with backup ID (default:
+#                                 the newest); the current one is kept aside
+#
+# Run as root. Backups are made by the server itself with RocksDB's backup
+# engine while it keeps serving: this script sends it SIGUSR2, which runs
+# `admin_signal_execute = ["server backup-database"]` from anoncat.toml. The
+# backups go to `database_backup_path` (inside the vault), share unchanged
+# files and are trimmed to `database_backups_to_keep` by the server. See
+# ops/backup/README.md.
+
+set -euo pipefail
+PATH=/usr/sbin:/sbin:/usr/bin:/bin
+
+DATA=${ANONCAT_DATA:-/Drives/server/data}
+CONFIG=${ANONCAT_CONFIG:-$DATA/anoncat.toml}
+SERVICE=${ANONCAT_SERVICE:-anoncat.service}
+SOCKET=${ANONCAT_SOCKET:-anoncat.socket}
+CONTAINER=${ANONCAT_VAULT_FILE:-/Drives/server/vault/anoncat.luks}
+BIN=${ANONCAT_BIN:-/usr/local/bin/anoncat}
+# How long a backup may take before `run` gives up waiting.
+WAIT_SECS=${ANONCAT_BACKUP_WAIT:-3600}
+
+die() { echo "anoncat-backup: $*" >&2; exit 1; }
+need_root() { [[ $EUID -eq 0 ]] || die "run as root"; }
+
+# A plain `key = "value"` from the config's top level.
+config_value() {
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*\$/\1/p" "$CONFIG" | head -1
+}
+
+backup_dir() {
+	mountpoint -q "$DATA" || die "the vault isn't unlocked ($DATA isn't mounted)"
+	local dir
+	dir=$(config_value database_backup_path)
+	[[ -n $dir ]] || die "database_backup_path isn't set in $CONFIG"
+	case $dir in
+		"$DATA"/*) ;;
+		*) die "database_backup_path ($dir) must be inside the vault ($DATA)" ;;
+	esac
+	echo "$dir"
+}
+
+# Backup IDs, newest last. The backup engine writes meta/<id> when a backup
+# is complete (meta/.<id>.tmp while it runs).
+backup_ids() { find "$1/meta" -maxdepth 1 -type f -regex '.*/[0-9]+' -printf '%f\n' 2>/dev/null | sort -n; }
+
+run() {
+	local dir before after waited=0
+	dir=$(backup_dir)
+	grep -Eq '^[[:space:]]*admin_signal_execute[[:space:]]*=.*server backup-database' "$CONFIG" \
+		|| die "anoncat.toml lacks admin_signal_execute = [\"server backup-database\"]"
+	[[ $(systemctl show -P ActiveState "$SERVICE") == active ]] || die "$SERVICE isn't running"
+
+	before=$(backup_ids "$dir" | tail -1)
+	systemctl kill --kill-whom=main --signal=SIGUSR2 "$SERVICE"
+	echo "asked $SERVICE for a backup (newest before: ${before:-none})"
+
+	while :; do
+		after=$(backup_ids "$dir" | tail -1)
+		if [[ -n $after && $after != "$before" ]]; then
+			break
+		fi
+		(( waited < WAIT_SECS )) || die "no new backup after ${WAIT_SECS}s; see journalctl --namespace=anoncat -u $SERVICE"
+		sleep 5
+		waited=$((waited + 5))
+	done
+
+	echo "backup #$after done in about ${waited}s; $(backup_ids "$dir" | wc -l) stored, $(du -sh "$dir" | cut -f1) in $dir"
+}
+
+list() {
+	local dir id
+	dir=$(backup_dir)
+	for id in $(backup_ids "$dir"); do
+		echo "#$id  $(date -d "@$(stat -c %Y "$dir/meta/$id")" '+%F %T')"
+	done
+	echo "total on disk: $(du -sh "$dir" | cut -f1)"
+}
+
+header() {
+	local dest=${1:-}
+	[[ -n $dest ]] || die "usage: $0 header /path/outside/the/vault/anoncat-luks-header.img"
+	[[ -e $CONTAINER ]] || die "no vault at $CONTAINER"
+	[[ ! -e $dest ]] || die "$dest exists; refusing to overwrite it"
+	local real
+	real=$(realpath -m "$dest")
+	case $real in
+		"$DATA"|"$DATA"/*) die "$dest is inside the vault; a header backup there is useless when the header is damaged" ;;
+	esac
+
+	cryptsetup luksHeaderBackup "$CONTAINER" --header-backup-file "$dest"
+	chmod 0400 "$dest"
+	echo "LUKS header saved to $dest ($(stat -c %s "$dest") bytes), sha256 $(sha256sum "$dest" | cut -c1-16)…"
+	cat <<'NOTE'
+
+Now copy it OFF this machine (a USB stick kept elsewhere, another computer),
+then delete the copy here once it's safe. Keep in mind:
+- With this file and the passphrase, the vault opens. Treat it like the
+  passphrase: anyone who has both has everything.
+- If you change the passphrase later, this old header still opens with the
+  OLD one. Make a new header backup after any passphrase change and destroy
+  the old copies.
+- Restore (only if the header is damaged; it overwrites the header):
+    cryptsetup luksHeaderRestore /Drives/server/vault/anoncat.luks \
+      --header-backup-file anoncat-luks-header.img
+NOTE
+}
+
+restore() {
+	local id=${1:-0} dir db stamp dropin=/run/systemd/system/$SERVICE.d/anoncat-restore.conf
+	[[ $id =~ ^[0-9]+$ ]] || die "backup ID must be a number (0 = the newest)"
+	dir=$(backup_dir)
+	[[ -n $(backup_ids "$dir") ]] || die "no backups in $dir"
+	if [[ $id != 0 ]] && ! backup_ids "$dir" | grep -qx "$id"; then
+		die "no backup #$id; have: $(backup_ids "$dir" | tr '\n' ' ')"
+	fi
+	db=$(config_value database_path)
+	[[ -n $db && -d $db ]] || die "database_path isn't set in $CONFIG or doesn't exist"
+
+	echo "This stops anoncat, moves the current database aside and restores backup ${id/#0/newest}."
+	read -rp "Type RESTORE to go on: " answer
+	[[ $answer == RESTORE ]] || die "cancelled"
+
+	systemctl stop "$SOCKET" "$SERVICE"
+	stamp=$(date +%Y%m%d-%H%M%S)
+	mv "$db" "$db.before-restore-$stamp"
+	install -d -m 0700 -o anoncat -g anoncat "$db"
+	# Media files and plugins live in the database directory but aren't part
+	# of a database backup: they move back into the fresh one.
+	local sub
+	for sub in media plugins; do
+		if [[ -e $db.before-restore-$stamp/$sub ]]; then
+			mv "$db.before-restore-$stamp/$sub" "$db/$sub"
+		fi
+	done
+	echo "current database kept at $db.before-restore-$stamp (media and plugins moved back)"
+
+	# One start with --restore-backup, inside the service's own sandbox (the
+	# VPN-only killswitch included). A runtime drop-in, removed right after,
+	# so a later restart never restores again.
+	install -d -m 0755 "$(dirname "$dropin")"
+	cat > "$dropin" <<DROPIN
+[Service]
+ExecStart=
+ExecStart=$BIN -c $CONFIG --restore-backup $id
+DROPIN
+	systemctl daemon-reload
+	trap 'rm -f "$dropin"; systemctl daemon-reload' EXIT
+	systemctl start "$SOCKET" "$SERVICE"
+	rm -f "$dropin"
+	systemctl daemon-reload
+	trap - EXIT
+	systemctl --no-pager status "$SERVICE" | grep -E "Active:" || true
+	echo "Restored. Once you're sure it's right, delete $db.before-restore-$stamp."
+}
+
+cmd=${1:-}
+shift || true
+case $cmd in
+	run) need_root; run ;;
+	list) need_root; list ;;
+	header) need_root; header "$@" ;;
+	restore) need_root; restore "$@" ;;
+	*) sed -n '2,19p' "$0"; exit 2 ;;
+esac

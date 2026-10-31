@@ -38,7 +38,7 @@ pub use self::{
 	cork::Cork,
 	de::{Ignore, IgnoreAll, from_slice as deserialize_from_slice},
 	deserialized::Deserialized,
-	engine::Engine,
+	engine::{BackupInfo, Engine},
 	handle::Handle,
 	keyval::{KeyBuf, KeyVal, Slice, serialize_key, serialize_val},
 	map::{Get, Map, MapId, Qry, compact},

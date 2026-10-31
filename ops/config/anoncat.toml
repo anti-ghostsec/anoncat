@@ -24,6 +24,13 @@ admin_panel_address = "127.0.0.1:8450"
 # vault; the AI stays off until the file exists and it's switched on.
 ai_key_file = "/Drives/server/data/secrets/venice"
 
+# Online database backups (RocksDB backup engine), inside the vault; unchanged
+# files are shared between backups. The daily anoncat-backup timer asks for
+# one with SIGUSR2; the panel's Backups page shows them. See ops/backup/README.md.
+database_backup_path = "/Drives/server/data/backups"
+database_backups_to_keep = 7
+admin_signal_execute = ["server backup-database"]
+
 # No proxy in front, so the client address is the connection's own; headers
 # can't fake it. Only used by in-memory rate limits.
 ip_source = "connect_info"

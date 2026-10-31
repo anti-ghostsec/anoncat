@@ -8,6 +8,7 @@
 //! the cork counter that coalesces WAL writes (see the `cork` module).
 
 mod backup;
+pub use backup::BackupInfo;
 mod cf_opts;
 pub(crate) mod context;
 mod db_opts;

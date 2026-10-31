@@ -1,0 +1,29 @@
+# Asks the running server for an online database backup (RocksDB backup
+# engine, into database_backup_path inside the vault) and waits for it. Root
+# only to signal the server; it writes nothing itself.
+[Unit]
+Description=Back up anoncat's database
+Requisite=anoncat.service
+After=anoncat.service
+ConditionPathIsMountPoint=/Drives/server/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/anoncat-backup run
+LogNamespace=anoncat
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+CPUAffinity=0-3

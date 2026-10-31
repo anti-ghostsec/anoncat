@@ -17,7 +17,8 @@ USER_=anoncat
 BIN=/usr/local/bin/anoncat
 LIB=/usr/local/lib/anoncat
 SBIN=/usr/local/sbin
-UNITS=(anoncat.socket anoncat.service anoncat-netd.service anoncat-tls-renew.service anoncat-tls-renew.timer)
+UNITS=(anoncat.socket anoncat.service anoncat-netd.service anoncat-tls-renew.service anoncat-tls-renew.timer
+	anoncat-backup.service anoncat-backup.timer)
 INPUT_RULE='iifname "wg0" tcp dport 8448 accept'
 
 die() { echo "anoncat-install: $*" >&2; exit 1; }
@@ -47,8 +48,9 @@ fi
 step "Tools"
 install -d -m 0755 "$LIB"
 install -m 0755 "$OPS/anoncat-netd.py" "$OPS/acme-dynu-hook.py" "$OPS/anoncat-tls" "$LIB/"
-install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$SBIN/"
-echo "$LIB: anoncat-netd.py, acme-dynu-hook.py, anoncat-tls; $SBIN: anoncat-vault, anoncat-update"
+install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$OPS/backup/anoncat-backup" "$SBIN/"
+echo "$LIB: anoncat-netd.py, acme-dynu-hook.py, anoncat-tls"
+echo "$SBIN: anoncat-vault, anoncat-update, anoncat-backup"
 
 step "System config"
 install -d -m 0755 /etc/anoncat
@@ -71,7 +73,7 @@ if ! grep -qxF "$HOSTS_LINE" /etc/hosts; then
 fi
 
 step "Vault contents"
-install -d -m 0700 -o "$USER_" -g "$USER_" "$DATA/db" "$DATA/secrets" "$DATA/netd" "$DATA/tls"
+install -d -m 0700 -o "$USER_" -g "$USER_" "$DATA/db" "$DATA/secrets" "$DATA/netd" "$DATA/tls" "$DATA/backups"
 if [[ ! -e $DATA/tls/certificates ]]; then
 	[[ -d $OLD_TLS/certificates ]] || die "no certificate in $OLD_TLS to move into the vault"
 	cp -a "$OLD_TLS/." "$DATA/tls/"
@@ -96,6 +98,16 @@ else
 # Venice AI key for the panel'"'"'s AI moderation (Settings page).\
 ai_key_file = "/Drives/server/data/secrets/venice"' "$DATA/anoncat.toml"
 		echo "config: added ai_key_file"
+	fi
+	if ! grep -q '^database_backup_path' "$DATA/anoncat.toml"; then
+		sed -i '/^admin_panel_address/a\
+\
+# Online database backups, inside the vault (ops/backup/README.md). The\
+# daily anoncat-backup timer asks for one with SIGUSR2.\
+database_backup_path = "/Drives/server/data/backups"\
+database_backups_to_keep = 7\
+admin_signal_execute = ["server backup-database"]' "$DATA/anoncat.toml"
+		echo "config: added database backups"
 	fi
 fi
 chown -R "$USER_:$USER_" "$DATA"
@@ -130,9 +142,9 @@ swapon --show
 
 step "Start"
 # reenable: picks up changed [Install] sections too.
-systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer
+systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer anoncat-backup.timer
 systemctl start anoncat.socket anoncat.service
-systemctl start anoncat-tls-renew.timer
+systemctl start anoncat-tls-renew.timer anoncat-backup.timer
 # netd is a script: a running copy keeps the old code until restarted.
 systemctl try-restart anoncat-netd.service
 echo "waiting for anoncat to be ready..."
@@ -145,6 +157,7 @@ systemctl --no-pager status anoncat.service anoncat-netd.service | grep -E "●|
 echo
 echo "Logs:   journalctl --namespace=anoncat -f"
 echo "Panel:  http://127.0.0.1:8450/_anoncat/panel/"
+echo "Backup: once, as root: anoncat-backup header /path/off/this/machine/anoncat-luks-header.img"
 echo "Next:   register your account first (it becomes the admin), with the token above."
 echo "        Once everything works, delete the copies outside the vault:"
 echo "        $OLD_TLS and $OLD_KEY"
