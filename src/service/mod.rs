@@ -23,6 +23,7 @@ pub mod key_backups;
 pub mod login_ratelimit;
 pub mod media;
 pub mod membership;
+pub mod moderation;
 pub mod oauth;
 pub mod plugins;
 pub mod presence;

@@ -215,6 +215,7 @@ where
 		.ok();
 
 	self.services.plugins.notify(pdu);
+	self.services.moderation.notify(pdu);
 
 	self.append_pdu_effects(pdu_id, pdu, shortroomid, count, state_lock)
 		.await?;

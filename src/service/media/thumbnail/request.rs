@@ -133,6 +133,8 @@ impl super::super::Service {
 		animate: Animate,
 		timeout_duration: Option<Duration>,
 	) -> Result<Media> {
+		self.check_hidden(mxc)?;
+
 		if let Ok(media) = self.get_stored_thumbnail(mxc, dim, animate).await {
 			return Ok(media);
 		}

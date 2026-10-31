@@ -89,6 +89,14 @@ if [[ ! -e $DATA/anoncat.toml ]]; then
 	echo "config written; registration token: $token"
 else
 	echo "config already there; left as it is"
+	# Settings added since it was written.
+	if ! grep -q '^ai_key_file' "$DATA/anoncat.toml"; then
+		sed -i '/^admin_panel_address/a\
+\
+# Venice AI key for the panel'"'"'s AI moderation (Settings page).\
+ai_key_file = "/Drives/server/data/secrets/venice"' "$DATA/anoncat.toml"
+		echo "config: added ai_key_file"
+	fi
 fi
 chown -R "$USER_:$USER_" "$DATA"
 

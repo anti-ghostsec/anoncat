@@ -460,6 +460,219 @@ pages.notices = async (main) => {
 		items.length ? h("div", { class: "notices" }, items) : h("p", { class: "muted" }, "Nothing yet."));
 };
 
+// --- AI moderation -------------------------------------------------------------
+
+const MOD = "/_anoncat/admin/v1/moderation";
+
+pages.reports = async (main, params) => {
+	const all = params.get("all") === "1";
+	const res = await api("GET", `${MOD}/reports${all ? "?all=true" : ""}`);
+	const refresh = () => render();
+	const sevTag = (s) => h("span", { class: `tag ${s === "high" ? "bad" : s === "medium" ? "warn" : ""}` }, s);
+	const items = res.reports.map((r) => {
+		const act = (action, done) => attempt(done, () => api("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => x && refresh());
+		const buttons = [];
+		if (r.status === "open") {
+			if (r.mxc) buttons.push(r.hidden
+				? h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide")
+				: h("button", { class: r.suggested === "hide" ? "small" : "ghost small", onclick: () => act("hide", "Hidden") }, "Hide media"));
+			if (r.kind !== "large_file") buttons.push(h("button", { class: r.suggested === "redact" ? "danger small" : "ghost small", onclick: async () => {
+				if (!(await ask("Remove this message?", { text: "Redacts it as you. Needs you to be in the room with the power to remove messages. Other servers drop their copies too.", confirm: "Remove", danger: true }))) return;
+				const ok = await attempt("Removed", () => api("PUT", `/_matrix/client/v3/rooms/${enc(r.room_id)}/redact/${enc(r.event_id)}/${Date.now()}`, { reason: "Moderation" }));
+				if (ok) await act("resolve", null);
+			} }, "Remove message"));
+			buttons.push(h("button", { class: "ghost small", onclick: () => act("dismiss", "Dismissed") }, "Dismiss"));
+		} else {
+			buttons.push(h("button", { class: "ghost small", onclick: () => act("reopen", "Reopened") }, "Reopen"));
+			if (r.hidden) buttons.push(h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide"));
+		}
+		let preview = null;
+		if (r.mxc && r.kind === "image") {
+			const [server, mediaId] = r.mxc.replace("mxc://", "").split("/");
+			preview = h("div", { class: "media-thumb report-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, "image"));
+			preview.addEventListener("click", () => preview.classList.toggle("revealed"));
+			loadPreview(preview, server, mediaId);
+		}
+		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}` },
+			h("div", { class: "report-head" },
+				sevTag(r.severity),
+				h("span", { class: "tag" }, r.category || r.kind),
+				r.hidden ? h("span", { class: "tag warn" }, "hidden") : null,
+				r.status !== "open" ? h("span", { class: "tag" }, r.status) : null,
+				h("span", { class: "small muted" }, `${date(r.ts)} · ${r.source === "ai" ? "AI" : "size rule"} · suggests ${r.suggested}`)),
+			h("div", {}, r.reason),
+			preview,
+			r.excerpt ? h("pre", { class: "notice-body excerpt" }, r.excerpt) : null,
+			h("div", { class: "small muted" }, `${r.sender} in ${r.room_name || r.room_id}`),
+			h("div", { class: "toolbar" }, buttons));
+	});
+	main.replaceChildren(
+		h("h1", {}, "Reports"),
+		h("p", { class: "muted" }, "What the AI moderation and the size rule flagged. Nothing is removed until you choose to; the AI may only hide images, and only if Settings allow it."),
+		h("div", { class: "toolbar" },
+			h("button", { class: "ghost small", onclick: () => navigate("reports", all ? {} : { all: "1" }) }, all ? "Show open only" : "Show closed too")),
+		items.length ? h("div", { class: "notices" }, items) : h("p", { class: "muted" }, all ? "No reports yet." : "Nothing open."));
+};
+
+// Reported images come from the moderation's own preview, which serves them
+// even while hidden.
+async function loadPreview(el, server, mediaId) {
+	try {
+		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`,
+			{ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit", cache: "no-store" });
+		if (!res.ok) return;
+		const blob = await res.blob();
+		if (!RASTER.has(blob.type)) return;
+		el.replaceChildren(h("img", { src: URL.createObjectURL(blob), alt: "" }));
+	} catch { /* leave the placeholder */ }
+}
+
+pages.settings = async (main) => {
+	const res = await api("GET", `${MOD}/settings`);
+	const s = res.settings;
+	const models = await api("GET", `${MOD}/models`).then((r) => r.models).catch(() => []);
+
+	const check = (name, label, help) => {
+		const input = h("input", { type: "checkbox", name, checked: s[name] });
+		return h("label", { class: "check" }, input, h("span", {}, label, help ? h("span", { class: "muted small block" }, help) : null));
+	};
+	const modelSelect = (name, vision) => {
+		const select = h("select", { name },
+			h("option", { value: "auto" }, vision ? "Auto (Venice's default for images)" : "Auto (Venice's default)"),
+			models.filter((m) => !vision || m.vision).map((m) => h("option", { value: m.id },
+				`${m.id}${m.traits.length ? ` — ${m.traits.join(", ")}` : ""}${m.price_in ? ` — $${m.price_in}/M in` : ""}`)));
+		if (s[name] !== "auto" && !models.some((m) => m.id === s[name])) select.append(h("option", { value: s[name] }, s[name]));
+		select.value = s[name];
+		return select;
+	};
+
+	const mode = h("div", { class: "radios" },
+		h("label", { class: "check" }, h("input", { type: "radio", name: "media_mode", value: "suggest", checked: s.media_mode === "suggest" }),
+			h("span", {}, "Only suggest", h("span", { class: "muted small block" }, "Every flagged image waits in Reports for you."))),
+		h("label", { class: "check" }, h("input", { type: "radio", name: "media_mode", value: "hide", checked: s.media_mode === "hide" }),
+			h("span", {}, "Hide clearly bad images until I review them", h("span", { class: "muted small block" }, "Hidden images stay stored and come back with one click. Nothing is ever deleted by the AI."))));
+
+	const extra = h("textarea", { name: "extra_rooms", placeholder: "#room:other.server or !roomid:server, one per line", spellcheck: "false" }, s.extra_rooms.join("\n"));
+	const rules = h("textarea", { name: "rules", class: "rules" }, s.rules);
+	const field = (label, input, help) => h("label", { class: "field" }, h("span", {}, label), input, help ? h("span", { class: "muted small" }, help) : null);
+	const batch = h("input", { type: "number", name: "batch_minutes", min: 1, max: 60, value: s.batch_minutes });
+	const large = h("input", { type: "number", name: "large_file_mb", min: 0, value: s.large_file_mb });
+	const testOut = h("p", { class: "muted small" });
+
+	const form = h("form", { class: "settings" },
+		h("section", { class: "card" },
+			h("h2", {}, "AI moderation"),
+			res.key_saved
+				? h("p", { class: "small" }, h("span", { class: "tag ok" }, "key saved"), "Venice API key found.")
+				: h("p", { class: "small" }, h("span", { class: "tag warn" }, "no key"), `Save your Venice API key in ${res.key_file || "the file set by ai_key_file"} first; the AI does nothing without it.`),
+			check("enabled", "Turn on AI moderation", "Only rooms that aren't encrypted are ever read. Names and IDs are replaced with placeholders (U1, R1) before anything is sent to Venice."),
+			h("div", { class: "toolbar" }, h("button", { type: "button", class: "ghost small", onclick: async () => {
+				testOut.textContent = "Testing…";
+				const r = await attempt(null, () => api("POST", `${MOD}/test`, {}));
+				testOut.textContent = r ? r.message : "Test failed.";
+			} }, "Test Venice connection")),
+			testOut),
+		h("section", { class: "card" },
+			h("h2", {}, "Which rooms"),
+			check("watch_directory", "Rooms in this server's public room list"),
+			check("watch_public_joined", "Any room anyone can join that someone here is in", "Includes public rooms on other servers that people here joined."),
+			field("Extra rooms", extra, "Rooms from anywhere in the public room space. The server only sees a room once someone here is in it, so join it with your account first.")),
+		h("section", { class: "card" },
+			h("h2", {}, "What to check"),
+			check("check_messages", "Messages"),
+			check("check_images", "Images (up to 8 MiB)"),
+			field("Report files at least this big (MiB, 0 = off)", large, "Large files get a report for you to look at, without the AI."),
+			field("Check new messages every (minutes)", batch, "Messages are checked together, which is cheaper. 40 waiting messages are checked at once.")),
+		h("section", { class: "card" },
+			h("h2", {}, "Images the AI judges clearly bad"),
+			mode),
+		h("section", { class: "card" },
+			h("h2", {}, "Models and rules"),
+			field("Text model", modelSelect("text_model", false)),
+			field("Image model", modelSelect("vision_model", true), "Venice runs the open models (Qwen, DeepSeek, GLM, Gemma, Llama, Venice) itself without keeping anything. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
+			field("Server rules, as the AI is told them", rules)),
+		h("div", { class: "toolbar" }, h("button", { type: "submit" }, "Save settings")));
+
+	form.addEventListener("submit", async (e) => {
+		e.preventDefault();
+		const f = new FormData(form);
+		const body = {
+			enabled: f.has("enabled"),
+			watch_directory: f.has("watch_directory"),
+			watch_public_joined: f.has("watch_public_joined"),
+			check_messages: f.has("check_messages"),
+			check_images: f.has("check_images"),
+			media_mode: f.get("media_mode") || "suggest",
+			extra_rooms: String(f.get("extra_rooms") || "").split(/\s+/).filter(Boolean),
+			large_file_mb: Number(f.get("large_file_mb") || 0),
+			batch_minutes: Number(f.get("batch_minutes") || 2),
+			text_model: f.get("text_model"),
+			vision_model: f.get("vision_model"),
+			rules: f.get("rules"),
+		};
+		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
+	});
+
+	main.replaceChildren(h("h1", {}, "Settings"), form);
+};
+
+// The assistant's chat lives only in this tab.
+const chat = [];
+
+pages.assistant = async (main) => {
+	const log = h("div", { class: "chat" });
+	const input = h("textarea", { placeholder: "Ask about the server, e.g. \"which rooms have the most members?\" or \"how do I stop registrations?\"" });
+	const draw = () => {
+		log.replaceChildren(...chat.map((t) => h("div", { class: `card bubble ${t.role}` }, renderReply(t.content, t.role === "assistant"))));
+		log.scrollTop = log.scrollHeight;
+	};
+	const send = async () => {
+		const text = input.value.trim();
+		if (!text) return;
+		input.value = "";
+		chat.push({ role: "user", content: text });
+		draw();
+		log.append(h("p", { class: "muted small" }, "Thinking…"));
+		const r = await attempt(null, () => api("POST", `${MOD}/assistant`, { messages: chat }));
+		chat.push({ role: "assistant", content: r ? r.reply : "(no answer)" });
+		draw();
+	};
+	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); });
+	main.replaceChildren(
+		h("h1", {}, "Assistant"),
+		h("p", { class: "muted" }, "Chats with Venice AI. It can propose admin commands; they only run when you click Run and confirm. Don't paste anything that identifies you. Ctrl+Enter sends."),
+		log, input,
+		h("div", { class: "toolbar" },
+			h("button", { onclick: send }, "Send"),
+			h("button", { class: "ghost", onclick: () => { chat.length = 0; draw(); } }, "Clear")));
+	draw();
+};
+
+// Plain text, with ```command blocks turned into commands to run on request.
+function renderReply(text, commands) {
+	const parts = [];
+	const re = /```command\s*\n([\s\S]*?)```/g;
+	let last = 0, m;
+	while (commands && (m = re.exec(text))) {
+		if (m.index > last) parts.push(h("pre", { class: "notice-body" }, text.slice(last, m.index).trim()));
+		const cmd = m[1].trim().replace(/^!admin\s+/, "");
+		const out = h("pre", { class: "output", hidden: true });
+		parts.push(h("div", { class: "proposed" },
+			h("code", { class: "mono" }, cmd),
+			h("button", { class: "small", onclick: async () => {
+				if (!(await ask("Run this command?", { text: cmd, confirm: "Run" }))) return;
+				out.hidden = false;
+				out.textContent = "Running…";
+				const r = await attempt(null, () => command(cmd));
+				out.textContent = r ? (r.output || (r.ok ? "Done." : "Failed.")) : "Failed.";
+			} }, "Run")),
+			out);
+		last = re.lastIndex;
+	}
+	if (last < text.length) parts.push(h("pre", { class: "notice-body" }, text.slice(last).trim()));
+	return parts;
+}
+
 // --- routing & session ---------------------------------------------------------
 
 function navigate(page, params = {}) {

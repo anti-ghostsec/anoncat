@@ -1,6 +1,6 @@
 use axum::{
 	Router,
-	routing::{get, post},
+	routing::{get, post, put},
 };
 use tuwunel_api::router::RouterExt;
 use tuwunel_core::Server;
@@ -11,6 +11,8 @@ use crate::{self as admin, State, mas_active};
 ///
 /// The authentication mode selects the available user and device routes.
 pub fn build(server: &Server) -> Router<State> {
+	use admin::anoncat::moderation as m;
+
 	let mas_active = mas_active(&server.config);
 	let router = Router::new();
 	let router = register_synapse_admin_users_routes(router, mas_active);
@@ -24,6 +26,13 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/command", post(admin::anoncat::anoncat_command_route))
 		.route("/_anoncat/admin/v1/status", get(admin::anoncat::anoncat_status_route))
 		.route("/_anoncat/admin/v1/notices", get(admin::anoncat::anoncat_notices_route))
+		.route("/_anoncat/admin/v1/moderation/settings", get(m::get_settings_route).merge(put(m::put_settings_route)))
+		.route("/_anoncat/admin/v1/moderation/test", post(m::test_route))
+		.route("/_anoncat/admin/v1/moderation/models", get(m::models_route))
+		.route("/_anoncat/admin/v1/moderation/reports", get(m::reports_route))
+		.route("/_anoncat/admin/v1/moderation/reports/{id}", post(m::act_route))
+		.route("/_anoncat/admin/v1/moderation/media/{server}/{media_id}", get(m::media_route))
+		.route("/_anoncat/admin/v1/moderation/assistant", post(m::assistant_route))
 		.ruma_route(&admin::is_user_suspended_route)
 		.ruma_route(&admin::suspend_user_route)
 		.ruma_route(&admin::is_user_locked_route)

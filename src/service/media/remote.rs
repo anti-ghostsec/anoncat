@@ -503,6 +503,8 @@ pub async fn fetch_remote_content_legacy(
 
 #[implement(super::Service)]
 fn check_fetch_authorized(&self, mxc: &Mxc<'_>) -> Result {
+	self.check_hidden(mxc)?;
+
 	if self
 		.services
 		.server

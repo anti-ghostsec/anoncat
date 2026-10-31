@@ -105,6 +105,9 @@ struct MXCState {
 
 pub struct Service {
 	pub(super) db: Data,
+	/// Media the admins (or the AI moderation) hid until review: still
+	/// stored, served to nobody. Keyed by the mxc URI.
+	hidden: Arc<tuwunel_database::Map>,
 	services: Arc<crate::services::OnceServices>,
 	url_preview_mutex: MutexMap<String, ()>,
 	federation_mutex: MutexMap<String, ()>,
@@ -142,6 +145,7 @@ impl crate::Service for Service {
 
 		let service = Arc::new(Self {
 			db: Data::new(args.db),
+			hidden: args.db["anoncat_hidden_media"].clone(),
 			services: args.services.clone(),
 			url_preview_mutex: MutexMap::new(),
 			federation_mutex: MutexMap::new(),
@@ -172,6 +176,29 @@ impl crate::Service for Service {
 }
 
 impl Service {
+	/// Hides media until review: it stays stored but is served to nobody,
+	/// here or over federation. `note` is kept with it for the panel.
+	pub fn hide(&self, mxc: &str, note: &str) { self.hidden.insert(mxc.as_bytes(), note.as_bytes()); }
+
+	/// Serves hidden media again.
+	pub fn unhide(&self, mxc: &str) { self.hidden.remove(mxc.as_bytes()); }
+
+	#[must_use]
+	pub fn is_hidden(&self, mxc: &Mxc<'_>) -> bool {
+		self.hidden
+			.exists_blocking(mxc.to_string().as_bytes())
+			.is_ok()
+	}
+
+	/// Hidden media answers as if it didn't exist.
+	pub(crate) fn check_hidden(&self, mxc: &Mxc<'_>) -> Result {
+		if self.is_hidden(mxc) {
+			return Err!(Request(NotFound("Media not found.")));
+		}
+
+		Ok(())
+	}
+
 	/// Create a pending media upload ID.
 	///
 	/// The ID is refused past the user's create rate or pending-upload cap, or
@@ -440,6 +467,8 @@ impl Service {
 		skip(self),
 	)]
 	pub async fn get(&self, mxc: &Mxc<'_>, timeout: Option<Duration>) -> Result<Media> {
+		self.check_hidden(mxc)?;
+
 		if let Ok(meta) = self.get_stored(mxc).await {
 			return Ok(meta);
 		}
@@ -588,6 +617,8 @@ impl Service {
 		dim: &Dim,
 		animate: Animate,
 	) -> Result<Option<Url>> {
+		self.check_hidden(mxc)?;
+
 		if !self.services.config.media_allow_redirect {
 			return Ok(None);
 		}

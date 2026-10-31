@@ -4,6 +4,7 @@
 //! manifest, so authentication is checked here directly.
 
 pub(crate) mod command;
+pub(crate) mod moderation;
 pub(crate) mod notices;
 pub(crate) mod status;
 

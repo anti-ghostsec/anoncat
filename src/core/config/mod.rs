@@ -2420,6 +2420,14 @@ pub struct Config {
 	/// example: "127.0.0.1:8450"
 	pub admin_panel_address: Option<std::net::SocketAddr>,
 
+	/// File holding the Venice AI API key used by the AI moderation in the
+	/// admin panel. Read each time it's needed, so saving a new key needs no
+	/// restart. Unset or missing turns the AI off; the rest of the moderation
+	/// settings live in the panel.
+	///
+	/// example: "/Drives/server/data/secrets/venice"
+	pub ai_key_file: Option<PathBuf>,
+
 	/// How often the cleanup runs. Each run applies the `cleanup_*` limits
 	/// below and posts what it deleted to the admin room. Durations take
 	/// suffixes: "90s", "30m", "1h", "7d".

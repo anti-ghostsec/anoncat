@@ -20,6 +20,10 @@ port = 8449
 # Admin panel, loopback only: http://127.0.0.1:8450/_anoncat/panel/
 admin_panel_address = "127.0.0.1:8450"
 
+# Venice AI key for the panel's AI moderation (Settings page). Kept in the
+# vault; the AI stays off until the file exists and it's switched on.
+ai_key_file = "/Drives/server/data/secrets/venice"
+
 # No proxy in front, so the client address is the connection's own; headers
 # can't fake it. Only used by in-memory rate limits.
 ip_source = "connect_info"
