@@ -75,7 +75,8 @@ PAGES_BRANCH = "pages"
 # docs.codeberg.org/codeberg-pages/using-custom-domain: Dynu can't do ALIAS at
 # the domain itself, so these, which Codeberg says may change.
 PAGES_IPV4 = "217.197.84.141"
-PAGES_IPV6 = "2a0a:4580:103f:c0de::2"
+# Bumped when what set_dns publishes changes, so a running setup re-applies it.
+DNS_LAYOUT = 2
 
 
 def log(msg):
@@ -144,8 +145,10 @@ def set_dns(ip, port, pages):
     dom = domain()
     # The domain object carries the A/AAAA settings: send it back with ours.
     if pages:
-        dom.update({"ipv4Address": PAGES_IPV4, "ipv6Address": PAGES_IPV6,
-                    "ipv4": True, "ipv6": True, "ttl": TTL})
+        # IPv4 only: Dynu gives a name's IPv6 to every sub-name without its
+        # own, and hs has none (Proton forwards IPv4), so publishing
+        # Codeberg's would send IPv6 apps for hs to Codeberg.
+        dom.update({"ipv4Address": PAGES_IPV4, "ipv4": True, "ipv6": False, "ttl": TTL})
     else:
         dom.update({"ipv4Address": ip, "ipv4": True, "ipv6": False, "ttl": TTL})
     dynu("POST", f"/dns/{dom['id']}", dom)
@@ -324,7 +327,8 @@ def step(dry_run=False):
         redirect(local, ip, port)
     pages = pages_mode()
     state = load_state()
-    if state.get("ip") == ip and state.get("port") == port and state.get("pages") == pages:
+    if (state.get("ip"), state.get("port"), state.get("pages"), state.get("layout")) == (
+            ip, port, pages, DNS_LAYOUT):
         return
     front = "Codeberg Pages" if pages else ip
     if dry_run:
@@ -334,7 +338,8 @@ def step(dry_run=False):
     if pages:
         publish_pages(port)
     set_dns(ip, port, pages)
-    save_state({"ip": ip, "port": port, "pages": pages, "since": int(time.time())})
+    save_state({"ip": ip, "port": port, "pages": pages, "layout": DNS_LAYOUT,
+                "since": int(time.time())})
     log(f"DNS now {HS} -> {ip}:{port}, {DOMAIN} -> {front} "
         f"(was {state.get('ip')}:{state.get('port')}, pages {state.get('pages')})")
 
