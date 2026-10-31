@@ -21,6 +21,7 @@ pub mod fetcher;
 pub mod globals;
 pub mod key_backups;
 pub mod login_ratelimit;
+pub mod logs;
 pub mod media;
 pub mod membership;
 pub mod moderation;
