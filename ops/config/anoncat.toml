@@ -44,10 +44,13 @@ allow_registration = true
 registration_token = "@REGISTRATION_TOKEN@"
 
 # --- privacy -------------------------------------------------------------------
-# No notary: keys are fetched from each server itself, so matrix.org isn't told
-# which servers this one talks to.
-trusted_servers = []
+# Signing keys come from each server itself. Only when a server can't answer
+# (old rooms are full of servers that shut down) is xmr.se asked for its
+# old key, so joining those rooms works. xmr.se then sees which dead server's
+# key was wanted, nothing about users; matrix.org is never asked.
+trusted_servers = ["xmr.se"]
 query_trusted_key_servers_first = false
+query_trusted_key_servers_first_on_join = false
 
 # Presence broadcasts when people are online; off, in and out.
 allow_local_presence = false
