@@ -117,9 +117,16 @@ pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
 	}
 
 	if !already_member && self.services.server.config.admin_room_notices {
-		let welcome_message = String::from(
-			"## Thank you for trying out tuwunel!\n\nTuwunel is a continuation of conduwuit which was technically a hard fork of Conduit.\n\nHelpful links:\n> GitHub Repo: https://github.com/matrix-construct/tuwunel\n> Documentation: https://matrix-construct.github.io/tuwunel\n> Report issues: https://github.com/matrix-construct/tuwunel/issues\n\nFor a list of available commands, send the following message in this room: `!admin --help`",
+		let config = &self.services.server.config;
+		let mut welcome_message = format!(
+			"## Welcome to {}\n\nThis is the admin room. Messages here starting with `!admin` run as server commands; `!admin --help` lists them.",
+			config.server_name
 		);
+		if let Some(panel) = config.admin_panel_address {
+			welcome_message.push_str(&format!(
+				"\n\nThe admin panel is at http://{panel}/_anoncat/panel/ on the server itself."
+			));
+		}
 
 		// Send welcome message
 		self.services

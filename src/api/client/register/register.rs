@@ -136,7 +136,7 @@ pub(crate) async fn register_route(
 	debug_info!(%user_id, %device_id, "User account was created");
 
 	if body.appservice_info.is_none() && (!is_guest || services.config.log_guest_registrations) {
-		announce_new_user(services, &user_id, &body, is_guest).await?;
+		announce_new_user(services, &user_id, is_guest).await?;
 	}
 
 	Ok(register::v3::Response {
@@ -482,16 +482,12 @@ async fn try_bind_registration_email(
 async fn announce_new_user(
 	services: crate::State,
 	user_id: &UserId,
-	body: &Ruma<register::v3::Request>,
 	is_guest: bool,
 ) -> Result {
 	let mut notice = String::from(if is_guest { "New guest user" } else { "New user" });
 
+	// No device name: it names the person's browser and OS.
 	write!(notice, " \"{user_id}\" registered on this server")?;
-
-	if let Some(device_name) = body.initial_device_display_name.as_deref() {
-		write!(notice, " with device name {device_name}")?;
-	}
 
 	if is_guest {
 		debug_info!("{notice}");

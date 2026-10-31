@@ -21,6 +21,18 @@ use tuwunel_matrix::{pdu::PduBuilder, room_version};
 
 use crate::Services;
 
+/// How the server's bot account appears in rooms.
+pub const BOT_NAME: &str = "anoncat";
+
+/// The admin room's topic.
+#[must_use]
+pub fn admin_room_topic(services: &Services) -> String {
+	format!(
+		"Manage {} | Messages starting with `!admin` run as server commands | `!admin --help` lists them",
+		services.config.server_name
+	)
+}
+
 /// Create the server user.
 ///
 /// This should be the first user on the server and created prior to the
@@ -32,6 +44,11 @@ pub async fn create_server_user(services: &Services) -> Result {
 	services
 		.users
 		.create(server_user, None, None)
+		.await?;
+
+	services
+		.profile
+		.set_displayname(server_user, Some(BOT_NAME), None)
 		.await?;
 
 	Ok(())
@@ -92,7 +109,10 @@ pub async fn create_admin_room(services: &Services) -> Result {
 		.build_and_append_pdu(
 			PduBuilder::state(
 				String::from(server_user),
-				&RoomMemberEventContent::new(MembershipState::Join),
+				&RoomMemberEventContent {
+					displayname: Some(BOT_NAME.to_owned()),
+					..RoomMemberEventContent::new(MembershipState::Join)
+				},
 			),
 			server_user,
 			&room_id,
@@ -178,7 +198,7 @@ pub async fn create_admin_room(services: &Services) -> Result {
 		.build_and_append_pdu(
 			PduBuilder::state(String::new(), &RoomTopicEventContent {
 				topic_block: TopicContentBlock::default(),
-				topic: format!("Manage {} | Run commands prefixed with `!admin` | Run `!admin -h` for help | Documentation: https://matrix-construct.github.io/tuwunel", services.config.server_name),
+				topic: admin_room_topic(services),
 			}),
 			server_user,
 			&room_id,
