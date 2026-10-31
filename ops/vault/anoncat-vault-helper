@@ -1,0 +1,170 @@
+#!/usr/bin/python3 -I
+"""anoncat-vault-helper: the one root job the unlock page needs.
+
+Socket-activated (anoncat-vault-helper.socket, Accept=yes): systemd hands
+each connection to a fresh copy of this script as stdin/stdout. It talks only
+to the anoncat user (checked with SO_PEERCRED, on top of the socket file
+being root:anoncat 0660) and does exactly one of two things:
+
+    status\\n               -> {"ok": true, "state": "locked" | "unlocked" | ...}
+    unlock\\n<passphrase>   -> opens the vault, mounts it, starts anoncat
+                              (anoncat-vault unlock --stdin)
+
+The passphrase is the rest of the connection, up to the client closing its
+side; at most 1024 bytes. It is read into one preallocated buffer, written
+straight into cryptsetup's standard input, and overwritten with zeros; it is
+never decoded, copied into a string, logged or put on a command line.
+
+Why a script and not Rust: it is ~150 lines anyone can read in full before
+running it as root, needs no build on this machine, and all the real work is
+in anoncat-vault, which already does it from a terminal. What Rust would add
+is guaranteed zeroing of the buffer; Python's bytearray is overwritten in
+place, and the only other copies are the kernel's pipe and socket buffers.
+"""
+
+import json
+import os
+import pwd
+import socket
+import struct
+import subprocess
+import sys
+import time
+
+VAULT = os.environ.get("ANONCAT_VAULT_BIN", "/usr/local/sbin/anoncat-vault")
+ALLOWED_USER = os.environ.get("ANONCAT_USER", "anoncat")
+MAX_PASSPHRASE = 1024
+MAX_COMMAND = 16
+# Long enough for argon2 (about 4 s here), fsck and the mount.
+UNLOCK_TIMEOUT = 600
+# A wrong passphrase costs this much more, on top of argon2's own cost.
+FAILURE_DELAY = 3
+
+
+def reply(conn, ok, **fields):
+    fields["ok"] = ok
+    conn.sendall((json.dumps(fields) + "\n").encode())
+
+
+def peer_uid(conn):
+    creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    _pid, uid, _gid = struct.unpack("3i", creds)
+    return uid
+
+
+def read_line(conn, limit):
+    """Bytes up to the first newline (not included); None if too long."""
+    out = bytearray()
+    while len(out) <= limit:
+        byte = conn.recv(1)
+        if not byte or byte == b"\n":
+            return bytes(out)
+        out += byte
+    return None
+
+
+def vault_state():
+    try:
+        result = subprocess.run(
+            [VAULT, "status"], capture_output=True, text=True, timeout=30, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "unknown", str(e)
+    first = (result.stdout.splitlines() or [""])[0]
+    if first.startswith("unlocked, mounted"):
+        return "unlocked", first
+    if first.startswith("unlocked but not mounted"):
+        return "open-not-mounted", first
+    if first in ("locked", "not created"):
+        return first.replace(" ", "-"), first
+    return "unknown", first or result.stderr.strip()[:200]
+
+
+def unlock(conn):
+    secret = bytearray(MAX_PASSPHRASE + 1)
+    length = 0
+    try:
+        view = memoryview(secret)
+        while length <= MAX_PASSPHRASE:
+            got = conn.recv_into(view[length:])
+            if got == 0:
+                break
+            length += got
+        if length == 0 or length > MAX_PASSPHRASE or secret.find(b"\n", 0, length) != -1:
+            reply(conn, False, message="The passphrase must be 1 to 1024 bytes on one line.")
+            return
+
+        state, _ = vault_state()
+        if state == "unlocked":
+            reply(conn, True, state=state, message="The vault is already unlocked.")
+            return
+
+        proc = subprocess.Popen(
+            [VAULT, "unlock", "--stdin"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+        )
+        try:
+            fd = proc.stdin.fileno()
+            written = 0
+            while written < length:
+                written += os.write(fd, view[written:length])
+        finally:
+            # EOF ends the passphrase; communicate() mustn't touch it again.
+            proc.stdin.close()
+            proc.stdin = None
+
+        try:
+            output, _ = proc.communicate(timeout=UNLOCK_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            reply(conn, False, message="Unlocking took too long and was stopped.")
+            return
+
+        text = output.decode(errors="replace").strip()
+        if proc.returncode == 0:
+            print("vault unlocked from the unlock page", file=sys.stderr)
+            reply(conn, True, state="unlocked", message="Unlocked. anoncat is starting.")
+        else:
+            print("vault unlock from the unlock page failed", file=sys.stderr)
+            time.sleep(FAILURE_DELAY)
+            # cryptsetup's own words ("No key available with this passphrase.").
+            reply(conn, False, message=text.splitlines()[-1][:300] if text else "Unlock failed.")
+    finally:
+        for i in range(len(secret)):
+            secret[i] = 0
+
+
+def main():
+    conn = socket.socket(fileno=sys.stdin.fileno())
+    conn.settimeout(30)
+    try:
+        allowed = pwd.getpwnam(ALLOWED_USER).pw_uid
+    except KeyError:
+        reply(conn, False, message="No anoncat user.")
+        return
+    if peer_uid(conn) != allowed:
+        print("refused a connection from another user", file=sys.stderr)
+        reply(conn, False, message="Not allowed.")
+        return
+
+    command = read_line(conn, MAX_COMMAND)
+    if command == b"status":
+        state, detail = vault_state()
+        reply(conn, True, state=state, message=detail)
+    elif command == b"unlock":
+        conn.settimeout(UNLOCK_TIMEOUT)
+        unlock(conn)
+    else:
+        reply(conn, False, message="Unknown request.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError) as e:
+        print(f"anoncat-vault-helper: {type(e).__name__}", file=sys.stderr)
+        sys.exit(1)

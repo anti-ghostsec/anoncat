@@ -1,0 +1,19 @@
+# The root helper behind the panel's unlock page. Only root and the anoncat
+# group can connect (the helper also checks the peer is the anoncat user);
+# one connection at a time, each handled by a fresh helper.
+[Unit]
+Description=anoncat vault unlock helper socket
+
+[Socket]
+ListenStream=/run/anoncat-vault.sock
+SocketUser=root
+SocketGroup=anoncat
+SocketMode=0660
+Accept=yes
+MaxConnections=1
+# Unlock attempts are slow anyway (argon2); this caps hammering on top.
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=5
+
+[Install]
+WantedBy=sockets.target

@@ -1,0 +1,166 @@
+#!/usr/bin/python3 -I
+"""anoncat-unlock-page: the panel's unlock screen, while the vault is locked.
+
+After a boot the vault is locked, so anoncat (and its panel) can't start: its
+database is inside. This tiny server takes the panel's address meanwhile
+(127.0.0.1:8450, loopback only) and shows one page: a passphrase box. The
+passphrase goes to anoncat-vault-helper, the root helper on a unix socket,
+which unlocks the vault and has anoncat-start.service stop this and start
+anoncat; the panel takes the address back and the page reloads into it.
+SIGTERM lets the request in progress finish first, so the browser still
+hears that the unlock worked.
+
+Runs as the anoncat user, from anoncat-unlock.service, only while
+/Drives/server/data isn't mounted. Nothing is stored or logged; the
+passphrase is read into one buffer, passed on and overwritten.
+"""
+
+import http.server
+import json
+import os
+import signal
+import socket
+import sys
+import threading
+
+ADDRESS = os.environ.get("ANONCAT_UNLOCK_ADDRESS", "127.0.0.1")
+PORT = int(os.environ.get("ANONCAT_UNLOCK_PORT", "8450"))
+HELPER = os.environ.get("ANONCAT_VAULT_HELPER", "/run/anoncat-vault.sock")
+FILES = os.environ.get("ANONCAT_UNLOCK_FILES", "/usr/local/lib/anoncat/unlock")
+MAX_PASSPHRASE = 1024
+
+CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "img-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
+)
+ASSETS = {
+    "/_anoncat/panel/": ("unlock.html", "text/html; charset=utf-8"),
+    "/_anoncat/panel/unlock.js": ("unlock.js", "text/javascript; charset=utf-8"),
+    "/_anoncat/panel/panel.css": ("panel.css", "text/css; charset=utf-8"),
+}
+
+
+def helper(request, secret=None, length=0):
+    """One request to the root helper; returns its JSON reply."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.settimeout(660)
+        conn.connect(HELPER)
+        conn.sendall(request)
+        if secret is not None:
+            conn.sendall(memoryview(secret)[:length])
+        conn.shutdown(socket.SHUT_WR)
+        data = bytearray()
+        while len(data) < 65536:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    return json.loads(data.decode() or "{}")
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "anoncat"
+    sys_version = ""
+
+    def log_message(self, *_args):
+        # Nothing logged: no addresses, no paths.
+        pass
+
+    def host_ok(self):
+        # Refuses pages elsewhere that rebind their own name to this port.
+        host = (self.headers.get("Host") or "").lower()
+        return host in (f"{ADDRESS}:{PORT}", f"localhost:{PORT}", f"[::1]:{PORT}")
+
+    def send(self, status, body, content_type="application/json"):
+        if isinstance(body, (dict, list)):
+            body = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if not self.host_ok():
+            return self.send(421, {"error": "Misdirected request."})
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/_anoncat/panel"):
+            self.send_response(302)
+            self.send_header("Location", "/_anoncat/panel/")
+            self.send_header("Content-Length", "0")
+            return self.end_headers()
+        if path in ASSETS:
+            name, kind = ASSETS[path]
+            try:
+                with open(os.path.join(FILES, name), "rb") as f:
+                    return self.send(200, f.read(), kind)
+            except OSError:
+                return self.send(500, {"error": "Missing file."})
+        if path == "/_anoncat/unlock/status":
+            try:
+                return self.send(200, helper(b"status\n"))
+            except (OSError, ValueError):
+                return self.send(503, {"ok": False, "message": "The unlock helper isn't running."})
+        # The panel's own API while locked: say so, so an open panel can tell.
+        return self.send(503, {"errcode": "ANONCAT_VAULT_LOCKED", "error": "The vault is locked."})
+
+    def do_POST(self):
+        if not self.host_ok():
+            return self.send(421, {"error": "Misdirected request."})
+        if self.path != "/_anoncat/unlock":
+            return self.send(404, {"error": "Not found."})
+        # A custom header and a non-form type: a page on another site can't
+        # send this without a CORS preflight, which is never answered.
+        if (
+            self.headers.get("X-Anoncat-Unlock") != "1"
+            or self.headers.get("Content-Type") != "application/octet-stream"
+        ):
+            return self.send(400, {"ok": False, "message": "Bad request."})
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+        except ValueError:
+            length = 0
+        if not 0 < length <= MAX_PASSPHRASE:
+            return self.send(400, {"ok": False, "message": "The passphrase must be 1 to 1024 bytes."})
+
+        secret = bytearray(length)
+        try:
+            view = memoryview(secret)
+            got = 0
+            while got < length:
+                n = self.rfile.readinto(view[got:])
+                if not n:
+                    break
+                got += n
+            if got != length:
+                return self.send(400, {"ok": False, "message": "Incomplete request."})
+            try:
+                result = helper(b"unlock\n", secret, length)
+            except (OSError, ValueError):
+                return self.send(503, {"ok": False, "message": "The unlock helper isn't running."})
+            return self.send(200 if result.get("ok") else 403, result)
+        finally:
+            for i in range(len(secret)):
+                secret[i] = 0
+
+
+def main():
+    server = http.server.HTTPServer((ADDRESS, PORT), Handler)
+
+    # Stop after the request being handled, not in the middle of it.
+    def stop(_signum, _frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    print(f"unlock page on http://{ADDRESS}:{PORT}/_anoncat/panel/", file=sys.stderr)
+    server.serve_forever()
+    server.server_close()
+
+
+if __name__ == "__main__":
+    main()

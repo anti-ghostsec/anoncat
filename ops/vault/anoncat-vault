@@ -10,11 +10,17 @@
 #
 #   anoncat-vault create [SIZE]   make the container (default 800G), once
 #   anoncat-vault unlock          ask the passphrase, mount, start anoncat
+#   anoncat-vault unlock --stdin  the same with the passphrase on standard
+#                                 input, exactly (no newline), and without
+#                                 waiting for anoncat to be ready; used by
+#                                 the panel's unlock page via
+#                                 anoncat-vault-helper
 #   anoncat-vault lock            stop anoncat, unmount, forget the key
 #   anoncat-vault status          show whether it is unlocked and how full
 #
-# Run as root (sudo). The passphrase is read by cryptsetup from the terminal;
-# it is never stored, logged or passed on the command line.
+# Run as root (sudo). The passphrase is read by cryptsetup from the terminal
+# (or, with --stdin, from standard input, which this script never reads
+# itself); it is never stored, logged or passed on the command line.
 
 set -euo pipefail
 PATH=/usr/sbin:/sbin:$PATH
@@ -25,6 +31,8 @@ MOUNT=${ANONCAT_VAULT_MOUNT:-/Drives/server/data}
 OWNER=${ANONCAT_VAULT_OWNER:-anoncat}
 SERVICE=${ANONCAT_SERVICE:-anoncat.service}
 SOCKET=${ANONCAT_SOCKET:-anoncat.socket}
+# The page on the panel's address that takes the passphrase while locked.
+UNLOCK_PAGE=${ANONCAT_UNLOCK_PAGE:-anoncat-unlock.service}
 MOUNT_OPTS=noatime,nodev,nosuid,noexec
 
 die() { echo "anoncat-vault: $*" >&2; exit 1; }
@@ -90,16 +98,32 @@ mount_it() {
 }
 
 unlock() {
+	local from_stdin=${1:-}
 	[[ -e $CONTAINER ]] || die "no container at $CONTAINER; run: $0 create"
 	if ! is_open; then
-		# Up to three tries, then cryptsetup gives up.
-		open_vault --tries 3
+		if [[ $from_stdin == --stdin ]]; then
+			# cryptsetup reads the passphrase from stdin itself, to EOF.
+			open_vault --key-file=-
+		else
+			# Up to three tries, then cryptsetup gives up.
+			open_vault --tries 3
+		fi
 	fi
 	is_mounted || mount_it
 	echo "Unlocked: $MOUNT"
 	if have_service; then
-		systemctl start "$SOCKET" "$SERVICE"
-		echo "Started $SERVICE"
+		if [[ $from_stdin == --stdin ]]; then
+			# The caller is the unlock page, which holds the panel's address:
+			# anoncat-start.service stops it, then starts anoncat. Not waited
+			# for, so the page can still answer.
+			systemctl start --no-block anoncat-start.service
+			echo "Starting $SERVICE"
+		else
+			# The unlock page holds the panel's address; anoncat needs it.
+			systemctl stop "$UNLOCK_PAGE" 2>/dev/null || true
+			systemctl start "$SOCKET" "$SERVICE"
+			echo "Started $SERVICE"
+		fi
 	fi
 }
 
@@ -120,6 +144,10 @@ lock() {
 	loop=$(loop_of)
 	[[ -z $loop ]] || losetup -d "$loop"
 	echo "Locked."
+	if systemctl cat "$UNLOCK_PAGE" &>/dev/null; then
+		systemctl start --no-block "$UNLOCK_PAGE"
+		echo "Unlock page: http://127.0.0.1:8450/_anoncat/panel/"
+	fi
 }
 
 status() {
@@ -142,8 +170,11 @@ cmd=${1:-status}
 shift || true
 case $cmd in
 	create) need_root create; create "$@" ;;
-	unlock) need_root unlock; unlock ;;
+	unlock)
+		need_root unlock
+		[[ $# -eq 0 || $1 == --stdin ]] || die "usage: $0 unlock [--stdin]"
+		unlock "$@" ;;
 	lock) need_root lock; lock ;;
 	status) status ;;
-	*) sed -n '2,20p' "$0"; exit 2 ;;
+	*) sed -n '2,26p' "$0"; exit 2 ;;
 esac

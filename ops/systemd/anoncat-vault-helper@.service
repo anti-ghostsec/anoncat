@@ -1,0 +1,24 @@
+# One connection from the unlock page: report the vault's state, or unlock
+# it with the passphrase sent over the socket (ops/vault/anoncat-vault-helper).
+#
+# Root, and no mount namespacing (ProtectSystem, PrivateTmp, ...): the vault
+# it mounts must be visible to the rest of the system. No network either.
+[Unit]
+Description=anoncat vault unlock helper
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/bin/python3 -I /usr/local/lib/anoncat/anoncat-vault-helper
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=11min
+LimitCORE=0
+NoNewPrivileges=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CPUAffinity=0-3

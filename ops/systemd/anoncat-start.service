@@ -1,0 +1,13 @@
+# Started by `anoncat-vault unlock --stdin` (the unlock page's path): stops
+# the unlock page, which holds the panel's address, then starts anoncat. A
+# separate unit so the order is systemd's to keep, and the unlock page still
+# gets to answer the browser before it goes.
+[Unit]
+Description=Start anoncat after an unlock from the unlock page
+Conflicts=anoncat-unlock.service
+After=anoncat-unlock.service
+ConditionPathIsMountPoint=/Drives/server/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block anoncat.socket anoncat.service

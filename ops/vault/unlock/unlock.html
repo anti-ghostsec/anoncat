@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>anoncat: locked</title>
+<link rel="stylesheet" href="panel.css">
+<script src="unlock.js" defer></script>
+</head>
+<body>
+<div class="login">
+	<form id="unlock-form" class="card login-card">
+		<h1>anoncat</h1>
+		<p class="muted">The vault is locked, so the server isn't running. Type the vault's passphrase to unlock it and start the server; the panel opens once it's up.</p>
+		<p id="state" class="muted small"></p>
+		<label>Vault passphrase <input id="passphrase" type="password" autocomplete="off" required></label>
+		<button type="submit" id="unlock">Unlock</button>
+		<p id="message" class="error" role="alert"></p>
+	</form>
+</div>
+</body>
+</html>
