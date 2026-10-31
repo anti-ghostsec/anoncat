@@ -60,6 +60,16 @@ done
 systemctl daemon-reload
 echo "DNS via Proton for anoncat only, RAM-only logs, ${#UNITS[@]} units"
 
+step "This machine's own access"
+# Matrix apps here can't reach the public address (the tunnel doesn't carry
+# it back), so the hidden server name points at the tunnel address, where
+# anoncat-netd turns the public port into the local listener.
+HOSTS_LINE="10.2.0.2 hs.anoncat.gleeze.com"
+if ! grep -qxF "$HOSTS_LINE" /etc/hosts; then
+	echo "$HOSTS_LINE" >> /etc/hosts
+	echo "added to /etc/hosts: $HOSTS_LINE"
+fi
+
 step "Vault contents"
 install -d -m 0700 -o "$USER_" -g "$USER_" "$DATA/db" "$DATA/secrets" "$DATA/netd" "$DATA/tls"
 if [[ ! -e $DATA/tls/certificates ]]; then

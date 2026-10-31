@@ -305,11 +305,13 @@ def tunnel_address():
 
 def redirect(port, ip, public):
     """Make `inet anoncat` redirect exactly this local port on wg0, and this
-    machine's own connections to ip:public to the local listener on the
-    tunnel address. (Not 127.0.0.1: those connections already carry the
-    tunnel address as their source, and Linux drops traffic rerouted to
-    loopback from it.) Built afresh once per start, then only when something
-    changes or the table is gone."""
+    machine's own connections to the public port on its tunnel address to the
+    local listener there. This machine resolves hs.anoncat.gleeze.com to its
+    tunnel address (/etc/hosts): the tunnel doesn't carry connections to the
+    public address back, and redirecting those instead fails, since their
+    replies then claim the public address as their source on loopback and
+    wg-quick's anti-spoofing rule drops them. Built afresh once per start,
+    then only when something changes or the table is gone."""
     global _applied
     local_ip = tunnel_address()
     out = subprocess.run([NFT, "-j", "list", "set", "inet", "anoncat", "forwarded"],
@@ -330,13 +332,13 @@ table inet anoncat {{
     }}
     chain output {{
         type nat hook output priority dstnat; policy accept;
-        ip daddr {ip} tcp dport {public} counter dnat ip to {local_ip}:{LOOPBACK_PORT}
+        ip daddr {local_ip} tcp dport {public} counter dnat ip to {local_ip}:{LOOPBACK_PORT}
     }}
 }}
 """
     subprocess.run([NFT, "-f", "-"], input=script, text=True, check=True)
     _applied = (port, ip, public, local_ip)
-    log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}; local {ip}:{public} -> {local_ip}:{LOOPBACK_PORT}")
+    log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}; local {local_ip}:{public} -> {LOOPBACK_PORT}")
 
 
 def step(dry_run=False):
