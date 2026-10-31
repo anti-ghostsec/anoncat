@@ -38,10 +38,18 @@ ip_source = "connect_info"
 log = "warn"
 
 # --- registration --------------------------------------------------------------
-# Accounts need a token: this one (from the installer) or invite tokens made in
-# the panel. The first account registered becomes the server admin.
+# Apps signing up need a token: this one (from the installer) or invite tokens
+# made in the panel. The first account registered becomes the server admin.
 allow_registration = true
 registration_token = "@REGISTRATION_TOKEN@"
+
+# Or anyone can sign up at https://anoncat.gleeze.com/register (the front page
+# sends it on to this server's /register): a picture captcha drawn here, no
+# token, at most web_signups_per_hour accounts an hour. Matrix apps signing up
+# directly still need the token, so bots can't go around the captcha. Signed-in
+# people manage their account at /login.
+web_signup = true
+web_signups_per_hour = 10
 
 # --- privacy -------------------------------------------------------------------
 # Signing keys come from each server itself. Only when a server can't answer

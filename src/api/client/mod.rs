@@ -52,6 +52,7 @@ pub(crate) mod unstable;
 pub(crate) mod user_directory;
 pub(crate) mod versions;
 pub(crate) mod voip;
+pub(crate) mod web;
 pub(crate) mod well_known;
 
 mod utils;

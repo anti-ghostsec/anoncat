@@ -24,7 +24,8 @@ use ruma::api::client::session::{
 use tuwunel_core::{Err, Result, info, utils::stream::ReadyExt};
 use tuwunel_service::users::device::generate_refresh_token;
 
-use self::{ldap::ldap_login, password::password_login};
+pub(crate) use self::password::password_login;
+use self::ldap::ldap_login;
 pub(crate) use self::{
 	logout::{logout_all_route, logout_route},
 	refresh::refresh_token_route,

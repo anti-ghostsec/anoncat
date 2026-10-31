@@ -63,7 +63,7 @@ pub(super) async fn handle_login(
 ///
 /// Returns the user ID if successful, and an error otherwise.
 #[tracing::instrument(skip_all, fields(%user_id), name = "password")]
-pub(super) async fn password_login(
+pub(crate) async fn password_login(
 	services: &Services,
 	user_id: &UserId,
 	lowercased_user_id: &UserId,

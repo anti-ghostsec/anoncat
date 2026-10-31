@@ -38,6 +38,7 @@ pub mod rooms;
 pub mod sending;
 pub mod sendmail;
 pub mod server_keys;
+pub mod signup;
 pub mod storage;
 pub mod sync;
 pub mod tasks;

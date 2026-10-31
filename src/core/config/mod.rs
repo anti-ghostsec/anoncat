@@ -2428,6 +2428,25 @@ pub struct Config {
 	/// example: "/Drives/server/data/secrets/venice"
 	pub ai_key_file: Option<PathBuf>,
 
+	/// Serves anoncat's own web pages on the public listeners: /register, a
+	/// sign-up form with a picture captcha the server draws itself, and
+	/// /login, where people manage their account (display name, devices,
+	/// password, deleting it). Sign-ups there need no registration token but
+	/// still need `allow_registration`; the Matrix register endpoint keeps
+	/// asking for the token, so apps and bots can't go around the captcha.
+	///
+	/// reloadable: yes
+	#[serde(default)]
+	pub web_signup: bool,
+
+	/// Most accounts the sign-up page creates in an hour, counting everyone
+	/// together. 0 means no limit.
+	///
+	/// reloadable: yes
+	/// default: 10
+	#[serde(default = "default_web_signups_per_hour")]
+	pub web_signups_per_hour: u32,
+
 	/// How often the cleanup runs. Each run applies the `cleanup_*` limits
 	/// below and posts what it deleted to the admin room. Durations take
 	/// suffixes: "90s", "30m", "1h", "7d".
@@ -6398,6 +6417,8 @@ fn default_client_request_timeout() -> u64 { 240 }
 fn default_client_response_timeout() -> u64 { 120 }
 
 fn default_client_shutdown_timeout() -> u64 { 15 }
+
+fn default_web_signups_per_hour() -> u32 { 10 }
 
 fn default_sender_shutdown_timeout() -> u64 { 5 }
 

@@ -222,11 +222,18 @@ def pages_files(port, deployed_at=None):
         "matrix-client.json": client,
         # Served under the path Matrix apps ask for, whether or not the host
         # serves dot-directories itself.
-        "_redirects": "/.well-known/matrix/client /matrix-client.json 200\n",
+        # /register and /login go to the server's own pages (web_signup),
+        # which follow the forwarded port like everything else.
+        "_redirects": "/.well-known/matrix/client /matrix-client.json 200\n"
+                      f"/register https://{HS}:{port}/register 302\n"
+                      f"/login https://{HS}:{port}/login 302\n"
+                      f"/account https://{HS}:{port}/account 302\n",
         # Element's web app reads it from another origin.
         "_headers": "/matrix-client.json\n    Access-Control-Allow-Origin: *\n"
                     "/.well-known/matrix/client\n    Access-Control-Allow-Origin: *\n",
-        "index.html": f"<!doctype html><title>{DOMAIN}</title><p>{DOMAIN} is a Matrix server.</p>\n",
+        "index.html": f"<!doctype html><meta name=viewport content=\"width=device-width\"><title>{DOMAIN}</title>"
+                      f"<p>{DOMAIN} is a Matrix server.</p>"
+                      f"<p><a href=\"/register\">Create an account</a> &middot; <a href=\"/login\">Manage your account</a></p>\n",
         # Changed only to force a push, which is what makes Codeberg deploy.
         "deployed.txt": f"{deployed_at or 0}\n",
     }
