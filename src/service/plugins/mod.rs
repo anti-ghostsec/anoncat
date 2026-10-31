@@ -13,7 +13,12 @@
 //!
 //! A call that traps (time or memory limit, panic) leaves its instance
 //! unusable, so a fresh one is started in its place; a plugin that keeps
-//! failing is unloaded and the admin room told.
+//! failing is unloaded and the admins told.
+//!
+//! The capabilities a manifest declares must be approved by an admin (the
+//! panel's Plugins page, or `!admin plugins approve`) before the plugin
+//! loads. An approval covers those capabilities, not the code: replacing the
+//! `.wasm` keeps it, while a manifest asking for more needs a new one.
 
 use std::{
 	collections::{BTreeMap, VecDeque},
@@ -27,9 +32,11 @@ use std::{
 
 use async_trait::async_trait;
 use ruma::{OwnedRoomId, RoomId, events::room::message::RoomMessageEventContent};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, time::timeout};
-use tuwunel_core::{Err, Result, debug, err, error, implement, info, toml, warn};
+use tuwunel_core::{
+	Err, Result, debug, err, error, implement, info, toml, utils::time::now_millis, warn,
+};
 use tuwunel_database::Map;
 use tuwunel_matrix::{Event, PduEvent, pdu::MAX_PDU_BYTES};
 use wasmtime::{
@@ -78,12 +85,20 @@ const KV_KEY_LIMIT: usize = 1024;
 const KV_VALUE_LIMIT: usize = 64 << 10;
 const LOG_LIMIT: usize = 2048;
 
+/// Approvals live in `anoncat_settings` under this prefix plus the name.
+const APPROVAL_PREFIX: &str = "plugin_approval/";
+
+/// Problems kept per plugin for the panel, newest last.
+const ALERTS_KEPT: usize = 20;
+
 pub struct Service {
 	services: Arc<crate::services::OnceServices>,
 	engine: Engine,
 	linker: Linker<State>,
 	kv: Arc<Map>,
+	settings: Arc<Map>,
 	plugins: RwLock<BTreeMap<String, Arc<Loaded>>>,
+	alerts: Mutex<BTreeMap<String, VecDeque<Alert>>>,
 	events: mpsc::Sender<Arc<PluginEvent>>,
 	events_rx: Mutex<Option<mpsc::Receiver<Arc<PluginEvent>>>>,
 	sends: mpsc::Sender<Outgoing>,
@@ -108,6 +123,90 @@ pub struct Manifest {
 	pub events: Vec<String>,
 	/// Handed to the plugin's `init` as JSON.
 	pub config: toml::Table,
+}
+
+/// What a manifest asks to be allowed to do; an admin approves exactly this.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default)]
+pub struct Capabilities {
+	pub check_events: bool,
+	pub check_fail_closed: bool,
+	pub send_messages: bool,
+	/// Sorted, without duplicates.
+	pub events: Vec<String>,
+}
+
+impl Capabilities {
+	/// Whether these, as approved, cover everything `wanted` asks for.
+	#[must_use]
+	pub fn covers(&self, wanted: &Self) -> bool {
+		(self.check_events || !wanted.check_events)
+			&& (self.check_fail_closed || !wanted.check_fail_closed)
+			&& (self.send_messages || !wanted.send_messages)
+			&& wanted
+				.events
+				.iter()
+				.all(|kind| self.events.iter().any(|k| k == "*" || k == kind))
+	}
+
+	/// In words, for messages: "check_events, events: m.room.message".
+	#[must_use]
+	pub fn describe(&self) -> String {
+		let mut out = Vec::new();
+		if self.check_events {
+			out.push("check_events".to_owned());
+		}
+		if self.check_fail_closed {
+			out.push("check_fail_closed".to_owned());
+		}
+		if self.send_messages {
+			out.push("send_messages".to_owned());
+		}
+		if !self.events.is_empty() {
+			out.push(format!("events: {}", self.events.join(", ")));
+		}
+		if out.is_empty() {
+			return "nothing".to_owned();
+		}
+
+		out.join("; ")
+	}
+
+	/// Whether there is anything to approve at all.
+	#[must_use]
+	pub fn is_empty(&self) -> bool {
+		!self.check_events && !self.check_fail_closed && !self.send_messages && self.events.is_empty()
+	}
+}
+
+impl Manifest {
+	#[must_use]
+	pub fn capabilities(&self) -> Capabilities {
+		let mut events = self.events.clone();
+		events.sort();
+		events.dedup();
+		Capabilities {
+			check_events: self.check_events,
+			check_fail_closed: self.check_fail_closed,
+			send_messages: self.send_messages,
+			events,
+		}
+	}
+}
+
+/// An admin's approval of a plugin's capabilities.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Approval {
+	pub capabilities: Capabilities,
+	pub by: String,
+	pub ts: u64,
+}
+
+/// Something that went wrong with a plugin, for the panel.
+#[derive(Clone, Debug, Serialize)]
+pub struct Alert {
+	pub ts: u64,
+	pub message: String,
 }
 
 /// A loaded plugin.
@@ -194,7 +293,9 @@ impl crate::Service for Service {
 			engine,
 			linker,
 			kv: args.db["pluginid_kv"].clone(),
+			settings: args.db["anoncat_settings"].clone(),
 			plugins: RwLock::default(),
+			alerts: Mutex::default(),
 			events,
 			events_rx: Mutex::new(Some(events_rx)),
 			sends,
@@ -279,10 +380,95 @@ async fn load_enabled(self: &Arc<Self>) {
 		if manifest.is_ok_and(|m| m.enabled) {
 			match self.load(&name).await {
 				| Ok(()) => info!(plugin = %name, "Loaded plugin"),
-				| Err(e) => error!(plugin = %name, "Failed to load plugin: {e}"),
+				| Err(e) => {
+					error!(plugin = %name, "Failed to load plugin: {e}");
+					self.services
+						.admin
+						.notify_loud(&format!("Plugin {name} didn't load at startup: {e}"))
+						.await;
+				},
 			}
 		}
 	}
+}
+
+/// The admin approval stored for a plugin, if any.
+#[implement(Service)]
+pub async fn approval(&self, name: &str) -> Option<Approval> {
+	let key = format!("{APPROVAL_PREFIX}{name}");
+	let stored = self.settings.get(key.as_str()).await.ok()?;
+	serde_json::from_slice(&stored).ok()
+}
+
+/// Approves the capabilities the plugin's manifest declares right now.
+#[implement(Service)]
+pub fn approve(&self, name: &str, by: &str) -> Result<Approval> {
+	check_name(name)?;
+	let approval = Approval {
+		capabilities: self.manifest(name)?.capabilities(),
+		by: by.to_owned(),
+		ts: now_millis(),
+	};
+
+	let key = format!("{APPROVAL_PREFIX}{name}");
+	self.settings
+		.insert(key.as_str(), serde_json::to_vec(&approval)?);
+	// Its "needs approval" problems are settled now.
+	self.clear_alerts(name);
+	info!(plugin = %name, %by, capabilities = ?approval.capabilities, "Plugin capabilities approved");
+
+	Ok(approval)
+}
+
+/// Withdraws a plugin's approval and unloads it if loaded.
+#[implement(Service)]
+pub fn revoke(&self, name: &str) -> Result {
+	check_name(name)?;
+	let key = format!("{APPROVAL_PREFIX}{name}");
+	self.settings.remove(key.as_str());
+	self.plugins.write().expect("locked").remove(name);
+	info!(plugin = %name, "Plugin approval withdrawn");
+
+	Ok(())
+}
+
+/// Recent problems with each plugin, oldest first.
+#[implement(Service)]
+pub fn alerts(&self) -> BTreeMap<String, Vec<Alert>> {
+	self.alerts
+		.lock()
+		.expect("locked")
+		.iter()
+		.map(|(name, alerts)| (name.clone(), alerts.iter().cloned().collect()))
+		.collect()
+}
+
+/// Forgets a plugin's recorded problems.
+#[implement(Service)]
+pub fn clear_alerts(&self, name: &str) { self.alerts.lock().expect("locked").remove(name); }
+
+#[implement(Service)]
+fn alert(&self, name: &str, message: String) {
+	let mut alerts = self.alerts.lock().expect("locked");
+	let list = alerts.entry(name.to_owned()).or_default();
+	if list.len() >= ALERTS_KEPT {
+		list.pop_front();
+	}
+
+	list.push_back(Alert { ts: now_millis(), message });
+}
+
+fn check_name(name: &str) -> Result {
+	if name.is_empty()
+		|| name.len() > 64
+		|| !name
+			.chars()
+			.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+	{
+		return Err!(Request(InvalidParam("Plugin names are letters, digits, - and _.")));
+	}
+
+	Ok(())
 }
 
 /// Loads (or reloads) a plugin from the plugins directory and calls its
@@ -290,11 +476,32 @@ async fn load_enabled(self: &Arc<Self>) {
 /// the new one has started.
 #[implement(Service)]
 pub async fn load(self: &Arc<Self>, name: &str) -> Result {
-	if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-		return Err!(Request(InvalidParam("Plugin names are letters, digits, - and _.")));
+	check_name(name)?;
+	let result = self.load_approved(name).await;
+	if let Err(e) = &result {
+		self.alert(name, format!("Didn't load: {e}"));
 	}
 
+	result
+}
+
+#[implement(Service)]
+async fn load_approved(self: &Arc<Self>, name: &str) -> Result {
 	let manifest = self.manifest(name)?;
+	let wanted = manifest.capabilities();
+	if !wanted.is_empty()
+		&& !self
+			.approval(name)
+			.await
+			.is_some_and(|approval| approval.capabilities.covers(&wanted))
+	{
+		return Err!(Request(Forbidden(
+			"Plugin {name} asks for capabilities no admin has approved yet ({}). Approve them on \
+			 the panel's Plugins page or with `plugins approve {name}`.",
+			wanted.describe()
+		)));
+	}
+
 	let path = self.dir().join(format!("{name}.wasm"));
 	let engine = self.engine.clone();
 	let linker = self.linker.clone();
@@ -595,6 +802,7 @@ where
 				.fetch_add(1, Ordering::Relaxed)
 				.saturating_add(1);
 
+			self.alert(&plugin.name, describe(&e));
 			if restarted.is_err() || failures >= MAX_FAILURES {
 				self.retire(plugin, &e).await;
 			} else {
@@ -619,9 +827,20 @@ async fn retire(&self, plugin: &Arc<Loaded>, e: &wasmtime::Error) {
 	};
 
 	if removed.is_some() {
-		let notice = format!("Plugin {} kept failing and was unloaded: {e:#}", plugin.name);
+		let notice = format!("Plugin {} kept failing and was unloaded: {}", plugin.name, describe(e));
 		error!("{notice}");
+		self.alert(&plugin.name, notice.clone());
 		self.services.admin.notify_loud(&notice).await;
+	}
+}
+
+/// A failed call in words, naming the time and memory limits plainly.
+fn describe(e: &wasmtime::Error) -> String {
+	match e.downcast_ref::<wasmtime::Trap>() {
+		| Some(wasmtime::Trap::Interrupt) => "cut off at its time limit".to_owned(),
+		| Some(wasmtime::Trap::OutOfFuel) => "ran out of fuel".to_owned(),
+		| _ if format!("{e:#}").contains("memory") => format!("memory limit or fault: {e:#}"),
+		| _ => format!("{e:#}"),
 	}
 }
 
@@ -715,4 +934,33 @@ fn kv_key(plugin: &str, key: &str) -> Vec<u8> {
 	out.push(0xFF);
 	out.extend_from_slice(key.as_bytes());
 	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::Capabilities;
+
+	fn caps(check: bool, send: bool, events: &[&str]) -> Capabilities {
+		Capabilities {
+			check_events: check,
+			send_messages: send,
+			events: events.iter().map(ToString::to_string).collect(),
+			..Capabilities::default()
+		}
+	}
+
+	#[test]
+	fn approval_covers_only_what_was_approved() {
+		let approved = caps(true, false, &["m.room.message"]);
+		assert!(approved.covers(&caps(true, false, &["m.room.message"])));
+		assert!(approved.covers(&caps(false, false, &[])));
+		assert!(!approved.covers(&caps(true, true, &["m.room.message"])));
+		assert!(!approved.covers(&caps(true, false, &["m.room.member"])));
+		assert!(caps(false, false, &["*"]).covers(&caps(false, false, &["m.room.member"])));
+		assert!(!Capabilities { check_fail_closed: true, ..approved.clone() }.is_empty());
+		assert!(
+			!approved.covers(&Capabilities { check_fail_closed: true, ..approved.clone() })
+		);
+		assert!(Capabilities::default().is_empty());
+	}
 }

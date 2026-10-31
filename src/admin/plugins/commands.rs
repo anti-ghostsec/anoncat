@@ -12,8 +12,11 @@ pub(super) async fn plugins_list(&self) -> Result {
 
 	for (name, manifest) in plugins.available()? {
 		let state = if loaded.iter().any(|p| p.name == name) { "loaded" } else { "not loaded" };
+		let approval = plugins.approval(&name).await;
 		match manifest {
 			| Ok(m) => {
+				let approved = m.capabilities().is_empty()
+					|| approval.is_some_and(|a| a.capabilities.covers(&m.capabilities()));
 				let mut caps = Vec::new();
 				if m.check_events {
 					caps.push("check_events".to_owned());
@@ -27,8 +30,9 @@ pub(super) async fn plugins_list(&self) -> Result {
 
 				writeln!(
 					out,
-					"- **{name}** ({state}{}) {}{}",
+					"- **{name}** ({state}{}{}) {}{}",
 					if m.enabled { ", starts with the server" } else { "" },
+					if approved { "" } else { ", needs approval" },
 					m.description,
 					if caps.is_empty() { String::new() } else { format!(" — {}", caps.join("; ")) },
 				)?;
@@ -56,6 +60,22 @@ pub(super) async fn plugins_unload(&self, name: String) -> Result {
 pub(super) async fn plugins_reload(&self, name: String) -> Result {
 	self.services.plugins.load(&name).await?;
 	self.write_str(&format!("Reloaded {name}.")).await
+}
+
+#[admin_command]
+pub(super) async fn plugins_approve(&self, name: String) -> Result {
+	let by = self
+		.sender
+		.map_or_else(|| "the operator".to_owned(), ToString::to_string);
+	let approval = self.services.plugins.approve(&name, &by)?;
+	self.write_str(&format!("Approved {name}: {}", approval.capabilities.describe()))
+		.await
+}
+
+#[admin_command]
+pub(super) async fn plugins_revoke(&self, name: String) -> Result {
+	self.services.plugins.revoke(&name)?;
+	self.write_str(&format!("Withdrew {name}'s approval; it's unloaded.")).await
 }
 
 #[admin_command]

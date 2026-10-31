@@ -27,6 +27,16 @@ pub(super) enum PluginsCommand {
 		name: String,
 	},
 
+	/// - Approve the capabilities a plugin's manifest declares, so it may load
+	Approve {
+		name: String,
+	},
+
+	/// - Withdraw a plugin's approval (and unload it)
+	Revoke {
+		name: String,
+	},
+
 	/// - Call a plugin's own command
 	Call {
 		name: String,
