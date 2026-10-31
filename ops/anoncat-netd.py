@@ -192,7 +192,9 @@ def codeberg(method, path, body=None, ok_missing=False):
     except urllib.error.HTTPError as e:
         if ok_missing and e.code == 404:
             return None
-        raise
+        # Codeberg says why (a missing token scope, a wrong name): keep it.
+        detail = e.read()[:300].decode(errors="replace")
+        raise RuntimeError(f"Codeberg {method} {path}: HTTP {e.code}: {detail}") from None
     return json.loads(raw) if raw else None
 
 
