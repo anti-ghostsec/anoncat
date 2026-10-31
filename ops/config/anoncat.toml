@@ -8,9 +8,13 @@ server_name = "anoncat.gleeze.com"
 database_path = "/Drives/server/data/db"
 
 # The public port is the systemd socket (anoncat.socket, 8448 bound to wg0,
-# fed by the forwarded port). This loopback listener is for local tools and
-# `anoncat --health-check`.
-address = ["127.0.0.1"]
+# fed by the forwarded port). This listener is for this machine: local tools,
+# `anoncat --health-check`, and this machine's own Matrix apps, which
+# anoncat-netd sends here (on the tunnel address, 10.2.0.2) because the tunnel
+# doesn't carry their connections to the public address back. Nothing outside
+# reaches it: Proton forwards only the one port, and the firewall admits only
+# 8448 on wg0.
+address = ["127.0.0.1", "10.2.0.2"]
 port = 8449
 
 # Admin panel, loopback only: http://127.0.0.1:8450/_anoncat/panel/

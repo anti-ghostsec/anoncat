@@ -61,7 +61,8 @@ RENEW = 45
 LEASE = 60
 NFT = "/usr/sbin/nft"
 LOCAL_PORT = int(os.environ.get("ANONCAT_LOCAL_PORT", "8448"))
-# The loopback listener (TLS, same certificate) for this machine's own clients.
+# The local listener (TLS, same certificate) for this machine's own clients;
+# anoncat.toml has it on the tunnel address as well as loopback.
 LOOPBACK_PORT = int(os.environ.get("ANONCAT_LOOPBACK_PORT", "8449"))
 REDIRECT = os.environ.get("ANONCAT_REDIRECT") == "1"
 
@@ -295,17 +296,27 @@ def save_state(state):
 _applied = None
 
 
+def tunnel_address():
+    """This machine's IPv4 address on wg0."""
+    out = subprocess.run(["/usr/sbin/ip", "-j", "-4", "addr", "show", "dev", "wg0"],
+                         capture_output=True, text=True, check=True)
+    return json.loads(out.stdout)[0]["addr_info"][0]["local"]
+
+
 def redirect(port, ip, public):
     """Make `inet anoncat` redirect exactly this local port on wg0, and this
-    machine's own connections to ip:public to the loopback listener. Built
-    afresh once per start, then only when something changes or the table is
-    gone."""
+    machine's own connections to ip:public to the local listener on the
+    tunnel address. (Not 127.0.0.1: those connections already carry the
+    tunnel address as their source, and Linux drops traffic rerouted to
+    loopback from it.) Built afresh once per start, then only when something
+    changes or the table is gone."""
     global _applied
+    local_ip = tunnel_address()
     out = subprocess.run([NFT, "-j", "list", "set", "inet", "anoncat", "forwarded"],
                          capture_output=True, text=True)
     if out.returncode == 0:
         sets = [x["set"] for x in json.loads(out.stdout)["nftables"] if "set" in x]
-        if sets and sets[0].get("elem") == [port] and _applied == (port, ip, public):
+        if sets and sets[0].get("elem") == [port] and _applied == (port, ip, public, local_ip):
             return
     # Declared first so the delete can't fail, then rebuilt whole: one
     # transaction, so there's never a moment with a half-made table.
@@ -319,13 +330,13 @@ table inet anoncat {{
     }}
     chain output {{
         type nat hook output priority dstnat; policy accept;
-        ip daddr {ip} tcp dport {public} redirect to :{LOOPBACK_PORT}
+        ip daddr {ip} tcp dport {public} counter dnat ip to {local_ip}:{LOOPBACK_PORT}
     }}
 }}
 """
     subprocess.run([NFT, "-f", "-"], input=script, text=True, check=True)
-    _applied = (port, ip, public)
-    log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}; local {ip}:{public} -> {LOOPBACK_PORT}")
+    _applied = (port, ip, public, local_ip)
+    log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}; local {ip}:{public} -> {local_ip}:{LOOPBACK_PORT}")
 
 
 def step(dry_run=False):
