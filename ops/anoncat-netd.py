@@ -38,6 +38,7 @@ Usage:
 
 import base64
 import ipaddress
+import hashlib
 import json
 import os
 import socket
@@ -239,6 +240,13 @@ def pages_files(port, deployed_at=None):
     }
 
 
+def pages_rev(port):
+    """A fingerprint of the pages for this port, leaving out the deploy stamp."""
+    files = pages_files(port)
+    files.pop("deployed.txt", None)
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()[:16]
+
+
 def publish_pages(port, redeploy=False):
     """Create the pages repository and its deploy webhook if needed, then
     bring its files up to date; a push deploys them. redeploy forces a push
@@ -379,8 +387,11 @@ def publish_logged(ip, port):
 def publish(ip, port, dry_run=False):
     pages = pages_mode()
     state = load_state()
-    if (state.get("ip"), state.get("port"), state.get("pages"), state.get("layout")) == (
-            ip, port, pages, DNS_LAYOUT):
+    # The pages' content counts too, so a new version of them goes up without
+    # waiting for the port to change.
+    rev = pages_rev(port) if pages else None
+    if (state.get("ip"), state.get("port"), state.get("pages"), state.get("layout"),
+            state.get("pages_rev")) == (ip, port, pages, DNS_LAYOUT, rev):
         return
     front = "Codeberg Pages" if pages else ip
     if dry_run:
@@ -397,7 +408,7 @@ def publish(ip, port, dry_run=False):
         time.sleep(TTL)
         publish_pages(port, redeploy=True)
     save_state({"ip": ip, "port": port, "pages": pages, "layout": DNS_LAYOUT,
-                "since": int(time.time())})
+                "pages_rev": rev, "since": int(time.time())})
     log(f"DNS now {HS} -> {ip}:{port}, {DOMAIN} -> {front} "
         f"(was {state.get('ip')}:{state.get('port')}, pages {state.get('pages')})")
 
