@@ -1,5 +1,6 @@
-# Renews anoncat's Let's Encrypt certificate (DNS-01 through Dynu) when it
-# has under 30 days left, then restarts anoncat in place to load it.
+# Keeps anoncat's Let's Encrypt certificate current (anoncat-tls: a new one
+# when it lacks a name, a renewal under 30 days left), then restarts anoncat
+# in place to load it.
 [Unit]
 Description=Renew anoncat's TLS certificate
 RequiresMountsFor=/Drives/server/data
@@ -11,10 +12,7 @@ User=anoncat
 Group=anoncat
 Environment=EXEC_PATH=/usr/local/lib/anoncat/acme-dynu-hook.py
 Environment=ANONCAT_DYNU_KEY_FILE=/Drives/server/data/secrets/dynu-key
-ExecStart=/usr/bin/lego --accept-tos --path /Drives/server/data/tls \
-	--email admin@anoncat.gleeze.com --domains anoncat.gleeze.com \
-	--dns exec --dns.disable-cp \
-	renew --days 30 --renew-hook "/usr/bin/touch /Drives/server/data/tls/renewed"
+ExecStart=/usr/local/lib/anoncat/anoncat-tls
 # Only after an actual renewal ("+": as root, to reach systemctl).
 ExecStartPost=+/bin/sh -c 'if [ -e /Drives/server/data/tls/renewed ]; then rm -f /Drives/server/data/tls/renewed; systemctl reload anoncat.service; fi'
 

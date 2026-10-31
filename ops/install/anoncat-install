@@ -46,9 +46,9 @@ fi
 
 step "Tools"
 install -d -m 0755 "$LIB"
-install -m 0755 "$OPS/anoncat-netd.py" "$OPS/acme-dynu-hook.py" "$LIB/"
+install -m 0755 "$OPS/anoncat-netd.py" "$OPS/acme-dynu-hook.py" "$OPS/anoncat-tls" "$LIB/"
 install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$SBIN/"
-echo "$LIB: anoncat-netd.py, acme-dynu-hook.py; $SBIN: anoncat-vault, anoncat-update"
+echo "$LIB: anoncat-netd.py, acme-dynu-hook.py, anoncat-tls; $SBIN: anoncat-vault, anoncat-update"
 
 step "System config"
 install -d -m 0755 /etc/anoncat
