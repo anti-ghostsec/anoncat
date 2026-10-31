@@ -12,6 +12,7 @@
 //! aliases are replaced with placeholders such as U1 and R1; the mapping
 //! stays here.
 
+mod assistant;
 mod venice;
 
 use std::{
@@ -70,6 +71,8 @@ pub struct Service {
 	models: Mutex<Option<(Instant, Vec<Model>)>>,
 	/// Keeps report IDs unique within a millisecond.
 	last_id: Mutex<u64>,
+	/// The assistant's placeholders, kept so its answers can be turned back.
+	masks: Mutex<assistant::Masks>,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -185,6 +188,7 @@ impl crate::Service for Service {
 			rx: Mutex::new(Some(rx)),
 			models: Mutex::new(None),
 			last_id: Mutex::new(0),
+			masks: Mutex::default(),
 		}))
 	}
 
@@ -396,13 +400,12 @@ impl Aliases {
 
 /// Text with every Matrix user ID, room ID and alias replaced by a
 /// placeholder.
+/// Matrix user IDs, room IDs, aliases, event IDs and group IDs.
+static IDS: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+	Regex::new(r"[@!#$+][A-Za-z0-9._=/+\-]+:[A-Za-z0-9.\-]+(?::[0-9]+)?").expect("valid regex")
+});
+
 fn pseudonymize(text: &str) -> String {
-	use std::sync::LazyLock;
-
-	static IDS: LazyLock<Regex> = LazyLock::new(|| {
-		Regex::new(r"[@!#$+][A-Za-z0-9._=/+\-]+:[A-Za-z0-9.\-]+(?::[0-9]+)?").expect("valid regex")
-	});
-
 	IDS.replace_all(text, |c: &regex::Captures<'_>| match c[0].as_bytes()[0] {
 		| b'@' => "@someone",
 		| _ => "#a-room",
@@ -787,56 +790,6 @@ pub async fn test(&self) -> Result<String> {
 		"Venice answered \"{}\" using {model}. Images go to {vision}.",
 		reply.chars().take(40).collect::<String>()
 	))
-}
-
-/// The panel's assistant: answers the admin, and may propose admin commands
-/// in ```command blocks, which run only when the admin clicks them.
-#[implement(Service)]
-pub async fn assistant(&self, history: &[Turn]) -> Result<String> {
-	let Some(key) = self.key() else {
-		return Err!(Request(NotFound("No Venice API key is saved yet.")));
-	};
-
-	let settings = self.settings();
-	let model = self.model(&settings.text_model, false).await?;
-	let open = self.reports(false, 20).await;
-	let mut context = String::new();
-	for r in &open {
-		writeln!(
-			context,
-			"- report {}: {} {} ({}, {}): {}",
-			r.id,
-			r.kind,
-			r.category,
-			r.severity,
-			r.suggested,
-			pseudonymize(&r.reason)
-		)?;
-	}
-
-	let system = format!(
-		"You help the admin of a small private Matrix homeserver (tuwunel-based) run it from an \
-		 admin panel. Be brief and plain. When an admin command would help, put each one alone \
-		 in a fenced block marked command, without the !admin prefix, for example:\n```command\n\
-		 users list-users\n```\nThe admin reviews and runs it; never claim you ran anything. \
-		 Command groups: users, rooms, media, federation, server, appservices, debug, query, \
-		 check; \"<group> --help\" lists a group's commands. Never suggest commands that delete \
-		 data without saying so plainly. Open moderation reports (people and rooms are \
-		 hidden):\n{context}"
-	);
-
-	let history: Vec<Turn> = history
-		.iter()
-		.rev()
-		.take(20)
-		.rev()
-		.map(|t| Turn {
-			role: t.role.clone(),
-			content: t.content.chars().take(8000).collect(),
-		})
-		.collect();
-
-	venice::chat(self.client(), &key, &model, &system, &history, Vec::new()).await
 }
 
 #[cfg(test)]

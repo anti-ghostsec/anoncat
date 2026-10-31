@@ -184,6 +184,7 @@ select { max-width: 100%; }
 .chat { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow: auto; margin-bottom: 10px; }
 .bubble { padding: 10px 14px; max-width: 85%; }
 .bubble.user { align-self: flex-end; border-color: var(--accent); }
+.bubble.shared { align-self: flex-end; max-width: 100%; width: 85%; }
 .proposed { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; padding: 6px 8px; background: var(--bg); border-radius: 6px; }
 
 .toast {

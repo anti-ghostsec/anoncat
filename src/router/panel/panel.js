@@ -618,35 +618,47 @@ pages.settings = async (main) => {
 
 // The assistant's chat lives only in this tab.
 const chat = [];
+let redrawChat = () => {};
 
 pages.assistant = async (main) => {
 	const log = h("div", { class: "chat" });
-	const input = h("textarea", { placeholder: "Ask about the server, e.g. \"which rooms have the most members?\" or \"how do I stop registrations?\"" });
+	const input = h("textarea", { placeholder: "Ask about the server, e.g. \"how busy is it?\" or \"how do I stop registrations?\"" });
 	const draw = () => {
-		log.replaceChildren(...chat.map((t) => h("div", { class: `card bubble ${t.role}` }, renderReply(t.content, t.role === "assistant"))));
+		log.replaceChildren(...chat.map((t) => t.shared
+			? h("div", { class: "card bubble shared" },
+				h("div", { class: "small muted" }, `Output of ${t.command}, shared with the assistant`),
+				h("pre", { class: "notice-body excerpt" }, t.output))
+			: h("div", { class: `card bubble ${t.role}` }, renderReply(t.content, t.role === "assistant"))));
 		log.scrollTop = log.scrollHeight;
 	};
 	const send = async () => {
 		const text = input.value.trim();
-		if (!text) return;
+		const last = chat[chat.length - 1];
+		// An empty Send right after shared output asks about that output.
+		if (!text && !last?.shared) return;
 		input.value = "";
-		chat.push({ role: "user", content: text });
+		if (text) chat.push({ role: "user", content: text });
 		draw();
 		log.append(h("p", { class: "muted small" }, "Thinking…"));
-		const r = await attempt(null, () => api("POST", `${MOD}/assistant`, { messages: chat }));
+		const messages = chat.map(({ role, content }) => ({ role, content }));
+		const r = await attempt(null, () => api("POST", `${MOD}/assistant`, { messages }));
 		chat.push({ role: "assistant", content: r ? r.reply : "(no answer)" });
 		draw();
 	};
+	redrawChat = draw;
 	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); });
 	main.replaceChildren(
 		h("h1", {}, "Assistant"),
-		h("p", { class: "muted" }, "Chats with Venice AI. It can propose admin commands; they only run when you click Run and confirm. Don't paste anything that identifies you. Ctrl+Enter sends."),
+		h("p", { class: "muted" }, "Chats with Venice AI. It sees a snapshot of the server's state each time you send, with people and rooms replaced by placeholders. It can propose admin commands; they only run when you click Run and confirm, and their output is shared with it. Ctrl+Enter sends."),
 		log, input,
 		h("div", { class: "toolbar" },
 			h("button", { onclick: send }, "Send"),
 			h("button", { class: "ghost", onclick: () => { chat.length = 0; draw(); } }, "Clear")));
 	draw();
 };
+
+// Characters of a command's output shared with the assistant.
+const SHARED_OUTPUT = 6000;
 
 // Plain text, with ```command blocks turned into commands to run on request.
 function renderReply(text, commands) {
@@ -656,17 +668,18 @@ function renderReply(text, commands) {
 	while (commands && (m = re.exec(text))) {
 		if (m.index > last) parts.push(h("pre", { class: "notice-body" }, text.slice(last, m.index).trim()));
 		const cmd = m[1].trim().replace(/^!admin\s+/, "");
-		const out = h("pre", { class: "output", hidden: true });
 		parts.push(h("div", { class: "proposed" },
 			h("code", { class: "mono" }, cmd),
 			h("button", { class: "small", onclick: async () => {
 				if (!(await ask("Run this command?", { text: cmd, confirm: "Run" }))) return;
-				out.hidden = false;
-				out.textContent = "Running…";
 				const r = await attempt(null, () => command(cmd));
-				out.textContent = r ? (r.output || (r.ok ? "Done." : "Failed.")) : "Failed.";
-			} }, "Run")),
-			out);
+				const output = r ? (r.output || (r.ok ? "Done." : "Failed.")) : "Failed.";
+				const shared = output.length > SHARED_OUTPUT ? `${output.slice(0, SHARED_OUTPUT)}\n… (cut)` : output;
+				chat.push({ role: "user", shared: true, command: cmd, output: shared,
+					content: `I ran \`${cmd}\`. Output:\n\`\`\`\n${shared}\n\`\`\`` });
+				redrawChat();
+				toast("Output shared. Press Send to ask about it.");
+			} }, "Run")));
 		last = re.lastIndex;
 	}
 	if (last < text.length) parts.push(h("pre", { class: "notice-body" }, text.slice(last).trim()));
