@@ -11,7 +11,7 @@ use crate::{self as admin, State, mas_active};
 ///
 /// The authentication mode selects the available user and device routes.
 pub fn build(server: &Server) -> Router<State> {
-	use admin::anoncat::moderation as m;
+	use admin::anoncat::{self as a, moderation as m};
 
 	let mas_active = mas_active(&server.config);
 	let router = Router::new();
@@ -33,6 +33,13 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/moderation/reports/{id}", post(m::act_route))
 		.route("/_anoncat/admin/v1/moderation/media/{server}/{media_id}", get(m::media_route))
 		.route("/_anoncat/admin/v1/moderation/assistant", post(m::assistant_route))
+		.route("/_anoncat/admin/v1/plugins", get(a::plugins::list_route))
+		.route("/_anoncat/admin/v1/plugins/{name}", post(a::plugins::act_route))
+		.route("/_anoncat/admin/v1/cleanup", get(a::cleanup::get_route).merge(put(a::cleanup::put_route)))
+		.route("/_anoncat/admin/v1/cleanup/run", post(a::cleanup::run_route))
+		.route("/_anoncat/admin/v1/backups", get(a::backups::get_route).merge(post(a::backups::run_route)))
+		.route("/_anoncat/admin/v1/backups/{id}/verify", post(a::backups::verify_route))
+		.route("/_anoncat/admin/v1/logs", get(a::logs::get_route))
 		.ruma_route(&admin::is_user_suspended_route)
 		.ruma_route(&admin::suspend_user_route)
 		.ruma_route(&admin::is_user_locked_route)

@@ -3,9 +3,13 @@
 //! Plain axum handlers: ruma's request macros can't read this crate's
 //! manifest, so authentication is checked here directly.
 
+pub(crate) mod backups;
+pub(crate) mod cleanup;
 pub(crate) mod command;
+pub(crate) mod logs;
 pub(crate) mod moderation;
 pub(crate) mod notices;
+pub(crate) mod plugins;
 pub(crate) mod status;
 
 use axum::http::{HeaderMap, header::AUTHORIZATION};

@@ -193,12 +193,10 @@ pages.dashboard = async (main) => {
 			["Disk guard at", c.disk_percent ? `${c.disk_percent}%` : "off"],
 			["Low-memory guard below", c.min_free_ram ? bytes(c.min_free_ram) : "off"],
 		].map(([k, v]) => h("tr", {}, h("td", {}, k), h("td", {}, v)))),
-		h("p", { class: "muted small" }, "Change these with the cleanup_* options in the config file."),
+		h("p", { class: "muted small" }, "Change these, run a cleanup and see past runs on the ", h("a", { href: "#/cleanup" }, "Cleanup"), " page."),
 		h("div", { class: "toolbar" },
-			run("Run cleanup now", "server cleanup"),
 			run("Clear caches", "server clear-caches"),
-			run("Memory details", "server memory-usage"),
-			run("Database backups", "server list-backups")),
+			run("Memory details", "server memory-usage")),
 		output);
 };
 
@@ -685,6 +683,251 @@ function renderReply(text, commands) {
 	if (last < text.length) parts.push(h("pre", { class: "notice-body" }, text.slice(last).trim()));
 	return parts;
 }
+
+// --- plugins -------------------------------------------------------------------
+
+const PLUGINS = "/_anoncat/admin/v1/plugins";
+
+function capabilityTags(c) {
+	if (!c) return [];
+	const tags = [];
+	if (c.check_events) tags.push(h("span", { class: "tag warn", title: "May refuse local users' messages" }, "check events"));
+	if (c.check_fail_closed) tags.push(h("span", { class: "tag bad", title: "Refuses messages when its check fails or times out" }, "fail closed"));
+	if (c.send_messages) tags.push(h("span", { class: "tag warn", title: "May send messages as the server" }, "send messages"));
+	if (c.events.length) tags.push(h("span", { class: "tag", title: "Sees these events after they're stored" }, `events: ${c.events.join(", ")}`));
+	return tags.length ? tags : [h("span", { class: "muted small" }, "no capabilities")];
+}
+
+pages.plugins = async (main) => {
+	let res = await api("GET", PLUGINS);
+	const draw = () => {
+		const items = res.plugins.map((p) => {
+			const act = async (action, done, confirmText) => {
+				if (confirmText && !(await ask(confirmText.title, { text: confirmText.text, confirm: confirmText.confirm, danger: confirmText.danger }))) return;
+				const r = await attempt(done, () => api("POST", `${PLUGINS}/${enc(p.name)}`, { action }));
+				if (r) { res = r; draw(); }
+			};
+			const buttons = [];
+			if (p.capabilities && !p.approved) buttons.push(h("button", { class: "small", onclick: () => act("approve", "Approved", {
+				title: `Approve ${p.name}?`,
+				text: `It may then: ${describeCaps(p.capabilities)}. The approval covers these capabilities; replacing the plugin's code keeps it, asking for more needs a new one.`,
+				confirm: "Approve",
+			}) }, "Approve"));
+			if (p.loaded) {
+				buttons.push(h("button", { class: "ghost small", onclick: () => act("reload", "Reloaded") }, "Reload"));
+				buttons.push(h("button", { class: "ghost small", onclick: () => act("unload", "Unloaded") }, "Unload"));
+			} else if (p.capabilities && p.approved) {
+				buttons.push(h("button", { class: "small", onclick: () => act("load", "Loaded") }, "Load"));
+			}
+			if (p.approval) buttons.push(h("button", { class: "danger small", onclick: () => act("revoke", "Approval withdrawn", {
+				title: `Withdraw ${p.name}'s approval?`, text: "It's unloaded now and won't load again until approved.", confirm: "Withdraw", danger: true,
+			}) }, "Withdraw approval"));
+			if (p.alerts.length) buttons.push(h("button", { class: "ghost small", onclick: () => act("clear_alerts", null) }, "Clear problems"));
+
+			return h("div", { class: `card report${p.alerts.length ? " loud" : ""}` },
+				h("div", { class: "report-head" },
+					h("strong", {}, p.name),
+					p.loaded ? h("span", { class: "tag ok" }, "loaded") : h("span", { class: "tag" }, "not loaded"),
+					p.enabled ? h("span", { class: "tag" }, "starts with the server") : null,
+					p.capabilities ? (p.approved ? h("span", { class: "tag ok" }, "approved") : h("span", { class: "tag warn" }, "needs approval")) : null),
+				p.description ? h("div", {}, p.description) : null,
+				p.manifest_error ? h("p", { class: "error" }, p.manifest_error) : null,
+				h("div", { class: "toolbar" }, capabilityTags(p.capabilities)),
+				p.approval ? h("div", { class: "small muted" }, `Approved by ${p.approval.by} on ${date(p.approval.ts)}${p.approved ? "" : ` for less than it asks now: ${describeCaps(p.approval.capabilities)}`}`) : null,
+				p.alerts.length ? h("div", {},
+					h("div", { class: "small" }, "Problems:"),
+					h("pre", { class: "notice-body excerpt" }, p.alerts.slice().reverse().map((a) => `${date(a.ts)}  ${a.message}`).join("\n"))) : null,
+				h("div", { class: "toolbar" }, buttons));
+		});
+		main.replaceChildren(
+			h("h1", {}, "Plugins"),
+			h("p", { class: "muted" }, "WebAssembly plugins from ", h("span", { class: "mono" }, res.dir), ": put ", h("span", { class: "mono" }, "<name>.wasm"), " and its manifest ", h("span", { class: "mono" }, "<name>.toml"), " there. A plugin loads only once you approve the capabilities its manifest declares. A plugin that keeps failing (a time or memory limit) is unloaded and shows here."),
+			h("div", { class: "toolbar" }, h("button", { class: "ghost small", onclick: () => render() }, "Refresh")),
+			items.length ? h("div", { class: "notices" }, items) : h("p", { class: "muted" }, "No plugins in the directory."));
+	};
+	draw();
+};
+
+function describeCaps(c) {
+	const out = [];
+	if (c.check_events) out.push("refuse local users' messages");
+	if (c.check_fail_closed) out.push("refuse every message while its check fails");
+	if (c.send_messages) out.push("send messages as the server");
+	if (c.events.length) out.push(`read stored events of type ${c.events.join(", ")}`);
+	return out.join("; ") || "nothing";
+}
+
+// --- cleanup -------------------------------------------------------------------
+
+const CLEANUP = "/_anoncat/admin/v1/cleanup";
+
+// [key in the request, key in limits, label, kind]
+const CLEANUP_FIELDS = [
+	["interval", "interval_secs", "Runs every", "duration"],
+	["remote_media_max_age", "remote_media_max_age_secs", "Remote media kept for", "duration"],
+	["local_media_max_age", "local_media_max_age_secs", "Local uploads kept for", "duration"],
+	["local_media_max_size", "local_media_max_size", "Local uploads size cap", "size"],
+	["message_max_age", "message_max_age_secs", "Message history kept for", "duration"],
+	["disk_percent", "disk_percent", "Disk guard at (% used)", "percent"],
+	["min_free_ram", "min_free_ram", "Low-memory guard below", "size"],
+];
+
+function showLimit(kind, value) {
+	if (kind === "duration") return duration(value);
+	if (kind === "size") return value ? bytes(value) : "off";
+	return value ? `${value}%` : "off";
+}
+
+// A value as the config file would write it, for editing.
+function editLimit(kind, value) {
+	if (value === null || value === undefined) return "";
+	if (!value) return "0";
+	if (kind === "duration") {
+		for (const [unit, secs] of [["d", 86400], ["h", 3600], ["m", 60]]) if (value % secs === 0) return `${value / secs}${unit}`;
+		return `${value}s`;
+	}
+	if (kind === "size") {
+		for (const [unit, n] of [["GiB", 1 << 30], ["MiB", 1 << 20], ["KiB", 1 << 10]]) if (value % n === 0) return `${value / n} ${unit}`;
+		return String(value);
+	}
+	return String(value);
+}
+
+pages.cleanup = async (main) => {
+	const res = await api("GET", CLEANUP);
+	const inputs = {};
+	const rows = CLEANUP_FIELDS.map(([key, limit, label, kind]) => {
+		const override = res.overrides[limit];
+		const input = h("input", { name: key, value: editLimit(kind, override), placeholder: `config: ${editLimit(kind, res.configured[limit])}` });
+		inputs[key] = input;
+		return h("tr", {},
+			h("td", {}, label),
+			h("td", {}, showLimit(kind, res.limits[limit]), override !== null && override !== undefined ? h("span", { class: "tag warn" }, "panel") : null),
+			h("td", { class: "small muted" }, showLimit(kind, res.configured[limit])),
+			h("td", {}, input));
+	});
+
+	const save = async () => {
+		const body = {};
+		for (const [key] of CLEANUP_FIELDS) body[key] = inputs[key].value.trim() || null;
+		if (await attempt("Saved", () => api("PUT", CLEANUP, body))) render();
+	};
+	const reset = async () => {
+		const body = Object.fromEntries(CLEANUP_FIELDS.map(([key]) => [key, null]));
+		if (await attempt("Back to the config file", () => api("PUT", CLEANUP, body))) render();
+	};
+	const runNow = async () => {
+		if (!(await ask("Run cleanup now?", { text: "Deletes whatever the limits in force say should go: expired media and, if set, old message history. This can't be undone.", confirm: "Run cleanup", danger: true }))) return;
+		if (await attempt("Cleanup started", () => api("POST", `${CLEANUP}/run`, {}))) render();
+	};
+
+	const history = res.history.map((r) => {
+		const rep = r.report;
+		const parts = [];
+		if (rep.remote_media) parts.push(`${rep.remote_media} remote media`);
+		if (rep.local_media_expired) parts.push(`${rep.local_media_expired} expired uploads`);
+		if (rep.local_media_over_limit) parts.push(`${rep.local_media_over_limit} uploads over the cap (${rep.local_media_freed_mib} MiB)`);
+		if (rep.events_purged) parts.push(`${rep.events_purged} events from ${rep.rooms_purged} rooms`);
+		if (rep.disk_guard_media) parts.push(`${rep.disk_guard_media} media for the disk guard`);
+		return h("tr", {},
+			h("td", { class: "small" }, date(r.ts)),
+			h("td", { class: "small muted" }, r.trigger),
+			h("td", { class: "small muted" }, `${(r.millis / 1000).toFixed(1)} s`),
+			h("td", {}, r.error ? h("span", { class: "error" }, r.error) : (parts.join(", ") || h("span", { class: "muted" }, "nothing to delete")),
+				rep.disk_percent !== null && rep.disk_percent !== undefined ? h("span", { class: "muted small" }, ` · disk ${rep.disk_percent}%`) : null));
+	});
+
+	main.replaceChildren(
+		h("h1", {}, "Cleanup"),
+		h("p", { class: "muted" }, "Limits for the scheduled cleanup. A value set here replaces the config file's cleanup_* option until you clear it; leave a box empty to use the config file. Durations like 30d, 12h; sizes like 50 GiB; 0 turns a rule off."),
+		table(["Rule", "In force", "Config file", "Set here"], rows),
+		h("div", { class: "toolbar" },
+			h("button", { onclick: save }, "Save"),
+			h("button", { class: "ghost", onclick: reset }, "Use the config file for all"),
+			h("div", { class: "grow" }),
+			res.running ? h("span", { class: "tag warn" }, "running…") : h("button", { class: "danger", onclick: runNow }, "Run cleanup now")),
+		h("h2", {}, "Last runs"),
+		table(["Started", "By", "Took", "Deleted"], history, "No runs yet."));
+
+	// Follow a run until it finishes.
+	if (res.running) setTimeout(() => location.hash.startsWith("#/cleanup") && render(), 3000);
+};
+
+// --- backups -------------------------------------------------------------------
+
+const BACKUPS = "/_anoncat/admin/v1/backups";
+
+pages.backups = async (main) => {
+	const s = await api("GET", BACKUPS);
+	const newest = s.backups[s.backups.length - 1];
+	const ageHours = newest ? (Date.now() - newest.ts) / 3600000 : null;
+	const verifyOut = h("p", { class: "muted small" });
+
+	const rows = s.backups.slice().reverse().map((b) => h("tr", {},
+		h("td", { class: "mono" }, `#${b.id}`),
+		h("td", {}, date(b.ts)),
+		h("td", { class: "small muted" }, `${bytes(b.added)} new · ${b.files} files`),
+		h("td", { class: "actions" }, h("button", { class: "ghost small", onclick: async (e) => {
+			e.target.disabled = true;
+			verifyOut.textContent = `Checking #${b.id}…`;
+			const r = await attempt(null, () => api("POST", `${BACKUPS}/${b.id}/verify`, {}));
+			e.target.disabled = false;
+			verifyOut.textContent = r ? r.message : "Check failed.";
+		} }, "Verify"))));
+
+	const last = s.last;
+	// replaceChildren would print a null; h() skips them.
+	main.replaceChildren(...[
+		h("h1", {}, "Backups"),
+		!s.path
+			? h("p", { class: "error" }, "Backups are off: set database_backup_path (inside the vault) and database_backups_to_keep in the config.")
+			: h("div", { class: "grid" },
+				stat("Newest backup", newest ? duration(Math.max(60, Math.round((Date.now() - newest.ts) / 1000))) + " ago" : "none", newest ? date(newest.ts) : "make one below", null),
+				stat("Stored", `${s.backups.length} of ${s.keep}`, s.size_on_disk !== null && s.size_on_disk !== undefined ? `${bytes(s.size_on_disk)} on disk` : ""),
+				stat("Free in the vault", bytes(s.disk_available), s.disk_total ? `of ${bytes(s.disk_total)}` : "", s.disk_total ? meter(1 - s.disk_available / s.disk_total) : null)),
+		ageHours !== null && ageHours > 48 ? h("p", { class: "error" }, "The newest backup is over two days old. Check the anoncat-backup timer (systemctl status anoncat-backup.timer).") : null,
+		s.error && s.path ? h("p", { class: "error" }, s.error) : null,
+		last ? h("p", { class: last.error ? "error" : "muted small" }, last.error
+			? `Last backup since the server started failed (${date(last.ts)}, ${last.trigger}): ${last.error}`
+			: `Last backup since the server started: ${date(last.ts)}, by ${last.trigger}, took ${(last.millis / 1000).toFixed(1)} s.`) : null,
+		h("div", { class: "toolbar" },
+			s.running ? h("span", { class: "tag warn" }, "backing up…") : h("button", { disabled: !s.path, onclick: async () => {
+				if (await attempt("Backup started", () => api("POST", BACKUPS, {}))) render();
+			} }, "Back up now")),
+		h("p", { class: "muted small" }, s.path ? `Stored in ${s.path}. Unchanged files are shared between backups, so each one adds only what changed.` : ""),
+		table(["Backup", "Made", "Size", ""], rows, "No backups yet."),
+		verifyOut,
+		h("h2", {}, "Off this machine"),
+		h("p", { class: "muted" }, "These backups live in the vault, on the same drive as the database: they undo mistakes and corruption, not a dead drive or a stolen PC. Media files aren't in them. Also keep a LUKS header backup somewhere else (without it a damaged header loses everything): as root, run anoncat-backup header /path/off/this/machine. See ops/backup/README.md for restoring."),
+	].filter(Boolean));
+
+	if (s.running) setTimeout(() => location.hash.startsWith("#/backups") && render(), 3000);
+};
+
+// --- logs ----------------------------------------------------------------------
+
+pages.logs = async (main, params) => {
+	const level = params.get("level") || "info";
+	const q = (params.get("q") || "").toLowerCase();
+	const res = await api("GET", `/_anoncat/admin/v1/logs?level=${enc(level)}&limit=2000`);
+	const lines = res.lines.filter((l) => !q || l.message.toLowerCase().includes(q) || l.target.toLowerCase().includes(q));
+	const text = lines.slice().reverse().map((l) => `${new Date(l.ts).toLocaleTimeString()} ${l.level.padEnd(5)} ${l.target.replace(/^tuwunel_/, "")}: ${l.message}`).join("\n");
+	const go = (changes) => navigate("logs", { level, q, ...changes });
+
+	main.replaceChildren(
+		h("h1", {}, "Logs"),
+		h("p", { class: "muted" }, "The server's recent log lines, newest first, kept in memory only (the last 2,000 since it started). IP addresses are blanked."),
+		h("div", { class: "toolbar" },
+			h("select", { onchange: (e) => go({ level: e.target.value }) },
+				...[["info", "Info and worse"], ["warn", "Warnings and errors"], ["error", "Errors only"]].map(([v, label]) => {
+					const o = h("option", { value: v }, label);
+					o.selected = v === level;
+					return o;
+				})),
+			h("input", { placeholder: "Filter", value: params.get("q") || "", onkeydown: (e) => e.key === "Enter" && go({ q: e.target.value }) }),
+			h("button", { class: "ghost small", onclick: () => render() }, "Refresh")),
+		lines.length ? h("pre", { class: "output logs" }, text) : h("p", { class: "muted" }, "Nothing logged at this level yet."));
+};
 
 // --- routing & session ---------------------------------------------------------
 
