@@ -20,7 +20,7 @@ use std::{
 
 use async_trait::async_trait;
 use futures::{StreamExt, pin_mut};
-use ruma::{MilliSecondsSinceUnixEpoch, OwnedRoomId};
+use ruma::{MilliSecondsSinceUnixEpoch, OwnedRoomId, RoomId, events::TimelineEventType};
 use serde::{Deserialize, Serialize};
 use tuwunel_core::{
 	Err, Result, debug_info, implement, info,
@@ -29,6 +29,10 @@ use tuwunel_core::{
 		time::now_millis,
 	},
 	warn,
+};
+use tuwunel_matrix::{
+	Event,
+	pdu::{PduCount, PduEvent},
 };
 
 /// How far ahead of this server's clock an event may be dated and still
@@ -74,6 +78,7 @@ pub struct Overrides {
 	pub local_media_max_age_secs: Option<u64>,
 	pub local_media_max_size: Option<u64>,
 	pub message_max_age_secs: Option<u64>,
+	pub media_message_max_age_secs: Option<u64>,
 	pub disk_percent: Option<u64>,
 	pub min_free_ram: Option<u64>,
 }
@@ -86,6 +91,7 @@ pub struct Limits {
 	pub local_media_max_age_secs: u64,
 	pub local_media_max_size: u64,
 	pub message_max_age_secs: u64,
+	pub media_message_max_age_secs: u64,
 	pub disk_percent: u64,
 	pub min_free_ram: u64,
 }
@@ -98,6 +104,14 @@ impl Limits {
 	fn local_media_max_age(&self) -> Duration { Duration::from_secs(self.local_media_max_age_secs) }
 
 	fn message_max_age(&self) -> Duration { Duration::from_secs(self.message_max_age_secs) }
+
+	/// How long messages with media are kept: never less than other messages.
+	fn media_message_max_age(&self) -> Duration {
+		Duration::from_secs(
+			self.media_message_max_age_secs
+				.max(self.message_max_age_secs),
+		)
+	}
 }
 
 /// One finished (or failed) run, as the panel lists it.
@@ -211,6 +225,7 @@ pub fn configured(&self) -> Limits {
 		local_media_max_age_secs: config.cleanup_local_media_max_age.as_secs(),
 		local_media_max_size: config.cleanup_local_media_max_size,
 		message_max_age_secs: config.cleanup_message_max_age.as_secs(),
+		media_message_max_age_secs: config.cleanup_media_message_max_age.as_secs(),
 		disk_percent: config.cleanup_disk_percent,
 		min_free_ram: config.cleanup_min_free_ram,
 	}
@@ -232,6 +247,9 @@ pub fn limits(&self) -> Limits {
 			.unwrap_or(c.local_media_max_age_secs),
 		local_media_max_size: o.local_media_max_size.unwrap_or(c.local_media_max_size),
 		message_max_age_secs: o.message_max_age_secs.unwrap_or(c.message_max_age_secs),
+		media_message_max_age_secs: o
+			.media_message_max_age_secs
+			.unwrap_or(c.media_message_max_age_secs),
 		disk_percent: o.disk_percent.unwrap_or(c.disk_percent),
 		min_free_ram: o.min_free_ram.unwrap_or(c.min_free_ram),
 	}
@@ -351,7 +369,7 @@ async fn run_once(&self) -> Result<Report> {
 
 	if !limits.message_max_age().is_zero() {
 		(report.events_purged, report.rooms_purged) = self
-			.purge_history_older_than(limits.message_max_age())
+			.purge_history_older_than(limits.message_max_age(), limits.media_message_max_age())
 			.await;
 	}
 
@@ -380,16 +398,22 @@ async fn delete_remote_media_older_than(&self, max_age: Duration) -> Result<usiz
 		.await
 }
 
-/// Purges events older than `max_age` from every room, keeping state.
-/// Returns the events purged and the rooms they came from.
+/// Purges events older than `max_age` from every room, keeping state, and
+/// messages with media until they are older than `media_max_age` (at least
+/// `max_age`). Returns the events purged and the rooms they came from.
 #[implement(Service)]
-async fn purge_history_older_than(&self, max_age: Duration) -> (usize, usize) {
-	let cutoff = MilliSecondsSinceUnixEpoch::from_system_time(
-		SystemTime::now()
-			.checked_sub(max_age)
-			.unwrap_or(SystemTime::UNIX_EPOCH),
-	)
-	.unwrap_or_else(MilliSecondsSinceUnixEpoch::now);
+async fn purge_history_older_than(&self, max_age: Duration, media_max_age: Duration) -> (usize, usize) {
+	let cutoff_of = |age: Duration| {
+		MilliSecondsSinceUnixEpoch::from_system_time(
+			SystemTime::now()
+				.checked_sub(age)
+				.unwrap_or(SystemTime::UNIX_EPOCH),
+		)
+		.unwrap_or_else(MilliSecondsSinceUnixEpoch::now)
+	};
+	let cutoff = cutoff_of(max_age);
+	let media_cutoff = cutoff_of(media_max_age.max(max_age));
+	let split = media_cutoff < cutoff;
 
 	let rooms: Vec<OwnedRoomId> = self
 		.services
@@ -412,18 +436,27 @@ async fn purge_history_older_than(&self, max_age: Duration) -> (usize, usize) {
 		}
 
 		// Walk the timeline in the order events arrived and stop at the first
-		// one newer than the cutoff: everything before it goes. Timestamps are
-		// chosen by the sending server: one dated in the future is passed
-		// over, so a single bad clock can't stop expiry in a room for good.
+		// one newer than the cutoff: everything before it goes. Messages with
+		// media have an earlier cutoff, and everything before that goes too.
+		// Timestamps are chosen by the sending server: one dated in the future
+		// is passed over, so a single bad clock can't stop expiry in a room for
+		// good.
 		let timeline = self.services.timeline.pdus(None, &room_id, None);
 		pin_mut!(timeline);
-		let mut boundary = None;
+		let (mut boundary, mut media_boundary) = (None, None);
+		let mut media_done = !split;
 		let future = now_millis().saturating_add(FUTURE_SLACK_MS);
 		while let Some(Ok((count, pdu))) = timeline.next().await {
 			boundary = Some(count);
+			if !media_done {
+				media_boundary = Some(count);
+			}
 			let ts = u64::from(pdu.origin_server_ts);
 			if ts > future {
 				continue;
+			}
+			if pdu.origin_server_ts > media_cutoff.get() {
+				media_done = true;
 			}
 			if pdu.origin_server_ts > cutoff.get() {
 				break;
@@ -434,22 +467,48 @@ async fn purge_history_older_than(&self, max_age: Duration) -> (usize, usize) {
 			continue;
 		};
 
-		match self
-			.services
-			.timeline
-			.purge_history(&room_id, boundary, true)
-			.await
-		{
-			| Ok(0) => {},
-			| Ok(purged) => {
-				events = events.saturating_add(purged);
-				purged_rooms = purged_rooms.saturating_add(1);
-			},
-			| Err(e) => warn!(%room_id, "Cleanup could not purge history: {e}"),
+		let mut purged = 0_usize;
+		if let Some(media_boundary) = media_boundary {
+			purged = purged.saturating_add(self.purge_room(&room_id, media_boundary, false).await);
+		}
+		purged = purged.saturating_add(self.purge_room(&room_id, boundary, split).await);
+
+		if purged > 0 {
+			events = events.saturating_add(purged);
+			purged_rooms = purged_rooms.saturating_add(1);
 		}
 	}
 
 	(events, purged_rooms)
+}
+
+/// Purges a room before `until`, keeping messages with media if asked.
+#[implement(Service)]
+async fn purge_room(&self, room_id: &RoomId, until: PduCount, keep_media: bool) -> usize {
+	self.services
+		.timeline
+		.purge_history_except(room_id, until, true, |pdu| keep_media && has_media(pdu))
+		.await
+		.inspect_err(|e| warn!(%room_id, "Cleanup could not purge history: {e}"))
+		.unwrap_or(0)
+}
+
+/// Whether an event is a picture, video, audio, file or sticker.
+fn has_media(pdu: &PduEvent) -> bool {
+	#[derive(Deserialize)]
+	struct Content {
+		msgtype: Option<String>,
+	}
+
+	match pdu.kind {
+		| TimelineEventType::Sticker => true,
+		| TimelineEventType::RoomMessage => pdu
+			.get_content::<Content>()
+			.ok()
+			.and_then(|content| content.msgtype)
+			.is_some_and(|msgtype| matches!(msgtype.as_str(), "m.image" | "m.video" | "m.audio" | "m.file")),
+		| _ => false,
+	}
 }
 
 /// Deletes remote media, older first, while the disk is over the limit.

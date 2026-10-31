@@ -112,7 +112,7 @@ async fn register(services: &Services, body: &Submit) -> Result<OwnedUserId> {
 	if !services.config.registration_terms.is_empty()
 		&& body.accept_terms.as_deref() != Some("on")
 	{
-		return Err!(Request(Forbidden("You need to accept the terms to sign up.")));
+		return Err!(Request(Forbidden("You need to accept the rules to sign up.")));
 	}
 
 	// Last, so only real sign-ups count against the hour.
@@ -271,7 +271,7 @@ fn terms(services: &Services) -> String {
 		.fold(String::new(), |mut links, translation| {
 			write!(
 				links,
-				r#"<li><a href="{}" rel="noopener noreferrer">{}</a></li>"#,
+				r#"<li><a href="{}" target="_blank" rel="noopener noreferrer">{}</a> (opens in a new tab)</li>"#,
 				html_escape(translation.url.as_str()),
 				html_escape(&translation.name),
 			)
@@ -281,7 +281,7 @@ fn terms(services: &Services) -> String {
 		});
 
 	format!(
-		r#"<fieldset><legend>Terms</legend><ul>{links}</ul><label class="check"><input type="checkbox" name="accept_terms" value="on" required> I accept the terms above.</label></fieldset>"#
+		r#"<fieldset><legend>Rules</legend><ul>{links}</ul><label class="check"><input type="checkbox" name="accept_terms" value="on" required> I accept the rules</label></fieldset>"#
 	)
 }
 

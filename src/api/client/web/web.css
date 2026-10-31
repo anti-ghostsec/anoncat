@@ -1,10 +1,11 @@
 :root {
-	--bg: #f6f5f2;
+	--bg: #f4f2ee;
 	--card: #ffffff;
-	--text: #1d1d1f;
-	--muted: #5f6368;
-	--line: #d9d6cf;
-	--accent: #3b5bdb;
+	--text: #1c1c1e;
+	--muted: #6b6b70;
+	--line: #e6e2da;
+	--accent: #5b5bd6;
+	--accent-soft: #ecebfd;
 	--accent-text: #ffffff;
 	--ok-bg: #e6f4ea;
 	--ok-text: #1e5631;
@@ -16,13 +17,14 @@
 
 @media (prefers-color-scheme: dark) {
 	:root {
-		--bg: #161618;
-		--card: #1f1f22;
-		--text: #ececec;
-		--muted: #a0a0a6;
-		--line: #3a3a40;
-		--accent: #8aa4ff;
-		--accent-text: #10131c;
+		--bg: #111113;
+		--card: #1b1b1f;
+		--text: #ededf0;
+		--muted: #9a9aa3;
+		--line: #2b2b31;
+		--accent: #9b9bff;
+		--accent-soft: #24243a;
+		--accent-text: #111113;
 		--ok-bg: #173323;
 		--ok-text: #a8dbb7;
 		--err-bg: #3b1714;
@@ -35,26 +37,28 @@
 
 body {
 	margin: 0;
-	background: var(--bg);
+	min-height: 100vh;
+	background: radial-gradient(60rem 30rem at 50% -10rem, var(--accent-soft), transparent 70%), var(--bg);
 	color: var(--text);
-	font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+	font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
 main {
 	max-width: 34rem;
-	margin: 2rem auto;
-	padding: 1.5rem 1.25rem 2rem;
+	margin: 3rem auto;
+	padding: 1.75rem 1.5rem 2rem;
 	background: var(--card);
 	border: 1px solid var(--line);
-	border-radius: 12px;
+	border-radius: 1.25rem;
+	box-shadow: 0 8px 30px rgb(0 0 0 / 0.06);
 }
 
 @media (max-width: 36rem) {
 	main { margin: 0; border: 0; border-radius: 0; min-height: 100vh; }
 }
 
-.brand { margin: 0 0 0.5rem; color: var(--muted); font-size: 0.9rem; letter-spacing: 0.02em; }
-h1 { margin: 0 0 1rem; font-size: 1.6rem; line-height: 1.2; }
+.brand { display: inline-block; margin: 0 0 0.75rem; padding: 0.1rem 0.65rem; border-radius: 99px; color: var(--accent); background: var(--accent-soft); font-size: 0.8rem; }
+h1 { margin: 0 0 1rem; font-size: 1.7rem; line-height: 1.2; letter-spacing: -0.02em; }
 h2 { margin: 0 0 0.5rem; font-size: 1.15rem; }
 
 section { margin-top: 1.75rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
@@ -70,7 +74,7 @@ input:not([type]), input[type="password"], input[type="text"] {
 	color: var(--text);
 	background: var(--bg);
 	border: 1px solid var(--line);
-	border-radius: 8px;
+	border-radius: 0.7rem;
 }
 
 input:focus-visible, button:focus-visible, a:focus-visible {
@@ -78,7 +82,7 @@ input:focus-visible, button:focus-visible, a:focus-visible {
 	outline-offset: 2px;
 }
 
-fieldset { margin: 1.25rem 0 0; padding: 0.75rem 1rem 1rem; border: 1px solid var(--line); border-radius: 8px; }
+fieldset { margin: 1.25rem 0 0; padding: 0.75rem 1rem 1rem; border: 1px solid var(--line); border-radius: 0.9rem; }
 legend { padding: 0 0.3rem; font-weight: 600; }
 
 img.captcha {
@@ -99,7 +103,7 @@ button, a.button {
 	color: var(--accent-text);
 	background: var(--accent);
 	border: 0;
-	border-radius: 8px;
+	border-radius: 0.8rem;
 	text-decoration: none;
 	cursor: pointer;
 }

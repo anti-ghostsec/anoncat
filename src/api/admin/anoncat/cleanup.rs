@@ -51,6 +51,8 @@ pub(crate) struct PutRequest {
 	local_media_max_age: Value,
 	local_media_max_size: Value,
 	message_max_age: Value,
+	#[serde(default)]
+	media_message_max_age: Value,
 	disk_percent: Value,
 	min_free_ram: Value,
 }
@@ -67,6 +69,10 @@ pub(crate) async fn put_route(
 		local_media_max_age_secs: duration("Local uploads", &body.local_media_max_age)?,
 		local_media_max_size: size("Local uploads size cap", &body.local_media_max_size)?,
 		message_max_age_secs: duration("Message history", &body.message_max_age)?,
+		media_message_max_age_secs: duration(
+			"Messages with media",
+			&body.media_message_max_age,
+		)?,
 		disk_percent: number("Disk guard", &body.disk_percent)?,
 		min_free_ram: size("Low-memory guard", &body.min_free_ram)?,
 	};

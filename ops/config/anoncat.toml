@@ -28,7 +28,7 @@ ai_key_file = "/Drives/server/data/secrets/venice"
 # files are shared between backups. The daily anoncat-backup timer asks for
 # one with SIGUSR2; the panel's Backups page shows them. See ops/backup/README.md.
 database_backup_path = "/Drives/server/data/backups"
-database_backups_to_keep = 7
+database_backups_to_keep = 2
 admin_signal_execute = ["server backup-database"]
 
 # No proxy in front, so the client address is the connection's own; headers
@@ -65,6 +65,10 @@ allow_local_presence = false
 allow_incoming_presence = false
 allow_outgoing_presence = false
 
+# Deleted messages aren't kept (save_unredacted_events is off); if that is
+# ever turned on, keep the originals a week at most.
+redaction_retention_seconds = 604800
+
 # Profiles only for signed-in users.
 require_auth_for_profile_requests = true
 
@@ -76,8 +80,23 @@ rocksdb_cache_compactions = true
 
 # --- cleanup ---------------------------------------------------------------------
 cleanup_remote_media_max_age = "30d"
+# Messages go after 30 days; ones with a picture, video, audio or file after
+# 90. Encrypted messages can't be told apart, so they go after 30.
+cleanup_message_max_age = "30d"
+cleanup_media_message_max_age = "90d"
+# Everyone's uploads together; the oldest go first past this.
+cleanup_local_media_max_size = "100 GiB"
 cleanup_disk_percent = 90
 cleanup_min_free_ram = "1 GiB"
+
+# The rules and privacy page (published by anoncat-netd to the front page).
+# Sign-up asks people to accept it. Raise the version when it changes.
+[global.registration_terms.rules]
+version = "2"
+
+[global.registration_terms.rules.translations.en]
+name = "Rules and privacy"
+url = "https://anoncat.gleeze.com/rules"
 
 [global.tls]
 certs = "/Drives/server/data/tls/certificates/anoncat.gleeze.com.crt"

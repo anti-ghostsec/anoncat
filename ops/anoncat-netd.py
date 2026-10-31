@@ -217,6 +217,133 @@ def pages_mode():
     return os.path.exists(CODEBERG_FILE) and cert_covers_hs()
 
 
+# The front page and the rules people accept when they sign up
+# (registration_terms points at /rules). Plain HTML and CSS, nothing loaded
+# from anywhere else. Change "Version" in the rules when they change.
+PAGE_CSS = """
+:root {
+  --bg: #f4f2ee; --card: #ffffff; --text: #1c1c1e; --muted: #6b6b70; --line: #e6e2da;
+  --accent: #5b5bd6; --accent-soft: #ecebfd; --accent-text: #ffffff;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111113; --card: #1b1b1f; --text: #ededf0; --muted: #9a9aa3; --line: #2b2b31;
+    --accent: #9b9bff; --accent-soft: #24243a; --accent-text: #111113;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; color: var(--text);
+  font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: radial-gradient(60rem 30rem at 50% -10rem, var(--accent-soft), transparent 70%), var(--bg);
+}
+main { max-width: 40rem; margin: 0 auto; padding: 3rem 1rem 4rem; }
+header { text-align: center; margin-bottom: 2rem; }
+.logo {
+  width: 3.5rem; height: 3.5rem; margin: 0 auto 1rem; border-radius: 1rem; display: grid; place-items: center;
+  font-size: 1.8rem; background: var(--card); border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.08);
+}
+h1 { margin: 0; font-size: clamp(1.7rem, 5vw, 2.2rem); letter-spacing: -0.02em; line-height: 1.2; }
+.sub { margin: 0.4rem 0 0; color: var(--muted); }
+.pill {
+  display: inline-block; margin-top: 0.8rem; padding: 0.15rem 0.7rem; border-radius: 99px;
+  font-size: 0.8rem; color: var(--accent); background: var(--accent-soft);
+}
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 1.25rem;
+  padding: 1.5rem 1.5rem 1.25rem; margin: 1rem 0; box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+}
+h2 { margin: 0 0 0.9rem; font-size: 1.1rem; letter-spacing: -0.01em; }
+ol, ul { list-style: none; margin: 0; padding: 0; }
+li { position: relative; padding: 0.55rem 0 0.55rem 2.4rem; border-top: 1px solid var(--line); }
+li:first-child { border-top: 0; }
+ol { counter-reset: rule; }
+ol li::before {
+  counter-increment: rule; content: counter(rule);
+  position: absolute; left: 0; top: 0.6rem; width: 1.6rem; height: 1.6rem; border-radius: 50%;
+  display: grid; place-items: center; font-size: 0.85rem; font-weight: 700;
+  color: var(--accent); background: var(--accent-soft);
+}
+ul li::before {
+  content: ""; position: absolute; left: 0.35rem; top: 1.05rem; width: 0.9rem; height: 0.45rem;
+  border-left: 2.5px solid var(--accent); border-bottom: 2.5px solid var(--accent); transform: rotate(-45deg);
+}
+.note { margin: 0.9rem 0 0; color: var(--muted); font-size: 0.92rem; }
+a { color: var(--accent); }
+.actions { display: flex; gap: 0.75rem; justify-content: center; flex-wrap: wrap; margin: 1.5rem 0; }
+.button {
+  display: inline-block; padding: 0.75rem 1.4rem; border-radius: 0.8rem; font-weight: 600;
+  text-decoration: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
+}
+.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.button:focus-visible, a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+footer { text-align: center; color: var(--muted); font-size: 0.85rem; margin-top: 2rem; }
+"""
+
+RULES_BODY = """
+<header>
+  <div class="logo" aria-hidden="true">&#x1F431;</div>
+  <h1>Rules and privacy</h1>
+  <p class="sub">@@DOMAIN@@</p>
+  <span class="pill">Version 2</span>
+</header>
+<section class="card">
+  <h2>Rules</h2>
+  <ol>
+    <li>Nothing illegal. Sexual content involving minors means an instant ban.</li>
+    <li>No spam, scams, malware, or bots unless the admins agree.</li>
+    <li>No threats, harassment, or posting other people's private details.</li>
+  </ol>
+  <p class="note">Break them and your posts or account may be removed.</p>
+</section>
+<section class="card">
+  <h2>Privacy</h2>
+  <ul>
+    <li>No email or phone number is asked for. No tracking, no ads, no analytics.</li>
+    <li>Your IP address is not stored or logged.</li>
+    <li>Location and camera details are removed from photos you upload (not from videos).</li>
+    <li>Admins can technically read rooms that are not encrypted. Use encrypted chats for anything private.</li>
+    <li>Other servers in your rooms get copies of your messages and profile, and we can't delete those.</li>
+    <li>Messages are deleted after 30 days, or 90 days if they have a picture or file.</li>
+    <li>Delete your account any time at <a href="/login">/login</a>. Your uploads go with it, and backups keep it for up to 2 more days.</li>
+    <li>There is no password reset. If you lose your password, the account is gone.</li>
+  </ul>
+</section>
+<footer><a href="/">@@DOMAIN@@</a></footer>
+"""
+
+INDEX_BODY = """
+<header>
+  <div class="logo" aria-hidden="true">&#x1F431;</div>
+  <h1>@@DOMAIN@@</h1>
+  <p class="sub">A private Matrix chat server. No email, no tracking.</p>
+</header>
+<div class="actions">
+  <a class="button primary" href="/register">Create an account</a>
+  <a class="button" href="/login">Manage your account</a>
+</div>
+<section class="card">
+  <h2>How to join</h2>
+  <ol>
+    <li>Create an account above.</li>
+    <li>Get a Matrix app, like <a href="https://element.io/download" rel="noopener noreferrer">Element</a>.</li>
+    <li>Sign in, choose another homeserver, and enter <strong>@@DOMAIN@@</strong>.</li>
+  </ol>
+</section>
+<footer><a href="/rules">Rules and privacy</a></footer>
+"""
+
+
+def page(title, body):
+    return ("<!doctype html>\n<html lang=\"en\">\n<meta charset=\"utf-8\">\n"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            "<meta name=\"referrer\" content=\"no-referrer\">\n"
+            f"<title>{title}</title>\n<style>{PAGE_CSS}</style>\n<main>{body}</main>\n</html>\n"
+            ).replace("@@DOMAIN@@", DOMAIN)
+
+
 def pages_files(port, deployed_at=None):
     client = json.dumps({"m.homeserver": {"base_url": f"https://{HS}:{port}"}}, indent=2) + "\n"
     return {
@@ -228,13 +355,13 @@ def pages_files(port, deployed_at=None):
         "_redirects": "/.well-known/matrix/client /matrix-client.json 200\n"
                       f"/register https://{HS}:{port}/register 302\n"
                       f"/login https://{HS}:{port}/login 302\n"
-                      f"/account https://{HS}:{port}/account 302\n",
+                      f"/account https://{HS}:{port}/account 302\n"
+                      "/rules /rules.html 200\n",
         # Element's web app reads it from another origin.
         "_headers": "/matrix-client.json\n    Access-Control-Allow-Origin: *\n"
                     "/.well-known/matrix/client\n    Access-Control-Allow-Origin: *\n",
-        "index.html": f"<!doctype html><meta name=viewport content=\"width=device-width\"><title>{DOMAIN}</title>"
-                      f"<p>{DOMAIN} is a Matrix server.</p>"
-                      f"<p><a href=\"/register\">Create an account</a> &middot; <a href=\"/login\">Manage your account</a></p>\n",
+        "index.html": page(DOMAIN, INDEX_BODY),
+        "rules.html": page(f"Rules and privacy - {DOMAIN}", RULES_BODY),
         # Changed only to force a push, which is what makes Codeberg deploy.
         "deployed.txt": f"{deployed_at or 0}\n",
     }

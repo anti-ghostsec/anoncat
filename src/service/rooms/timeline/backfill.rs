@@ -12,7 +12,7 @@ use futures::{
 };
 use rand::seq::SliceRandom;
 use ruma::{
-	CanonicalJsonObject, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, ServerName,
+	CanonicalJsonObject, CanonicalJsonValue, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, RoomId, ServerName,
 	api::Direction, events::TimelineEventType,
 };
 use serde::Deserialize;
@@ -32,7 +32,7 @@ use tuwunel_matrix::{
 	pdu::{PduCount, PduId, RawPduId},
 };
 
-use super::{ExtractBody, bias_count};
+use super::{ExtractBody, append::prev_state_unsigned, bias_count};
 use crate::{
 	federation::Candidates,
 	fetcher::{Op, Opts},
@@ -449,8 +449,19 @@ pub async fn backfill_pdu(
 
 	let insert_lock = self.mutex_insert.lock(room_id).map(Ok);
 
-	let (pdu, value, shortroomid, insert_lock) =
+	let (pdu, mut value, shortroomid, insert_lock) =
 		try_join4(pdu, value, shortroomid, insert_lock).await?;
+
+	// As for events arriving live: a state event carries what it replaced, so
+	// apps can tell a name change from a join when scrolling back.
+	if let Some(state_key) = pdu.state_key()
+		&& let Some(prev_state) = self.prev_state(&pdu, state_key).await
+		&& let CanonicalJsonValue::Object(unsigned) = value
+			.entry("unsigned".into())
+			.or_insert_with(|| CanonicalJsonValue::Object(CanonicalJsonObject::default()))
+	{
+		unsigned.extend(prev_state_unsigned(&prev_state)?);
+	}
 
 	// A pdu_id is not returned from handle_incoming_pdu() when accepting a new
 	// event on this codepath. The pdu_id is instead created here in ℤ−

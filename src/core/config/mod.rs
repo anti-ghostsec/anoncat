@@ -2494,6 +2494,15 @@ pub struct Config {
 	#[serde(default, deserialize_with = "utils::time::deserialize_duration")]
 	pub cleanup_message_max_age: Duration,
 
+	/// Keep messages with a picture, video, audio or file (and stickers) this
+	/// long instead of `cleanup_message_max_age`. Only longer ages count; "0"
+	/// treats them like any other message. The server can't see inside
+	/// encrypted messages, so those always follow `cleanup_message_max_age`.
+	///
+	/// default: "0"
+	#[serde(default, deserialize_with = "utils::time::deserialize_duration")]
+	pub cleanup_media_message_max_age: Duration,
+
 	/// When the disk holding the database is fuller than this percentage,
 	/// delete remote media older than 7 days, then 3, then 1, then all of it,
 	/// until it isn't, and alert the admin room if that is not enough. 0

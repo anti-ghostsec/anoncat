@@ -816,14 +816,27 @@ pub async fn report(&self, id: u64) -> Result<Report> {
 	Ok(serde_json::from_slice(&value)?)
 }
 
-/// Applies an admin's decision: "dismiss", "resolve", "reopen", "hide" or
+/// Applies an admin's decision: "dismiss" (deletes the report), "resolve",
+/// "reopen", "hide" or
 /// "unhide". Redacting is done by the panel as the admin, through the
 /// ordinary client API.
 #[implement(Service)]
 pub async fn act(&self, id: u64, action: &str) -> Result<Report> {
 	let mut report = self.report(id).await?;
 	match action {
-		| "dismiss" => report.status = "dismissed".into(),
+		// Nothing wrong: the report is deleted, not kept as "dismissed", and a
+		// picture the AI hid comes back, since no list would show it anymore.
+		| "dismiss" => {
+			if report.hidden
+				&& let Some(mxc) = &report.mxc
+			{
+				self.services.media.unhide(mxc)?;
+				report.hidden = false;
+			}
+			self.reports_map.remove(&id.to_be_bytes());
+			report.status = "dismissed".into();
+			return Ok(report);
+		},
 		| "resolve" => report.status = "resolved".into(),
 		| "reopen" => report.status = "open".into(),
 		| "hide" | "unhide" => {

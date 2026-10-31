@@ -49,6 +49,7 @@ pub async fn full_deactivate<'a>(&'a self, user_id: &'a UserId, erase: bool) -> 
 		.await?;
 
 	self.clear_profile(user_id).await;
+	self.delete_uploads(user_id).await;
 	self.demote_joined_rooms(user_id).await?;
 
 	if erase {
@@ -63,6 +64,22 @@ pub async fn full_deactivate<'a>(&'a self, user_id: &'a UserId, erase: bool) -> 
 	}
 
 	Ok(())
+}
+
+/// Deletes everything the user uploaded. A deleted account's pictures and
+/// files shouldn't outlive it on this server.
+#[implement(Service)]
+#[tracing::instrument(skip(self), level = "debug")]
+async fn delete_uploads(&self, user_id: &UserId) {
+	if !self.services.globals.user_is_local(user_id) {
+		return;
+	}
+
+	match self.services.media.delete_from_user(user_id).await {
+		| Ok(0) => {},
+		| Ok(count) => info!(%user_id, count, "Deleted the uploads of a deactivated account"),
+		| Err(error) => warn!(%user_id, %error, "Failed to delete uploads during deactivation"),
+	}
 }
 
 #[implement(Service)]

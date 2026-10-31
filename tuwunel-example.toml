@@ -2082,6 +2082,13 @@
 #
 #cleanup_message_max_age = "0"
 
+# Keep messages with a picture, video, audio or file (and stickers) this
+# long instead of `cleanup_message_max_age`. Only longer ages count; "0"
+# treats them like any other message. The server can't see inside
+# encrypted messages, so those always follow `cleanup_message_max_age`.
+#
+#cleanup_media_message_max_age = "0"
+
 # When the disk holding the database is fuller than this percentage,
 # delete remote media older than 7 days, then 3, then 1, then all of it,
 # until it isn't, and alert the admin room if that is not enough. 0

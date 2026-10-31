@@ -191,6 +191,7 @@ pages.dashboard = async (main) => {
 			["Local uploads kept for", duration(c.local_media_max_age_secs)],
 			["Local uploads size cap", c.local_media_max_size ? bytes(c.local_media_max_size) : "off"],
 			["Message history kept for", duration(c.message_max_age_secs)],
+			["Messages with media kept for", duration(Math.max(c.media_message_max_age_secs, c.message_max_age_secs))],
 			["Disk guard at", c.disk_percent ? `${c.disk_percent}%` : "off"],
 			["Low-memory guard below", c.min_free_ram ? bytes(c.min_free_ram) : "off"],
 		].map(([k, v]) => h("tr", {}, h("td", {}, k), h("td", {}, v)))),
@@ -776,6 +777,7 @@ const CLEANUP_FIELDS = [
 	["local_media_max_age", "local_media_max_age_secs", "Local uploads kept for", "duration"],
 	["local_media_max_size", "local_media_max_size", "Local uploads size cap", "size"],
 	["message_max_age", "message_max_age_secs", "Message history kept for", "duration"],
+	["media_message_max_age", "media_message_max_age_secs", "Messages with media kept for", "duration"],
 	["disk_percent", "disk_percent", "Disk guard at (% used)", "percent"],
 	["min_free_ram", "min_free_ram", "Low-memory guard below", "size"],
 ];

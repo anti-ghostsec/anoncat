@@ -28,6 +28,23 @@ pub async fn purge_history(
 	until: PduCount,
 	delete_local_events: bool,
 ) -> Result<usize> {
+	self.purge_history_except(room_id, until, delete_local_events, |_| false)
+		.await
+}
+
+/// [`purge_history`](Self::purge_history), also keeping every event `keep`
+/// picks.
+#[implement(super::Service)]
+pub async fn purge_history_except<F>(
+	&self,
+	room_id: &RoomId,
+	until: PduCount,
+	delete_local_events: bool,
+	keep: F,
+) -> Result<usize>
+where
+	F: Fn(&PduEvent) -> bool + Send + Sync,
+{
 	let shortroomid = self
 		.services
 		.short
@@ -52,6 +69,7 @@ pub async fn purge_history(
 
 			if pdu.state_key.is_some()
 				|| (!delete_local_events && self.services.globals.user_is_local(&pdu.sender))
+				|| keep(&pdu)
 			{
 				return Ok(purged);
 			}
