@@ -1,5 +1,6 @@
 mod data;
 pub(super) mod migrations;
+pub mod strip;
 mod preview;
 mod remote;
 mod space;
@@ -297,6 +298,14 @@ impl Service {
 		content_type: Option<&str>,
 		file: &[u8],
 	) -> Result<bool> {
+		// A user's own upload loses its location, camera and other metadata
+		// before it is stored; media fetched from other servers is theirs.
+		let stripped = user
+			.is_some_and(|user| self.services.globals.user_is_local(user))
+			.then(|| strip::strip_metadata(file))
+			.flatten();
+		let file = stripped.as_deref().unwrap_or(file);
+
 		let walk = sequence(file);
 
 		// Width, Height = 0 if it's not a thumbnail

@@ -116,6 +116,8 @@ fn timestamp_fallback_confirms_the_requested_event() -> Result {
 	let certificate = manifest.join(CERTIFICATE);
 	let private_key = manifest.join(PRIVATE_KEY);
 	let mut args = Args::default_test(&["fresh", "cleanup"]);
+	// Uses the legacy admin room and its bot as a fixture.
+	args.option.push("create_admin_room=true".to_owned());
 
 	args.option.extend([
 		format!("database_path={:?}", db_path.0),

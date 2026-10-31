@@ -5,16 +5,10 @@ use crate::Ruma;
 
 /// # `GET /_matrix/federation/v1/version`
 ///
-/// Get version information on this server.
+/// Answers without naming the software or its version: anoncat doesn't
+/// advertise what it runs, which would help anyone looking for a known flaw.
 pub(crate) async fn get_server_version_route(
 	_body: Ruma<get_server_version::v1::Request>,
 ) -> Result<get_server_version::v1::Response> {
-	Ok(get_server_version::v1::Response {
-		server: Some(get_server_version::v1::Server {
-			name: Some(tuwunel_core::version::name().into()),
-			version: Some(tuwunel_core::version::version().into()),
-			compiler: tuwunel_core::info::rustc::version().map(Into::into),
-			..Default::default()
-		}),
-	})
+	Ok(get_server_version::v1::Response { server: None })
 }

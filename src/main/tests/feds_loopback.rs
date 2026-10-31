@@ -14,7 +14,6 @@ mod tests {
 
 	const CERTIFICATE: &str = "../../nix/pkgs/complement/certificate.crt";
 	const PRIVATE_KEY: &str = "../../nix/pkgs/complement/private_key.key";
-	const VERSION_HEADER: &str = "| rank | servers | name | version |";
 	const EVENT_HEADER: &str = "| rank | origin | elapsed | hash | signature | fault |";
 	const ORIGIN_HEADER: &str = "| origin | name | version | elapsed | fault |";
 	const PING_HEADER: &str = "| origin | elapsed | class | newest | oldest | retry | fault |";
@@ -41,6 +40,8 @@ mod tests {
 		let certificate = source.join(CERTIFICATE);
 		let private_key = source.join(PRIVATE_KEY);
 		let mut args = Args::default_test(&["fresh", "cleanup"]);
+		// Uses the legacy admin room and its bot as a fixture.
+		args.option.push("create_admin_room=true".to_owned());
 
 		args.maintenance = true;
 		args.option.extend([
@@ -183,43 +184,22 @@ mod tests {
 			return Err!("expected one feds destination, found {destinations}");
 		}
 
-		let version = only_row(output, VERSION_HEADER, "version summary")?;
-		let version_rank = parse_number(cell(version, 0)?, "version rank")?;
-		let version_servers = parse_number(cell(version, 1)?, "version server count")?;
+		// anoncat answers the version query without naming its software or
+		// version, which feds reports as missing metadata.
 		let origin = only_row(output, ORIGIN_HEADER, "origin")?;
 		let origin_name = cell(origin, 0)?;
 		let fault = cell(origin, 4)?;
-		let successes = usize::from(fault.is_empty());
-		let faults = usize::from(!fault.is_empty());
-
-		if successes.saturating_add(faults) != destinations {
-			return Err!(
-				"feds partition did not close: {successes} successes and {faults} faults for \
-				 {destinations} destinations"
-			);
-		}
-
-		if version_servers != successes {
-			return Err!(
-				"version summary reports {version_servers} servers but {successes} origin rows \
-				 succeeded"
-			);
-		}
-
-		if version_rank != 1 {
-			return Err!("the local version did not rank first");
-		}
 
 		if origin_name != local.as_str() {
 			return Err!("expected local origin {local}, found {origin_name}");
 		}
 
-		if successes != 1 {
-			return Err!("the local server did not return version metadata");
+		if fault != "missing server metadata" {
+			return Err!("expected the local server to withhold its version, got {fault:?}");
 		}
 
-		if cell(origin, 1)? != cell(version, 2)? || cell(origin, 2)? != cell(version, 3)? {
-			return Err!("the local origin name and version did not match the summary");
+		if !cell(origin, 1)?.is_empty() || !cell(origin, 2)?.is_empty() {
+			return Err!("the local server revealed its software or version");
 		}
 
 		Ok(())

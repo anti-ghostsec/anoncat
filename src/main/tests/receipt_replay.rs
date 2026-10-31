@@ -29,6 +29,8 @@ fn replayed_receipts_hold_their_stream_position() -> Result {
 	let db_path = DatabasePath(Args::test_database_path("receipt-replay"));
 
 	let mut args = Args::default_test(&["fresh", "cleanup"]);
+	// Uses the legacy admin room and its bot as a fixture.
+	args.option.push("create_admin_room=true".to_owned());
 	args.maintenance = true;
 	args.option
 		.push(format!("database_path={:?}", db_path.0));

@@ -1,3 +1,6 @@
+// Admin routes nest many service futures; their layout outgrows the default.
+#![recursion_limit = "256"]
+
 pub(crate) mod anoncat;
 mod get_nonce;
 mod is_user_locked;

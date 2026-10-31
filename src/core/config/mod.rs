@@ -3744,22 +3744,20 @@ pub struct Config {
 	#[serde(default)]
 	pub report_room: Option<OwnedRoomOrAliasId>,
 
-	/// Whether to grant the first user to register admin privileges by joining
-	/// them to the admin room. Note that technically the next user to register
-	/// when the admin room is empty (or only contains the server-user) is
-	/// granted, and only when the admin room is enabled.
+	/// Whether the first user to register becomes a server admin. Technically
+	/// the next user to register while there are no admins is granted.
 	///
 	/// reloadable: yes
 	/// default: true
 	#[serde(default = "true_fn")]
 	pub grant_admin_to_first_user: bool,
 
-	/// Whether the admin room is created on first startup. Users should not set
-	/// this to false. Developers can set this to false during integration tests
-	/// to reduce activity and output.
+	/// Whether the legacy admin room (and its bot) is created on first
+	/// startup. anoncat runs without either: admins are a flag on the account,
+	/// commands run from the admin panel, and notices appear there.
 	///
-	/// default: true
-	#[serde(default = "true_fn")]
+	/// default: false
+	#[serde(default)]
 	pub create_admin_room: bool,
 
 	/// Whether to enable federation on the admin room. This cannot be changed

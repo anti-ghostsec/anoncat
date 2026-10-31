@@ -442,10 +442,22 @@ pages.console = async (main) => {
 	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runIt(); });
 	main.replaceChildren(
 		h("h1", {}, "Console"),
-		h("p", { class: "muted" }, "Runs admin commands exactly like typing !admin … in the admin room. Try \"help\". Ctrl+Enter runs."),
+		h("p", { class: "muted" }, "Runs server admin commands. Try \"help\". Ctrl+Enter runs."),
 		input,
 		h("div", { class: "toolbar" }, h("button", { onclick: runIt }, "Run")),
 		output);
+};
+
+pages.notices = async (main) => {
+	const res = await api("GET", "/_anoncat/admin/v1/notices");
+	const items = (res.notices || []).map((n) =>
+		h("div", { class: `card notice${n.loud ? " loud" : ""}` },
+			h("div", { class: "small muted" }, date(n.ts)),
+			h("pre", { class: "notice-body" }, n.body)));
+	main.replaceChildren(
+		h("h1", {}, "Notices"),
+		h("p", { class: "muted" }, "What the server reports: new users, cleanup runs, plugin failures, reports. Highlighted ones need a look."),
+		items.length ? h("div", { class: "notices" }, items) : h("p", { class: "muted" }, "Nothing yet."));
 };
 
 // --- routing & session ---------------------------------------------------------

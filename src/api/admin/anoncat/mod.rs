@@ -4,13 +4,16 @@
 //! manifest, so authentication is checked here directly.
 
 pub(crate) mod command;
+pub(crate) mod notices;
 pub(crate) mod status;
 
 use axum::http::{HeaderMap, header::AUTHORIZATION};
 use ruma::OwnedUserId;
 use tuwunel_core::{Err, Error, Result, utils::time::timepoint_has_passed};
 
-pub(crate) use self::{command::anoncat_command_route, status::anoncat_status_route};
+pub(crate) use self::{
+	command::anoncat_command_route, notices::anoncat_notices_route, status::anoncat_status_route,
+};
 
 /// The server admin behind the request's access token.
 async fn require_admin_token(services: &crate::State, headers: &HeaderMap) -> Result<OwnedUserId> {

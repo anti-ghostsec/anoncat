@@ -169,7 +169,7 @@ pub(crate) use self::{
 	},
 	threads::get_threads_route,
 	to_device::send_event_to_device_route,
-	tuwunel::{tuwunel_local_user_count, tuwunel_remote_version, tuwunel_server_version},
+	tuwunel::{tuwunel_remote_version, tuwunel_server_version},
 	typing::create_typing_event_route,
 	unstable::get_mutual_rooms_route,
 	user_directory::search_users_route,

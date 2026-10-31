@@ -23,6 +23,7 @@ pub fn build(server: &Server) -> Router<State> {
 	router
 		.route("/_anoncat/admin/v1/command", post(admin::anoncat::anoncat_command_route))
 		.route("/_anoncat/admin/v1/status", get(admin::anoncat::anoncat_status_route))
+		.route("/_anoncat/admin/v1/notices", get(admin::anoncat::anoncat_notices_route))
 		.ruma_route(&admin::is_user_suspended_route)
 		.ruma_route(&admin::suspend_user_route)
 		.ruma_route(&admin::is_user_locked_route)

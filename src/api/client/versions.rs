@@ -1,12 +1,8 @@
 use std::iter::once;
 
 use axum::extract::State;
-use ruma::api::client::discovery::get_supported_versions::{self, Server};
-use tuwunel_core::{
-	Result,
-	info::rustc::version as rustc_version,
-	version::{name as package_name, version as package_version},
-};
+use ruma::api::client::discovery::get_supported_versions;
+use tuwunel_core::Result;
 
 use crate::Ruma;
 
@@ -26,12 +22,6 @@ pub(crate) async fn get_supported_versions_route(
 	State(services): State<crate::State>,
 	_body: Ruma<get_supported_versions::Request>,
 ) -> Result<get_supported_versions::Response> {
-	// MSC4383: client-side parity with /_matrix/federation/v1/version.
-	let server = Server {
-		compiler: rustc_version().map(Into::into),
-		..Server::new(package_name().into(), package_version().into())
-	};
-
 	Ok(get_supported_versions::Response {
 		versions: VERSIONS.into_iter().map(Into::into).collect(),
 
@@ -47,7 +37,8 @@ pub(crate) async fn get_supported_versions_route(
 			.zip(once(true).cycle())
 			.collect(),
 
-		server: Some(server),
+		// MSC4383 would name the software and version; anoncat doesn't.
+		server: None,
 	})
 }
 

@@ -30,11 +30,8 @@ pub fn build(server: &Server) -> Router<State> {
 
 	let router = register_client_misc_routes(router);
 	let router = register_rendezvous_routes(router);
-	let router = if config.allow_federation {
-		router.route("/_tuwunel/local_user_count", get(client::tuwunel_local_user_count))
-	} else {
-		router
-	};
+	// No public user count (/_tuwunel/local_user_count): how many people use
+	// the server is nobody else's business.
 
 	register_legacy_media_routes(
 		router,

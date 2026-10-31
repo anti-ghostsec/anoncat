@@ -20,6 +20,7 @@ use std::{
 use async_trait::async_trait;
 pub use context::Context;
 pub use create::create_admin_room;
+pub use notices::Notice;
 use futures::TryFutureExt;
 use ruma::{
 	OwnedEventId, OwnedRoomAliasId, OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, UserId,
@@ -30,10 +31,16 @@ use tuwunel_core::{
 };
 use tuwunel_matrix::{Event, event::MsgType};
 
-use crate::rooms::state::RoomMutexGuard;
 
 pub struct Service {
 	services: Arc<crate::services::OnceServices>,
+	/// Server admins: a flag per account. anoncat has no admin room or bot.
+	admins: Arc<tuwunel_database::Map>,
+	/// What the server has to tell its admins, shown in the panel.
+	pub(crate) notices: Arc<tuwunel_database::Map>,
+	/// Held while admin rights change or an account is deactivated, so the
+	/// last admin can't be removed by two requests at once.
+	admin_lock: tokio::sync::Mutex<()>,
 	queue: StdRwLock<Queue>,
 	pub command: StdRwLock<Option<Arc<dyn Command>>>,
 	pub admin_alias: OwnedRoomAliasId,
@@ -126,6 +133,9 @@ impl crate::Service for Service {
 	fn build(args: &crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			services: args.services.clone(),
+			admins: args.db["userid_admin"].clone(),
+			notices: args.db["anoncat_notices"].clone(),
+			admin_lock: tokio::sync::Mutex::new(()),
 			queue: StdRwLock::new(Queue::Pending),
 			command: StdRwLock::new(None),
 			admin_alias: OwnedRoomAliasId::try_from(format!("#admins:{}", args.server.name))
@@ -272,14 +282,23 @@ impl Service {
 			return true;
 		}
 
-		let Ok(admin_room) = self.get_admin_room().await else {
-			return false;
-		};
+		self.admins.get(user_id).await.is_ok()
+	}
 
-		self.services
-			.state_cache
-			.is_joined(user_id, &admin_room)
-			.await
+	/// Whether the server has any admin yet.
+	pub async fn any_admin(&self) -> bool {
+		use futures::StreamExt;
+
+		let admins = self.admins();
+		futures::pin_mut!(admins);
+		admins.next().await.is_some()
+	}
+
+	/// The server's admins.
+	pub fn admins(&self) -> impl futures::Stream<Item = &UserId> + Send + '_ {
+		use tuwunel_core::utils::stream::TryIgnore;
+
+		self.admins.keys().ignore_err()
 	}
 
 	/// Checks whether a given user is the only active admin left on this server.
@@ -291,29 +310,26 @@ impl Service {
 	/// the same empty password as a deactivated one.
 	pub async fn user_is_last_admin(&self, user_id: &UserId) -> bool {
 		let server_user: &UserId = &self.services.globals.server_user;
-		if user_id == server_user {
+		if user_id == server_user || !self.user_is_admin(user_id).await {
 			return false;
 		}
 
-		let Ok(admin_room) = self.get_admin_room().await else {
-			return false;
-		};
+		use futures::StreamExt;
 
-		if !self
-			.services
-			.state_cache
-			.is_joined(user_id, &admin_room)
-			.await
-		{
-			return false;
+		let others: Vec<OwnedUserId> = self
+			.admins()
+			.ready_filter(|admin| *admin != user_id)
+			.map(ToOwned::to_owned)
+			.collect()
+			.await;
+
+		for admin in others {
+			if self.services.users.is_active_local(&admin).await {
+				return false;
+			}
 		}
 
-		!self
-			.services
-			.state_cache
-			.active_local_users_in_room(&admin_room)
-			.ready_any(|member| member != user_id && member != server_user)
-			.await
+		true
 	}
 
 	/// Gets the room ID of the admin room
@@ -469,13 +485,6 @@ fn sender(&self) -> Option<Sender<CommandInput>> {
 /// the same lock, so two concurrent removals cannot each see the other as the
 /// admin who remains.
 #[implement(Service)]
-pub async fn lock_admin_room(&self) -> Option<RoomMutexGuard> {
-	let admin_room = self.get_admin_room().await.ok()?;
-
-	self.services
-		.state
-		.mutex
-		.lock(&admin_room)
-		.await
-		.into()
+pub async fn lock_admin_room(&self) -> tokio::sync::MutexGuard<'_, ()> {
+	self.admin_lock.lock().await
 }

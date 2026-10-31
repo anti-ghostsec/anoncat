@@ -1,6 +1,6 @@
 use futures::FutureExt;
 use ruma::{UserId, events::GlobalAccountDataEventType, push};
-use tuwunel_core::{Err, Result, error, implement, info, is_equal_to, warn};
+use tuwunel_core::{Err, Result, error, implement, info, warn};
 
 use crate::{membership::Join, profile::Propagation};
 
@@ -104,13 +104,7 @@ pub async fn full_register(
 		&& !is_appservice
 		&& grant_first_user_admin
 		&& self.services.config.grant_admin_to_first_user
-		&& let Ok(admin_room) = self.services.admin.get_admin_room().await
-		&& self
-			.services
-			.state_cache
-			.room_joined_count(&admin_room)
-			.await
-			.is_ok_and(is_equal_to!(1))
+		&& !self.services.admin.any_admin().await
 	{
 		self.services
 			.admin

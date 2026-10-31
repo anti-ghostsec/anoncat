@@ -157,6 +157,11 @@ pre.output {
 .media-thumb img { max-width: 100%; max-height: 120px; filter: blur(18px); transition: filter 0.2s; }
 .media-thumb.revealed img { filter: none; }
 
+.notices { display: flex; flex-direction: column; gap: 8px; }
+.notice { padding: 10px 14px; }
+.notice.loud { border-color: var(--warn); }
+.notice-body { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+
 .toast {
 	position: fixed;
 	right: 16px;

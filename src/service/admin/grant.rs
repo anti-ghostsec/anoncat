@@ -1,144 +1,35 @@
-use futures::FutureExt;
 use ruma::{
 	Int, OwnedUserId, RoomId, UserId,
 	events::{
 		StateEventType,
 		room::{
-			member::{MembershipState, RoomMemberEventContent},
-			message::RoomMessageEventContent,
 			power_levels::{RoomPowerLevelsEventContent, UserPowerLevel},
 		},
 	},
 };
 use tuwunel_core::{
-	Err, Result, debug_info, debug_warn, err, error, implement,
-	result::NotFound,
+	Err, Result, debug_info, implement,
 	utils::{FutureBoolExt, future::ReadyBoolExt, stream::ReadyExt},
 };
 use tuwunel_matrix::pdu::PduBuilder;
 
-use crate::rooms::state::RoomMutexGuard;
-
-/// Invite the user to the tuwunel admin room.
+/// Makes a local user a server admin.
 ///
-/// This is equivalent to granting server admin privileges. A local user must
-/// already hold an account, or the grant would wait for whoever registers the
-/// name.
+/// anoncat keeps admin rights as a flag on the account, with no admin room or
+/// bot. A local user must already hold an account.
 #[implement(super::Service)]
 pub async fn make_user_admin(&self, user_id: &UserId) -> Result {
-	let is_local = self.services.globals.user_is_local(user_id);
+	if !self.services.globals.user_is_local(user_id) {
+		return Err!(Request(InvalidParam("Only users of this server can be admins.")));
+	}
 
-	if is_local && !self.services.users.exists(user_id).await {
+	if !self.services.users.exists(user_id).await {
 		return Err!(Request(NotFound("User {user_id} does not exist on this server.")));
 	}
 
-	let Ok(room_id) = self.get_admin_room().await else {
-		debug_warn!(
-			"make_user_admin was called without an admin room being available or created"
-		);
-		return Ok(());
-	};
-
-	let state_lock = self.services.state.mutex.lock(&room_id).await;
-
-	let is_joined = self
-		.services
-		.state_cache
-		.is_joined(user_id, &room_id)
-		.await;
-
-	let is_invited = self
-		.services
-		.state_cache
-		.is_invited(user_id, &room_id)
-		.await;
-
-	let already_member = is_joined || is_invited;
-
-	if !already_member {
-		self.invite_new_admin(user_id, &room_id, &state_lock)
-			.await?;
-	}
-
-	let server_user: &UserId = self.services.globals.server_user.as_ref();
-
-	let mut room_power_levels = self
-		.services
-		.state_accessor
-		.room_state_get_content::<RoomPowerLevelsEventContent>(
-			&room_id,
-			&StateEventType::RoomPowerLevels,
-			"",
-		)
-		.await
-		.unwrap_or_default();
-
-	let server_level = 69420.into();
-	let admin_level = 100.into();
-	let already_granted = room_power_levels.users.get(server_user) == Some(&server_level)
-		&& room_power_levels.users.get(user_id) == Some(&admin_level);
-
-	if !already_granted {
-		room_power_levels
-			.users
-			.insert(server_user.into(), server_level);
-		room_power_levels
-			.users
-			.insert(user_id.into(), admin_level);
-
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(String::new(), &room_power_levels),
-				server_user,
-				&room_id,
-				&state_lock,
-			)
-			.await?;
-	}
-
-	// Set room tag
-	let room_tag = self
-		.services
-		.server
-		.config
-		.admin_room_tag
-		.as_str();
-
-	if !already_granted
-		&& !room_tag.is_empty()
-		&& let Err(e) = self
-			.services
-			.account_data
-			.set_room_tag(user_id, &room_id, room_tag.into(), None)
-			.await
-	{
-		error!(?room_id, ?user_id, ?room_tag, "Failed to set tag for admin grant: {e}");
-	}
-
-	if !already_member && self.services.server.config.admin_room_notices {
-		let config = &self.services.server.config;
-		let mut welcome_message = format!(
-			"## Welcome to {}\n\nThis is the admin room. Messages here starting with `!admin` run as server commands; `!admin --help` lists them.",
-			config.server_name
-		);
-		if let Some(panel) = config.admin_panel_address {
-			welcome_message.push_str(&format!(
-				"\n\nThe admin panel is at http://{panel}/_anoncat/panel/ on the server itself."
-			));
-		}
-
-		// Send welcome message
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::timeline(&RoomMessageEventContent::text_markdown(welcome_message)),
-				server_user,
-				&room_id,
-				&state_lock,
-			)
-			.await?;
-	}
+	let _lock = self.lock_admin_room().await;
+	self.admins.insert(user_id, []);
+	debug_info!(%user_id, "Granted admin rights");
 
 	Ok(())
 }
@@ -237,113 +128,31 @@ pub async fn make_room_admin(&self, room_id: &RoomId, target: &UserId) -> Result
 		.map(|_| ())
 }
 
-#[implement(super::Service)]
-async fn invite_new_admin(
-	&self,
-	user_id: &UserId,
-	room_id: &RoomId,
-	state_lock: &RoomMutexGuard,
-) -> Result {
-	let server_user = self.services.globals.server_user.as_ref();
-
-	// if this is our local user, just forcefully join them in the room. otherwise,
-	// invite the remote user.
-	if self.services.globals.user_is_local(user_id) {
-		debug_info!("Inviting local user {user_id} to admin room {room_id}");
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(
-					String::from(user_id),
-					&RoomMemberEventContent::new(MembershipState::Invite),
-				),
-				server_user,
-				room_id,
-				state_lock,
-			)
-			.await?;
-
-		debug_info!("Force joining local user {user_id} to admin room {room_id}");
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(
-					String::from(user_id),
-					&RoomMemberEventContent::new(MembershipState::Join),
-				),
-				user_id,
-				room_id,
-				state_lock,
-			)
-			.await?;
-	} else {
-		debug_info!("Inviting remote user {user_id} to admin room {room_id}");
-		self.services
-			.timeline
-			.build_and_append_pdu(
-				PduBuilder::state(
-					user_id.to_string(),
-					&RoomMemberEventContent::new(MembershipState::Invite),
-				),
-				server_user,
-				room_id,
-				state_lock,
-			)
-			.await?;
-	}
-
-	Ok(())
-}
 
 /// Demote an admin, removing its rights.
 ///
-/// Returns whether there was a grant to revoke. A user holding no invite, knock
-/// or join in the admin room has none, nor does anyone while there is no admin
-/// room, so the demotion is already done and nothing is written. The server
-/// user is refused, since the admin room exists only while the server user
-/// stays joined.
+/// Returns whether there was a grant to revoke. The server user is refused.
+/// The last admin who can still sign in is kept, since nobody could grant the
+/// rights again.
 #[implement(super::Service)]
 pub async fn revoke_admin(&self, user_id: &UserId) -> Result<bool> {
-	use MembershipState::{Invite, Join, Knock, Leave};
-
 	if user_id == self.services.globals.server_user {
 		return Err!(Request(InvalidParam("The server user's admin rights cannot be revoked.")));
 	}
 
-	let Some(room_id) = self.get_admin_room().await.present()? else {
+	let _lock = self.lock_admin_room().await;
+	if !self.user_is_admin(user_id).await {
 		return Ok(false);
-	};
+	}
 
-	let state_lock = self.services.state.mutex.lock(&room_id).await;
+	if self.user_is_last_admin(user_id).await {
+		return Err!(Request(Forbidden(
+			"{user_id} is the last admin; make someone else an admin first."
+		)));
+	}
 
-	let Some(event) = self
-		.services
-		.state_accessor
-		.get_member(&room_id, user_id)
-		.await
-		.present()
-		.map_err(|e| err!(error!(?e, "Failure occurred while attempting revoke.")))?
-		.filter(|event| matches!(event.membership, Invite | Knock | Join))
-	else {
-		return Ok(false);
-	};
+	self.admins.remove(user_id);
+	debug_info!(%user_id, "Revoked admin rights");
 
-	self.services
-		.timeline
-		.build_and_append_pdu(
-			PduBuilder::state(user_id.to_string(), &RoomMemberEventContent {
-				membership: Leave,
-				reason: Some("Admin Revoked".into()),
-				is_direct: false,
-				join_authorized_via_users_server: None,
-				third_party_invite: None,
-				..event
-			}),
-			self.services.globals.server_user.as_ref(),
-			&room_id,
-			&state_lock,
-		)
-		.boxed() // size firewall
-		.await
-		.map(|_| true)
+	Ok(true)
 }
