@@ -54,15 +54,17 @@ pub fn record_notice(&self, body: &str, loud: bool) {
 		*last
 	};
 
-	let notice = Notice { ts: now, loud, body: body.to_owned() };
+	// Error text can carry an address; none is ever stored.
+	let body = crate::logs::scrub_ips(body);
+	let notice = Notice { ts: now, loud, body };
 	if let Ok(value) = serde_json::to_vec(&notice) {
 		self.notices.insert(&key.to_be_bytes(), value);
 	}
 
 	if loud {
-		tuwunel_core::warn!("{body}");
+		tuwunel_core::warn!("{}", notice.body);
 	} else {
-		tuwunel_core::info!("{body}");
+		tuwunel_core::info!("{}", notice.body);
 	}
 }
 

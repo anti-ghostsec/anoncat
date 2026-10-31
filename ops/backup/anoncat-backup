@@ -38,16 +38,24 @@ config_value() {
 	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*\$/\1/p" "$CONFIG" | head -1
 }
 
+# A path from the config (which the anoncat user can write), resolved with
+# every symlink and "..", and refused unless it's strictly inside the vault:
+# root moves and chowns these paths.
+inside_vault() {
+	local real
+	real=$(realpath -e -- "$1" 2>/dev/null) || die "$2 ($1) doesn't exist"
+	case $real in
+		"$DATA"/?*) echo "$real" ;;
+		*) die "$2 ($1) must be inside the vault ($DATA)" ;;
+	esac
+}
+
 backup_dir() {
 	mountpoint -q "$DATA" || die "the vault isn't unlocked ($DATA isn't mounted)"
 	local dir
 	dir=$(config_value database_backup_path)
 	[[ -n $dir ]] || die "database_backup_path isn't set in $CONFIG"
-	case $dir in
-		"$DATA"/*) ;;
-		*) die "database_backup_path ($dir) must be inside the vault ($DATA)" ;;
-	esac
-	echo "$dir"
+	inside_vault "$dir" database_backup_path
 }
 
 # Backup IDs, newest last. The backup engine writes meta/<id> when a backup
@@ -125,7 +133,9 @@ restore() {
 		die "no backup #$id; have: $(backup_ids "$dir" | tr '\n' ' ')"
 	fi
 	db=$(config_value database_path)
-	[[ -n $db && -d $db ]] || die "database_path isn't set in $CONFIG or doesn't exist"
+	[[ -n $db ]] || die "database_path isn't set in $CONFIG"
+	db=$(inside_vault "$db" database_path)
+	[[ -d $db && ! -L $db ]] || die "database_path ($db) isn't a directory"
 
 	echo "This stops anoncat, moves the current database aside and restores backup ${id/#0/newest}."
 	read -rp "Type RESTORE to go on: " answer

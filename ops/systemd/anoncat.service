@@ -54,6 +54,11 @@ MemoryMax=22G
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/Drives/server/data
+# The helpers' secrets and state aren't the server's: a compromised server
+# can't repoint DNS or take over the Pages repository, or change its own
+# certificate.
+InaccessiblePaths=-/Drives/server/data/secrets/dynu-key -/Drives/server/data/secrets/codeberg -/Drives/server/data/netd
+ReadOnlyPaths=-/Drives/server/data/tls
 ProtectHome=yes
 # Its own /tmp and /var/tmp, both in RAM.
 PrivateTmp=disconnected

@@ -28,13 +28,10 @@ pub(crate) async fn tuwunel_remote_version(
 ) -> Result<get_remote_version::unstable::Response> {
 	let timer = Instant::now();
 
+	// This server's own version stays unsaid here too, as it does over
+	// federation.
 	let server = if services.globals.server_is_ours(&body.server_name) {
-		Some(get_server_version::v1::Server {
-			name: Some(tuwunel_core::version::name().into()),
-			version: Some(tuwunel_core::version::version().into()),
-			compiler: tuwunel_core::info::rustc::version().map(Into::into),
-			..Default::default()
-		})
+		None
 	} else {
 		services
 			.federation

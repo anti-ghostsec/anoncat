@@ -178,10 +178,27 @@ impl crate::Service for Service {
 impl Service {
 	/// Hides media until review: it stays stored but is served to nobody,
 	/// here or over federation. `note` is kept with it for the panel.
-	pub fn hide(&self, mxc: &str, note: &str) { self.hidden.insert(mxc.as_bytes(), note.as_bytes()); }
+	pub fn hide(&self, mxc: &str, note: &str) -> Result {
+		let key = Self::hidden_key(mxc)?;
+		self.hidden.insert(key.as_bytes(), note.as_bytes());
+		Ok(())
+	}
 
 	/// Serves hidden media again.
-	pub fn unhide(&self, mxc: &str) { self.hidden.remove(mxc.as_bytes()); }
+	pub fn unhide(&self, mxc: &str) -> Result {
+		self.hidden.remove(Self::hidden_key(mxc)?.as_bytes());
+		Ok(())
+	}
+
+	/// The form `is_hidden` looks up, whatever spelling the event used.
+	fn hidden_key(mxc: &str) -> Result<String> {
+		let mxc: Mxc<'_> = mxc
+			.trim()
+			.try_into()
+			.map_err(|_| err!(Request(InvalidParam("Not an mxc:// URI."))))?;
+
+		Ok(mxc.to_string())
+	}
 
 	#[must_use]
 	pub fn is_hidden(&self, mxc: &Mxc<'_>) -> bool {

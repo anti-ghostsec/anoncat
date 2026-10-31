@@ -176,10 +176,13 @@ fn scrub_run(run: &str) -> String {
 		return format!("{scrubbed}{tail}");
 	}
 
-	let inner = core.trim_start_matches(['.', ':']);
-	let lead = &core[..core.len() - inner.len()];
-	if let Some(scrubbed) = scrub_core(inner) {
-		return format!("{lead}{scrubbed}{tail}");
+	// Glued to a word that ends in hex letters ("Failed:10.0.0.1"): try
+	// what follows each separator.
+	for (i, _) in core.match_indices(['.', ':']) {
+		let (lead, inner) = core.split_at(i + 1);
+		if let Some(scrubbed) = scrub_core(inner) {
+			return format!("{lead}{scrubbed}{tail}");
+		}
 	}
 
 	run.to_owned()
@@ -218,6 +221,9 @@ mod tests {
 		assert_eq!(scrub_ips("ip=10.20.30.40,"), "ip=[ip],");
 		assert_eq!(scrub_ips(r#"["tcp:127.0.0.1:18009"]"#), r#"["tcp:[ip]:18009"]"#);
 		assert_eq!(scrub_ips("at :10.0.0.1."), "at :[ip].");
+		assert_eq!(scrub_ips("Failed:10.0.0.1"), "Failed:[ip]");
+		assert_eq!(scrub_ips("bad:1.2.3.4:443 x"), "bad:[ip]:443 x");
+		assert_eq!(scrub_ips("cafe.::1"), "cafe.[ip]");
 	}
 
 	#[test]

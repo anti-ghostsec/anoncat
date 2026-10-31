@@ -44,6 +44,7 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import ssl
 import urllib.error
@@ -341,10 +342,34 @@ table inet anoncat {{
     log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}; local {local_ip}:{public} -> {LOOPBACK_PORT}")
 
 
-def step(dry_run=False):
+# The DNS and Pages work runs here, apart from the lease renewal: it can take
+# minutes (API timeouts, the wait for Codeberg), and the 60 s lease must not
+# lapse meanwhile.
+_publisher = None
+
+
+def step(dry_run=False, background=False):
+    global _publisher
     ip, port, local = forward()
     if REDIRECT and not dry_run:
         redirect(local, ip, port)
+    if background:
+        if _publisher is not None and _publisher.is_alive():
+            return
+        _publisher = threading.Thread(target=publish_logged, args=(ip, port), daemon=True)
+        _publisher.start()
+        return
+    publish(ip, port, dry_run)
+
+
+def publish_logged(ip, port):
+    try:
+        publish(ip, port)
+    except Exception as e:  # tried again on the next renewal
+        log(f"error: {e}")
+
+
+def publish(ip, port, dry_run=False):
     pages = pages_mode()
     state = load_state()
     if (state.get("ip"), state.get("port"), state.get("pages"), state.get("layout")) == (
@@ -386,7 +411,7 @@ def main():
         return
     while True:
         try:
-            step()
+            step(background=True)
         except Exception as e:  # keep renewing; a missed lease only costs the port
             log(f"error: {e}")
         time.sleep(RENEW)

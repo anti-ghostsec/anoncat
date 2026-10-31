@@ -39,13 +39,14 @@ function toast(text, ms = 3500) {
 }
 
 // A modal with the given fields; resolves to the entered values, or null.
-function ask(title, { text, fields = [], confirm = "OK", danger = false } = {}) {
+function ask(title, { text, pre, fields = [], confirm = "OK", danger = false } = {}) {
 	const dialog = $("#dialog");
 	const body = $("#dialog-body");
 	const inputs = {};
 	body.replaceChildren(
 		h("h2", {}, title),
 		text ? h("p", {}, text) : null,
+		pre ? h("pre", { class: "notice-body mono" }, pre) : null,
 		...fields.map((f) => {
 			const input = f.type === "checkbox"
 				? h("input", { type: "checkbox", name: f.name, checked: f.value })
@@ -407,7 +408,7 @@ async function loadThumb(el, server, mediaId) {
 		const blob = await res.blob();
 		if (!RASTER.has(blob.type)) return;
 		const url = URL.createObjectURL(blob);
-		el.replaceChildren(h("img", { src: url, alt: "" }));
+		el.replaceChildren(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
 	} catch { /* leave the placeholder */ }
 }
 
@@ -521,7 +522,8 @@ async function loadPreview(el, server, mediaId) {
 		if (!res.ok) return;
 		const blob = await res.blob();
 		if (!RASTER.has(blob.type)) return;
-		el.replaceChildren(h("img", { src: URL.createObjectURL(blob), alt: "" }));
+		const url = URL.createObjectURL(blob);
+		el.replaceChildren(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
 	} catch { /* leave the placeholder */ }
 }
 
@@ -667,9 +669,15 @@ function renderReply(text, commands) {
 		if (m.index > last) parts.push(h("pre", { class: "notice-body" }, text.slice(last, m.index).trim()));
 		const cmd = m[1].trim().replace(/^!admin\s+/, "");
 		parts.push(h("div", { class: "proposed" },
-			h("code", { class: "mono" }, cmd),
+			h("pre", { class: "mono" }, cmd),
 			h("button", { class: "small", onclick: async () => {
-				if (!(await ask("Run this command?", { text: cmd, confirm: "Run" }))) return;
+				// Shown exactly as it will run, line breaks and all: the AI
+				// read room names and messages others wrote.
+				const lines = cmd.split("\n").length;
+				const text = lines > 1
+					? `This is ${lines} lines: the first is the command, the rest is its input. Read all of it.`
+					: "Check it does what you want. The AI's suggestions can be wrong.";
+				if (!(await ask("Run this command?", { text, pre: cmd, confirm: "Run", danger: true }))) return;
 				const r = await attempt(null, () => command(cmd));
 				const output = r ? (r.output || (r.ok ? "Done." : "Failed.")) : "Failed.";
 				const shared = output.length > SHARED_OUTPUT ? `${output.slice(0, SHARED_OUTPUT)}\n… (cut)` : output;

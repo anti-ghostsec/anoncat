@@ -32,12 +32,11 @@ pub(super) struct Masks {
 }
 
 impl Masks {
+	/// Placeholders for IDs, and IP addresses blanked: command output can
+	/// hold a device's last address.
 	fn mask(&mut self, text: &str) -> String {
-		if self.to.len() > MASKS_MAX {
-			*self = Self::default();
-		}
-
-		IDS.replace_all(text, |c: &regex::Captures<'_>| {
+		let text = crate::logs::scrub_ips(text);
+		IDS.replace_all(&text, |c: &regex::Captures<'_>| {
 			let id = &c[0];
 			if let Some(mask) = self.to.get(id) {
 				return mask.clone();
@@ -48,6 +47,7 @@ impl Masks {
 				| b'!' => "!room",
 				| b'#' => "#alias",
 				| b'$' => "$event",
+				| b'm' => "+media",
 				| _ => "+group",
 			};
 			let mask = format!("{kind}-{}", self.to.len().saturating_add(1));
@@ -62,7 +62,7 @@ impl Masks {
 		use std::sync::LazyLock;
 
 		static MASKS: LazyLock<Regex> = LazyLock::new(|| {
-			Regex::new(r"[@!#$+](?:user|room|alias|event|group)-[0-9]+\b").expect("valid regex")
+			Regex::new(r"[@!#$+](?:user|room|alias|event|group|media)-[0-9]+\b").expect("valid regex")
 		});
 
 		MASKS
@@ -75,9 +75,6 @@ impl Masks {
 			.into_owned()
 	}
 }
-
-#[implement(Service)]
-fn mask(&self, text: &str) -> String { self.masks.lock().expect("locked").mask(text) }
 
 /// Answers the admin. `history` holds the chat so far, including command
 /// output the panel added after the admin ran something.
@@ -92,7 +89,7 @@ pub async fn assistant(&self, history: &[Turn]) -> Result<String> {
 	let snapshot = self.snapshot().await?;
 	let commands = self.command_list();
 
-	let system = self.mask(&format!(
+	let system = format!(
 		"You help the admin of a small, privacy-focused Matrix homeserver (anoncat, built on \
 		 tuwunel) run it from its admin panel. Be brief and plain.\n\nYou can't act or look \
 		 anything up yourself. What you know is the snapshot below, taken just now, plus \
@@ -105,21 +102,31 @@ pub async fn assistant(&self, history: &[Turn]) -> Result<String> {
 		 like @user-3, !room-1, #alias-2. Use them exactly as written, as complete IDs; \
 		 they're turned back into the real ones for the admin.\n\n# Server now\n\
 		 {snapshot}\n# Admin commands\n{commands}"
-	));
+	);
 
-	let mut budget = HISTORY_CHARS;
-	let mut turns: Vec<Turn> = history
-		.iter()
-		.rev()
-		.take_while(|t| {
-			let len = t.content.len();
-			let fits = len <= budget;
-			budget = budget.saturating_sub(len);
-			fits
-		})
-		.map(|t| Turn { role: t.role.clone(), content: self.mask(&t.content) })
-		.collect();
-	turns.reverse();
+	// One table for the whole request: a placeholder in the system prompt
+	// and the same one in the reply always name the same thing.
+	let (system, turns) = {
+		let mut masks = self.masks.lock().expect("locked");
+		if masks.to.len() > MASKS_MAX {
+			*masks = Masks::default();
+		}
+		let system = masks.mask(&system);
+		let mut budget = HISTORY_CHARS;
+		let mut turns: Vec<Turn> = history
+			.iter()
+			.rev()
+			.take_while(|t| {
+				let len = t.content.len();
+				let fits = len <= budget;
+				budget = budget.saturating_sub(len);
+				fits
+			})
+			.map(|t| Turn { role: t.role.clone(), content: masks.mask(&t.content) })
+			.collect();
+		turns.reverse();
+		(system, turns)
+	};
 
 	let reply =
 		venice::chat(self.client(), &key, &model, &system, &turns, Vec::new()).await?;
@@ -296,8 +303,8 @@ mod tests {
 	#[test]
 	fn placeholders_turn_back_into_ids() {
 		let mut masks = Masks::default();
-		let sent = masks.mask("deactivate @bob:anoncat.gleeze.com, he spams !abc:x.org and @bob:anoncat.gleeze.com");
-		assert_eq!(sent, "deactivate @user-1, he spams !room-2 and @user-1");
+		let sent = masks.mask("deactivate @bob:anoncat.gleeze.com, he spams !abc:x.org and @bob:anoncat.gleeze.com from 203.0.113.175");
+		assert_eq!(sent, "deactivate @user-1, he spams !room-2 and @user-1 from [ip]");
 		assert_eq!(
 			masks.unmask("```command\nusers deactivate @user-1\n``` and @user-99"),
 			"```command\nusers deactivate @bob:anoncat.gleeze.com\n``` and @user-99"

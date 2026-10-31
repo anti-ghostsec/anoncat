@@ -76,6 +76,9 @@ case ${1:-} in
 	chmod 0755 "$staged"
 	[[ -n $(version "$staged") ]] || die "$1 doesn't run (--version failed)"
 	cmp -s "$staged" "$BIN" && die "$1 is already the installed binary"
+	# Checked before anything changes: a stopped server would be left on the
+	# new binary with no restart and nothing to roll back to.
+	[[ $(mainpid) != 0 && $(state) == active ]] || die "$SERVICE isn't running; start it first"
 
 	cp -p "$BIN" "$PREV"
 	install_bin "$staged"

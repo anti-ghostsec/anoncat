@@ -61,6 +61,9 @@ def helper(request, secret=None, length=0):
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "anoncat"
     sys_version = ""
+    # Unbuffered: a buffered reader would keep its own copy of the body,
+    # passphrase included, that nothing ever wipes.
+    rbufsize = 0
 
     def log_message(self, *_args):
         # Nothing logged: no addresses, no paths.

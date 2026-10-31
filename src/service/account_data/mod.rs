@@ -309,6 +309,10 @@ pub async fn erase_user(&self, user_id: &UserId, room_id: Option<&RoomId>) {
 		.await;
 
 	txn.execute();
+	if room_id.is_none() {
+		// The push rules are global account data.
+		self.services.pusher.invalidate_ruleset(user_id);
+	}
 }
 
 /// Returns the latest account data counter at or below an optional bound.

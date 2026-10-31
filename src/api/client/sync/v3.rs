@@ -638,8 +638,12 @@ async fn collect_joined_rooms(
 		(BTreeMap::new(), HashSet::new(), HashSet::new());
 
 	while let Some(loaded) = tasks.join_next().await {
-		let Some((room_id, joined_room, dlu, leu)) = loaded.expect("joined room task panicked")
-		else {
+		// A room whose task failed is left out of this response, as a room
+		// that failed to load always was; it comes in a later sync.
+		let Some((room_id, joined_room, dlu, leu)) = loaded.unwrap_or_else(|e| {
+			warn!("A joined room failed to load for sync: {e}");
+			None
+		}) else {
 			continue;
 		};
 

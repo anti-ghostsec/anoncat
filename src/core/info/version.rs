@@ -37,7 +37,9 @@ pub fn version() -> &'static str { VERSION.get_or_init(init_version) }
 /// version information into the process-wide client identifier.
 pub fn user_agent() -> &'static str { USER_AGENT.get_or_init(init_user_agent) }
 
-fn init_user_agent() -> String { format!("{}/{}", name(), semantic()) }
+/// The same for every build: other servers, websites and push gateways
+/// aren't told what software or version this is.
+fn init_user_agent() -> String { "Matrix-Homeserver".to_owned() }
 
 fn init_version() -> String {
 	option_env!("TUWUNEL_VERSION_EXTRA")

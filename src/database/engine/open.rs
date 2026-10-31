@@ -34,6 +34,10 @@ pub(crate) async fn open(ctx: Arc<Context>, desc: &[Descriptor]) -> Result<Arc<S
 		}
 	}
 
+	if !config.rocksdb_read_only && !config.rocksdb_secondary {
+		remove_wal_archive(path);
+	}
+
 	let db_opts = db_options(
 		config,
 		&ctx.env.lock().expect("environment locked"),
@@ -279,4 +283,28 @@ pub(super) fn is_remnant(name: &str) -> bool {
 	};
 
 	name == "CURRENT" || name.starts_with("MANIFEST-") || numbered(".sst") || numbered(".log")
+}
+
+/// Deletes write-ahead logs archived before archiving was turned off: they
+/// hold old values of everything since overwritten, deleted or redacted, and
+/// RocksDB never purges them once both archive limits are 0. Archived logs
+/// are never needed to open the database.
+fn remove_wal_archive(path: &std::path::Path) {
+	let Ok(entries) = std::fs::read_dir(path.join("archive")) else {
+		return;
+	};
+
+	let mut removed = 0_usize;
+	for entry in entries.flatten() {
+		let file = entry.path();
+		if file.extension().is_some_and(|ext| ext == "log")
+			&& std::fs::remove_file(&file).is_ok()
+		{
+			removed = removed.saturating_add(1);
+		}
+	}
+
+	if removed > 0 {
+		info!("Removed {removed} archived write-ahead logs");
+	}
 }

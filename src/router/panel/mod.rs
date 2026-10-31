@@ -44,17 +44,44 @@ pub(crate) fn panel_router(app: Router, addr: SocketAddr) -> Router {
 				return StatusCode::MISDIRECTED_REQUEST.into_response();
 			}
 
+			// A page on another site may name this address in Host too
+			// (fetch to http://127.0.0.1:...); the browser says where it
+			// came from, and only the panel itself is let in.
+			let cross_site = req
+				.headers()
+				.get("sec-fetch-site")
+				.is_some_and(|site| matches!(site.as_bytes(), b"cross-site" | b"same-site"));
+			let foreign_origin = req
+				.headers()
+				.get(header::ORIGIN)
+				.and_then(|origin| origin.to_str().ok())
+				.is_some_and(|origin| {
+					origin
+						.to_ascii_lowercase()
+						.strip_prefix("http://")
+						.is_none_or(|host| !allowed.iter().any(|a| a == host))
+				});
+			if cross_site || foreign_origin {
+				return StatusCode::FORBIDDEN.into_response();
+			}
+
 			next.run(req).await
 		}
 	}))
 }
 
 /// The public listeners: the app without anoncat's admin API, and without the
-/// Synapse admin API when the panel is where admins work.
+/// Synapse admin API or the client API's admin routes (whois, suspend, lock)
+/// when the panel is where admins work.
 pub(crate) fn public_router(app: Router, panel: bool) -> Router {
 	app.layer(middleware::from_fn(move |req: Request, next: Next| {
 		let path = req.uri().path();
-		let admin = path.starts_with("/_anoncat/") || (panel && path.starts_with("/_synapse/admin"));
+		let client_admin = path
+			.strip_prefix("/_matrix/client/")
+			.and_then(|rest| rest.split_once('/'))
+			.is_some_and(|(_version, rest)| rest.starts_with("admin/"));
+		let admin = path.starts_with("/_anoncat/")
+			|| (panel && (path.starts_with("/_synapse/admin") || client_admin));
 		async move {
 			if admin {
 				return StatusCode::NOT_FOUND.into_response();

@@ -90,8 +90,14 @@ fn prewarm(maps: &[Arc<Map>], stop: &AtomicBool) -> Result {
 			continue;
 		}
 
-		let usage = engine.property_integer(&map.cf(), CACHE_USAGE)?;
-		let capacity = engine.property_integer(&map.cf(), CACHE_CAPACITY)?;
+		// A column with no block cache has nothing to warm.
+		let (Ok(usage), Ok(capacity)) = (
+			engine.property_integer(&map.cf(), CACHE_USAGE),
+			engine.property_integer(&map.cf(), CACHE_CAPACITY),
+		) else {
+			skipped = skipped.saturating_add(1);
+			continue;
+		};
 		if usage.saturating_add(size) > capacity {
 			debug!(column = map.name(), size, usage, capacity, "Prewarm skipped column");
 			skipped = skipped.saturating_add(1);

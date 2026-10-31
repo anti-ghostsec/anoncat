@@ -3,7 +3,7 @@
 //!
 //! Only the metadata blocks are dropped; the picture's own data is copied as
 //! it is, so nothing is re-encoded and quality is unchanged. The colour
-//! profile and orientation-free pixel data are kept. Anything that doesn't
+//! profile and a JPEG's orientation are kept. Anything that doesn't
 //! parse cleanly as JPEG, PNG or WebP (an encrypted upload, a truncated
 //! file, another format) comes back untouched.
 
@@ -19,9 +19,12 @@ pub fn strip_metadata(file: &[u8]) -> Option<Vec<u8>> {
 	}
 }
 
-/// JPEG: drops APP1 (EXIF, XMP), APP12, APP13 (IPTC/Photoshop) and COM
-/// segments before the image data. APP0 (JFIF), APP2 (ICC profile) and
-/// APP14 (Adobe colour transform) stay: they change how it looks.
+/// JPEG: keeps only what changes how it looks: APP0 (JFIF), APP2 holding
+/// the ICC profile, APP14 (Adobe colour transform) and the EXIF orientation,
+/// rewritten on its own. Every other APP segment (EXIF, XMP, IPTC, MPF,
+/// maker blocks such as GoPro's GPS track in APP6) and comments go, and so
+/// does anything after the end of the image: extra pictures and vendor
+/// trailers, which carry their own EXIF.
 fn jpeg(file: &[u8]) -> Option<Vec<u8>> {
 	let mut out = Vec::with_capacity(file.len());
 	out.extend_from_slice(&file[..2]);
@@ -29,14 +32,21 @@ fn jpeg(file: &[u8]) -> Option<Vec<u8>> {
 	let mut dropped = false;
 
 	loop {
-		let marker = *file.get(pos.checked_add(1)?)?;
 		if *file.get(pos)? != 0xFF {
 			return None;
 		}
+		let marker = *file.get(pos.checked_add(1)?)?;
 
-		// Start of scan: the rest is image data, copied whole.
-		if marker == 0xDA {
-			out.extend_from_slice(file.get(pos..)?);
+		// Fill bytes before a marker.
+		if marker == 0xFF {
+			pos = pos.checked_add(1)?;
+			continue;
+		}
+
+		// End of image: whatever follows isn't part of this picture.
+		if marker == 0xD9 {
+			out.extend_from_slice(&[0xFF, 0xD9]);
+			dropped |= file.len() > pos.checked_add(2)?;
 			break;
 		}
 
@@ -55,16 +65,93 @@ fn jpeg(file: &[u8]) -> Option<Vec<u8>> {
 
 		let end = pos.checked_add(2)?.checked_add(len)?;
 		let segment = file.get(pos..end)?;
-		if matches!(marker, 0xE1 | 0xEC | 0xED | 0xFE) {
-			dropped = true;
-		} else {
+		let payload = &segment[4..];
+		let keep = match marker {
+			| 0xE0 | 0xEE => true,
+			| 0xE2 => payload.starts_with(b"ICC_PROFILE\0"),
+			| 0xE1..=0xEF | 0xFE => false,
+			| _ => true,
+		};
+		if keep {
 			out.extend_from_slice(segment);
+		} else {
+			dropped = true;
+			if marker == 0xE1
+				&& let Some(orientation) = exif_orientation(payload)
+			{
+				out.extend_from_slice(&orientation_only(orientation));
+			}
 		}
-
 		pos = end;
+
+		// Start of scan: entropy-coded data up to the next real marker, which
+		// may be another scan (progressive) or the end of the image.
+		if marker == 0xDA {
+			let mut i = pos;
+			loop {
+				let Some(ff) = file.get(i..)?.iter().position(|&b| b == 0xFF) else {
+					// No end marker: the rest is image data.
+					out.extend_from_slice(&file[pos..]);
+					return dropped.then_some(out);
+				};
+				i = i.checked_add(ff)?;
+				match file.get(i.checked_add(1)?) {
+					| Some(0x00 | 0xD0..=0xD7) => i = i.checked_add(2)?,
+					| Some(0xFF) => i = i.checked_add(1)?,
+					| Some(_) => break,
+					| None => {
+						out.extend_from_slice(&file[pos..]);
+						return dropped.then_some(out);
+					},
+				}
+			}
+			out.extend_from_slice(&file[pos..i]);
+			pos = i;
+		}
 	}
 
 	dropped.then_some(out)
+}
+
+/// The EXIF orientation (tag 0x0112 in the first IFD), when it isn't the
+/// default 1.
+fn exif_orientation(app1: &[u8]) -> Option<u16> {
+	let tiff = app1.strip_prefix(b"Exif\0\0")?;
+	let big = match tiff.get(..4)? {
+		| b"MM\0*" => true,
+		| b"II*\0" => false,
+		| _ => return None,
+	};
+	let u16_at = |at: usize| -> Option<u16> {
+		let b = tiff.get(at..at.checked_add(2)?)?;
+		Some(if big { u16::from_be_bytes([b[0], b[1]]) } else { u16::from_le_bytes([b[0], b[1]]) })
+	};
+	let ifd = {
+		let b = tiff.get(4..8)?;
+		let raw = [b[0], b[1], b[2], b[3]];
+		usize::try_from(if big { u32::from_be_bytes(raw) } else { u32::from_le_bytes(raw) }).ok()?
+	};
+
+	let entries = u16_at(ifd)?;
+	(0..usize::from(entries)).find_map(|n| {
+		let entry = ifd.checked_add(2)?.checked_add(n.checked_mul(12)?)?;
+		(u16_at(entry)? == 0x0112 && u16_at(entry.checked_add(2)?)? == 3)
+			.then(|| u16_at(entry.checked_add(8)?))
+			.flatten()
+			.filter(|o| (2..=8).contains(o))
+	})
+}
+
+/// An APP1 segment holding nothing but the orientation.
+fn orientation_only(orientation: u16) -> Vec<u8> {
+	let mut payload = b"Exif\0\0MM\0*\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01".to_vec();
+	payload.extend_from_slice(&orientation.to_be_bytes());
+	payload.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+	let len = u16::try_from(payload.len().saturating_add(2)).unwrap_or(u16::MAX);
+	let mut segment = vec![0xFF, 0xE1];
+	segment.extend_from_slice(&len.to_be_bytes());
+	segment.extend_from_slice(&payload);
+	segment
 }
 
 /// PNG: drops eXIf and the text chunks (tEXt, zTXt, iTXt), which hold EXIF,
@@ -177,6 +264,36 @@ mod tests {
 		expected.extend_from_slice(&scan);
 
 		assert_eq!(strip_metadata(&file), Some(expected));
+	}
+
+	#[test]
+	fn jpeg_keeps_orientation_and_drops_extra_pictures() {
+		// Big-endian EXIF: orientation 6 and a GPS IFD pointer.
+		let exif = b"Exif\0\0MM\0*\0\0\0\x08\0\x02\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\x88\x25\0\x04\0\0\0\x01\0\0\0\x40\0\0\0\0";
+		let scan = [0xFF, 0xDA, 0x00, 0x02, 1, 0xFF, 0x00, 2, 0xFF, 0xD0, 3];
+		let mut file = vec![0xFF, 0xD8];
+		file.extend(jpeg_segment(0xE1, exif));
+		file.extend(jpeg_segment(0xE2, b"MPF\0\0\0"));
+		file.extend(jpeg_segment(0xE6, b"GoPro GPMF track"));
+		file.extend_from_slice(&scan);
+		// A second scan, as progressive JPEGs have, then the end.
+		file.extend(jpeg_segment(0xC4, b"\x10table"));
+		file.extend_from_slice(&scan);
+		file.extend_from_slice(&[0xFF, 0xD9]);
+		// A second picture with its own EXIF, as phones append.
+		file.extend_from_slice(&[0xFF, 0xD8]);
+		file.extend(jpeg_segment(0xE1, b"Exif\0\0GPS"));
+		file.extend_from_slice(&[0xFF, 0xD9]);
+
+		let out = strip_metadata(&file).unwrap();
+		let mut expected = vec![0xFF, 0xD8];
+		expected.extend(super::orientation_only(6));
+		expected.extend_from_slice(&scan);
+		expected.extend(jpeg_segment(0xC4, b"\x10table"));
+		expected.extend_from_slice(&scan);
+		expected.extend_from_slice(&[0xFF, 0xD9]);
+		assert_eq!(out, expected);
+		assert_eq!(super::exif_orientation(&super::orientation_only(6)[4..]), Some(6));
 	}
 
 	#[test]

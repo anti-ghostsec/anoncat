@@ -98,6 +98,11 @@ def unlock(conn):
         if state == "unlocked":
             reply(conn, True, state=state, message="The vault is already unlocked.")
             return
+        # Open but not mounted (a mount that failed): unlocking again would
+        # mount it without checking the passphrase at all.
+        if state != "locked":
+            reply(conn, False, state=state, message="The vault needs a look as root: anoncat-vault status.")
+            return
 
         proc = subprocess.Popen(
             [VAULT, "unlock", "--stdin"],

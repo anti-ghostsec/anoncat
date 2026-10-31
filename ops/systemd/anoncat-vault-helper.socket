@@ -11,9 +11,10 @@ SocketGroup=anoncat
 SocketMode=0660
 Accept=yes
 MaxConnections=1
-# Unlock attempts are slow anyway (argon2); this caps hammering on top.
-TriggerLimitIntervalSec=10s
-TriggerLimitBurst=5
+# No trigger limit: hitting one leaves the socket failed until root restarts
+# it (a few reloads of the unlock page would do). One connection at a time,
+# argon2 and the helper's delay after a wrong passphrase do the throttling.
+TriggerLimitIntervalSec=0
 
 [Install]
 WantedBy=sockets.target

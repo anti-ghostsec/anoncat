@@ -31,6 +31,10 @@ use tuwunel_core::{
 	warn,
 };
 
+/// How far ahead of this server's clock an event may be dated and still
+/// count as when it was sent.
+const FUTURE_SLACK_MS: u64 = 24 * 60 * 60 * 1000;
+
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 const MIB: u64 = 1 << 20;
 
@@ -409,13 +413,18 @@ async fn purge_history_older_than(&self, max_age: Duration) -> (usize, usize) {
 
 		// Walk the timeline in the order events arrived and stop at the first
 		// one newer than the cutoff: everything before it goes. Timestamps are
-		// chosen by the sending server, so an old-looking event can only end
-		// the walk early (purging less), never pull the boundary forward.
+		// chosen by the sending server: one dated in the future is passed
+		// over, so a single bad clock can't stop expiry in a room for good.
 		let timeline = self.services.timeline.pdus(None, &room_id, None);
 		pin_mut!(timeline);
 		let mut boundary = None;
+		let future = now_millis().saturating_add(FUTURE_SLACK_MS);
 		while let Some(Ok((count, pdu))) = timeline.next().await {
 			boundary = Some(count);
+			let ts = u64::from(pdu.origin_server_ts);
+			if ts > future {
+				continue;
+			}
 			if pdu.origin_server_ts > cutoff.get() {
 				break;
 			}
