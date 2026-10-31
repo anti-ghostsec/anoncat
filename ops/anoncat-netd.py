@@ -214,7 +214,7 @@ def pages_mode():
     return os.path.exists(CODEBERG_FILE) and cert_covers_hs()
 
 
-def pages_files(port):
+def pages_files(port, deployed_at=None):
     client = json.dumps({"m.homeserver": {"base_url": f"https://{HS}:{port}"}}, indent=2) + "\n"
     return {
         "matrix-client.json": client,
@@ -225,12 +225,16 @@ def pages_files(port):
         "_headers": "/matrix-client.json\n    Access-Control-Allow-Origin: *\n"
                     "/.well-known/matrix/client\n    Access-Control-Allow-Origin: *\n",
         "index.html": f"<!doctype html><title>{DOMAIN}</title><p>{DOMAIN} is a Matrix server.</p>\n",
+        # Changed only to force a push, which is what makes Codeberg deploy.
+        "deployed.txt": f"{deployed_at or 0}\n",
     }
 
 
-def publish_pages(port):
+def publish_pages(port, redeploy=False):
     """Create the pages repository and its deploy webhook if needed, then
-    bring its files up to date; a push deploys them."""
+    bring its files up to date; a push deploys them. redeploy forces a push
+    even when nothing else changed: the deploy webhook goes to DOMAIN, so a
+    push made before DNS pointed it at Codeberg never deployed."""
     user, _ = codeberg_login()
     repo = f"/repos/{user}/{PAGES_REPO}"
     info = codeberg("GET", repo, ok_missing=True)
@@ -256,7 +260,10 @@ def publish_pages(port):
                                            "branch_filter": PAGES_BRANCH,
                                            "config": {"url": hook_url, "content_type": "json"}})
         log("pages: added the deploy webhook")
-    for path, text in pages_files(port).items():
+    current_stamp = codeberg("GET", f"{repo}/contents/deployed.txt?ref={PAGES_BRANCH}", ok_missing=True)
+    stamp = int(time.time()) if redeploy or not current_stamp else \
+        base64.b64decode(current_stamp.get("content", "")).decode().strip()
+    for path, text in pages_files(port, stamp).items():
         current = codeberg("GET", f"{repo}/contents/{path}?ref={PAGES_BRANCH}", ok_missing=True)
         content = base64.b64encode(text.encode()).decode()
         if current and base64.b64decode(current.get("content", "")) == text.encode():
@@ -338,6 +345,12 @@ def step(dry_run=False):
     if pages:
         publish_pages(port)
     set_dns(ip, port, pages)
+    # Pointing DNS at Codeberg (first time, or a new layout): deploy again now
+    # that the webhook reaches Codeberg, so it serves the site and issues its
+    # certificate.
+    if pages and (not state.get("pages") or state.get("layout") != DNS_LAYOUT):
+        time.sleep(TTL)
+        publish_pages(port, redeploy=True)
     save_state({"ip": ip, "port": port, "pages": pages, "layout": DNS_LAYOUT,
                 "since": int(time.time())})
     log(f"DNS now {HS} -> {ip}:{port}, {DOMAIN} -> {front} "
