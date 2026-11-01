@@ -476,7 +476,7 @@ pages.reports = async (main, params) => {
 			if (r.mxc) buttons.push(r.hidden
 				? h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide")
 				: h("button", { class: r.suggested === "hide" ? "small" : "ghost small", onclick: () => act("hide", "Hidden") }, "Hide media"));
-			if (r.kind !== "large_file") buttons.push(h("button", { class: r.suggested === "redact" ? "danger small" : "ghost small", onclick: async () => {
+			if (r.kind !== "large_file" && r.kind !== "room") buttons.push(h("button", { class: r.suggested === "redact" ? "danger small" : "ghost small", onclick: async () => {
 				if (!(await ask("Remove this message?", { text: "Redacts it as you. Needs you to be in the room with the power to remove messages. Other servers drop their copies too.", confirm: "Remove", danger: true }))) return;
 				const ok = await attempt("Removed", () => api("PUT", `/_matrix/client/v3/rooms/${enc(r.room_id)}/redact/${enc(r.event_id)}/${Date.now()}`, { reason: "Moderation" }));
 				if (ok) await act("resolve", null);
@@ -499,11 +499,13 @@ pages.reports = async (main, params) => {
 				h("span", { class: "tag" }, r.category || r.kind),
 				r.hidden ? h("span", { class: "tag warn" }, "hidden") : null,
 				r.status !== "open" ? h("span", { class: "tag" }, r.status) : null,
-				h("span", { class: "small muted" }, `${date(r.ts)} · ${r.source === "ai" ? "AI" : "size rule"} · suggests ${r.suggested}`)),
+				h("span", { class: "small muted" }, `${date(r.ts)} · ${{ ai: "AI", room: "room check" }[r.source] || "size rule"} · suggests ${r.suggested}`)),
 			h("div", {}, r.reason),
 			preview,
 			r.excerpt ? h("pre", { class: "notice-body excerpt" }, r.excerpt) : null,
-			h("div", { class: "small muted" }, `${r.sender} in ${r.room_name || r.room_id}`),
+			h("div", { class: "small muted" }, r.kind === "room"
+				? `${r.room_id}${r.sender ? `, joined by ${r.sender}` : ""}`
+				: `${r.sender} in ${r.room_name || r.room_id}`),
 			h("div", { class: "toolbar" }, buttons));
 	});
 	main.replaceChildren(
@@ -577,7 +579,12 @@ pages.settings = async (main) => {
 			h("h2", {}, "Which rooms"),
 			check("watch_directory", "Rooms in this server's public room list"),
 			check("watch_public_joined", "Any room anyone can join that someone here is in", "Includes public rooms on other servers that people here joined."),
-			field("Extra rooms", extra, "Rooms from anywhere in the public room space. The server only sees a room once someone here is in it, so join it with your account first.")),
+			field("Extra rooms", extra, "Rooms from anywhere in the public room space. The server only sees a room once someone here is in it, so join it with your account first."),
+			check("check_rooms", "Check rooms people here join", "When someone here joins a room, public or not, or a room changes its name or topic, the AI looks at its name, topic and latest messages. A room that looks wrong becomes a report and a notice, and is watched from then on."),
+			h("div", { class: "toolbar" }, h("button", { type: "button", class: "ghost small", onclick: async () => {
+				const r = await attempt(null, () => api("POST", `${MOD}/rooms/check`, {}));
+				if (r) toast(r.message);
+			} }, "Check all rooms now"))),
 		h("section", { class: "card" },
 			h("h2", {}, "What to check"),
 			check("check_messages", "Messages"),
@@ -603,6 +610,7 @@ pages.settings = async (main) => {
 			watch_public_joined: f.has("watch_public_joined"),
 			check_messages: f.has("check_messages"),
 			check_images: f.has("check_images"),
+			check_rooms: f.has("check_rooms"),
 			media_mode: f.get("media_mode") || "suggest",
 			extra_rooms: String(f.get("extra_rooms") || "").split(/\s+/).filter(Boolean),
 			large_file_mb: Number(f.get("large_file_mb") || 0),
@@ -627,9 +635,9 @@ pages.assistant = async (main) => {
 	const draw = () => {
 		log.replaceChildren(...chat.map((t) => t.shared
 			? h("div", { class: "card bubble shared" },
-				h("div", { class: "small muted" }, `Output of ${t.command}, shared with the assistant`),
+				h("div", { class: "small muted" }, t.auto ? `Ran ${t.command} by itself` : `Output of ${t.command}, shared with the assistant`),
 				h("pre", { class: "notice-body excerpt" }, t.output))
-			: h("div", { class: `card bubble ${t.role}` }, renderReply(t.content, t.role === "assistant"))));
+			: h("div", { class: `card bubble ${t.role}` }, renderReply(t.content, t.role === "assistant" ? (t.ran ? "ran" : "run") : null))));
 		log.scrollTop = log.scrollHeight;
 	};
 	const send = async () => {
@@ -640,17 +648,20 @@ pages.assistant = async (main) => {
 		input.value = "";
 		if (text) chat.push({ role: "user", content: text });
 		draw();
-		log.append(h("p", { class: "muted small" }, "Thinking…"));
+		log.append(h("p", { class: "muted small" }, "Thinking and looking things up…"));
 		const messages = chat.map(({ role, content }) => ({ role, content }));
 		const r = await attempt(null, () => api("POST", `${MOD}/assistant`, { messages }));
-		chat.push({ role: "assistant", content: r ? r.reply : "(no answer)" });
+		if (!r) chat.push({ role: "assistant", content: "(no answer)" });
+		for (const t of r ? r.turns : []) chat.push(t.command
+			? { role: "user", shared: true, auto: true, command: t.command, output: t.output, content: t.content }
+			: { role: t.role, content: t.content, ran: t.ran });
 		draw();
 	};
 	redrawChat = draw;
 	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); });
 	main.replaceChildren(
 		h("h1", {}, "Assistant"),
-		h("p", { class: "muted" }, "Chats with Venice AI. It sees a snapshot of the server's state each time you send, with people and rooms replaced by placeholders. It can propose admin commands; they only run when you click Run and confirm, and their output is shared with it. Ctrl+Enter sends."),
+		h("p", { class: "muted" }, "Chats with Venice AI. It sees a snapshot of the server's state each time you send, with people and rooms replaced by placeholders. Commands that only look things up it runs by itself and reads their output; anything that changes something only runs when you click Run and confirm. Ctrl+Enter sends."),
 		log, input,
 		h("div", { class: "toolbar" },
 			h("button", { onclick: send }, "Send"),
@@ -661,7 +672,8 @@ pages.assistant = async (main) => {
 // Characters of a command's output shared with the assistant.
 const SHARED_OUTPUT = 6000;
 
-// Plain text, with ```command blocks turned into commands to run on request.
+// Plain text, with ```command blocks turned into commands to run on request
+// ("run"), or shown as already run by the assistant itself ("ran").
 function renderReply(text, commands) {
 	const parts = [];
 	const re = /```command\s*\n([\s\S]*?)```/g;
@@ -669,6 +681,11 @@ function renderReply(text, commands) {
 	while (commands && (m = re.exec(text))) {
 		if (m.index > last) parts.push(h("pre", { class: "notice-body" }, text.slice(last, m.index).trim()));
 		const cmd = m[1].trim().replace(/^!admin\s+/, "");
+		if (commands === "ran") {
+			parts.push(h("div", { class: "proposed" }, h("pre", { class: "mono" }, cmd), h("span", { class: "tag ok" }, "ran by itself")));
+			last = re.lastIndex;
+			continue;
+		}
 		parts.push(h("div", { class: "proposed" },
 			h("pre", { class: "mono" }, cmd),
 			h("button", { class: "small", onclick: async () => {

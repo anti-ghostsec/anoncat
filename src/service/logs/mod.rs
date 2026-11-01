@@ -155,7 +155,12 @@ pub fn scrub_ips(text: &str) -> String {
 			.find(|c: char| !is_addr_char(c))
 			.unwrap_or(rest.len() - start);
 		let run = &rest[start..start + run_len];
-		out.push_str(&scrub_run(run));
+		// Inside a word, as in Rust paths ("alloc::collections" holds
+		// "c::c"), it's not an address.
+		let is_word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+		let glued_before = is_word(out.chars().next_back());
+		let glued_after = is_word(rest[start + run_len..].chars().next());
+		out.push_str(&scrub_run(run, glued_before, glued_after));
 		rest = &rest[start + run_len..];
 	}
 
@@ -163,7 +168,7 @@ pub fn scrub_ips(text: &str) -> String {
 	out
 }
 
-fn scrub_run(run: &str) -> String {
+fn scrub_run(run: &str, glued_before: bool, glued_after: bool) -> String {
 	if !run.contains(['.', ':']) || run.len() < 3 {
 		return run.to_owned();
 	}
@@ -172,7 +177,15 @@ fn scrub_run(run: &str) -> String {
 	// isn't part of it; "::1" is, so the untrimmed start is tried first.
 	let core = run.trim_end_matches(['.', ':']);
 	let tail = &run[core.len()..];
-	if let Some(scrubbed) = scrub_core(core) {
+	// Only IPv6-shaped runs ("c::c") are taken as part of a word; an IPv4
+	// address is blanked wherever it is.
+	let v6_shaped = core.contains(':') && !core.contains(['.', '%']);
+	if glued_after && tail.is_empty() && v6_shaped {
+		return run.to_owned();
+	}
+	if !(glued_before && v6_shaped)
+		&& let Some(scrubbed) = scrub_core(core)
+	{
 		return format!("{scrubbed}{tail}");
 	}
 
@@ -223,6 +236,12 @@ mod tests {
 		assert_eq!(scrub_ips("at :10.0.0.1."), "at :[ip].");
 		assert_eq!(scrub_ips("Failed:10.0.0.1"), "Failed:[ip]");
 		assert_eq!(scrub_ips("bad:1.2.3.4:443 x"), "bad:[ip]:443 x");
+		assert_eq!(
+			scrub_ips("Raw::<alloc::collections::btree::map::BTreeMap<ruma_common::canonical_json::value::CanonicalJsonValue>>"),
+			"Raw::<alloc::collections::btree::map::BTreeMap<ruma_common::canonical_json::value::CanonicalJsonValue>>"
+		);
+		assert_eq!(scrub_ips("x=ab::cd"), "x=[ip]");
+		assert_eq!(scrub_ips("ip1.2.3.4 and x::y"), "ip[ip] and x::y");
 		assert_eq!(scrub_ips("cafe.::1"), "cafe.[ip]");
 	}
 

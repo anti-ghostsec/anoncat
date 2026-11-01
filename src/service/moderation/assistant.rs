@@ -1,22 +1,31 @@
 //! The panel's assistant: a Venice chat that knows the server's current
-//! state and its real admin commands, and proposes commands for the admin
-//! to run.
+//! state and its real admin commands. Commands that only look things up
+//! (`READ_ONLY`) it runs itself, a few rounds at most, reading their output
+//! before it answers; anything else it proposes for the admin to run.
 //!
 //! Every user ID, room ID, alias and event ID in what it's sent becomes a
 //! placeholder such as `@user-3` or `!room-1`. The table stays in memory
 //! here, and the reply's placeholders are turned back into the real IDs, so
 //! a command it proposes about `@user-3` runs on the right account.
 
-use std::{collections::HashMap, fmt::Write as _};
+use std::{
+	collections::HashMap,
+	fmt::Write as _,
+	sync::LazyLock,
+	time::{Duration, Instant},
+};
 
 use futures::StreamExt;
 use regex::Regex;
+use ruma::UserId;
+use serde::Serialize;
 use tuwunel_core::{
 	Err, Result, implement,
 	utils::sys::storage::{available_space, total_space},
 };
 
 use super::{IDS, Service, Turn, venice};
+use crate::admin::CommandInput;
 
 /// Placeholders the table holds before it starts over.
 const MASKS_MAX: usize = 20_000;
@@ -24,6 +33,60 @@ const MASKS_MAX: usize = 20_000;
 const ROOMS_LISTED: usize = 30;
 /// Characters of history the assistant is sent.
 const HISTORY_CHARS: usize = 60_000;
+/// Rounds of commands the assistant runs itself before it must answer.
+const AUTO_ROUNDS: usize = 6;
+/// Commands it runs itself in one round.
+const AUTO_PER_ROUND: usize = 3;
+/// No new round starts after this; the panel's request gives up at 240 s.
+const AUTO_TIME: Duration = Duration::from_secs(110);
+/// Characters of a command's output it reads.
+const OUTPUT_CHARS: usize = 6000;
+
+/// Commands that only read, which the assistant runs without asking. None
+/// of them changes anything, contacts another server or prints a secret.
+const READ_ONLY: &[&str] = &[
+	"rooms list",
+	"rooms info",
+	"rooms list-joined-members",
+	"rooms exists",
+	"rooms list-extremities",
+	"rooms directory list",
+	"rooms moderation list-banned-rooms",
+	"rooms alias which",
+	"rooms alias list",
+	"users list-users",
+	"users list-joined-rooms",
+	"users last-active",
+	"server uptime",
+	"server memory-usage",
+	"server list-backups",
+	"media get-file-info",
+	"federation incoming-federation",
+	"federation remote-user-in-rooms",
+	"query room-timeline",
+	"query room-state-cache",
+	"query room-alias",
+	"debug get-pdu",
+	"debug get-room-state",
+	"debug first-pdu-in-room",
+	"debug latest-pdu-in-room",
+];
+
+/// One step of an answer, as the panel shows it: something the assistant
+/// said, or a command it ran and that command's output.
+#[derive(Clone, Debug, Serialize)]
+pub struct Said {
+	pub role: String,
+	/// What goes back into the chat history.
+	pub content: String,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub command: Option<String>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub output: Option<String>,
+	/// A reply whose commands all ran by themselves.
+	#[serde(skip_serializing_if = "std::ops::Not::not")]
+	pub ran: bool,
+}
 
 #[derive(Default)]
 pub(super) struct Masks {
@@ -59,8 +122,6 @@ impl Masks {
 	}
 
 	fn unmask(&self, text: &str) -> String {
-		use std::sync::LazyLock;
-
 		static MASKS: LazyLock<Regex> = LazyLock::new(|| {
 			Regex::new(r"[@!#$+](?:user|room|alias|event|group|media)-[0-9]+\b").expect("valid regex")
 		});
@@ -77,9 +138,10 @@ impl Masks {
 }
 
 /// Answers the admin. `history` holds the chat so far, including command
-/// output the panel added after the admin ran something.
+/// output the panel added after the admin ran something. Read-only commands
+/// the assistant asks for run as `admin`.
 #[implement(Service)]
-pub async fn assistant(&self, history: &[Turn]) -> Result<String> {
+pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Said>> {
 	let Some(key) = self.key() else {
 		return Err!(Request(NotFound("No Venice API key is saved yet.")));
 	};
@@ -88,22 +150,72 @@ pub async fn assistant(&self, history: &[Turn]) -> Result<String> {
 	let model = self.model(&settings.text_model, false).await?;
 	let snapshot = self.snapshot().await?;
 	let commands = self.command_list();
+	let read_only = READ_ONLY.join("\n");
 
 	let system = format!(
 		"You help the admin of a small, privacy-focused Matrix homeserver (anoncat, built on \
-		 tuwunel) run it from its admin panel. Be brief and plain.\n\nYou can't act or look \
-		 anything up yourself. What you know is the snapshot below, taken just now, plus \
-		 command output the admin shares in the chat. When you need more, or when a command \
-		 would do what the admin asks, put each command alone in a fenced block marked \
-		 command, without the !admin prefix:\n```command\nusers list-users\n```\nThe admin \
-		 clicks Run to run it and its output comes back to you. Never claim you ran \
-		 anything. Use only commands from the list below. Say plainly when a command \
-		 deletes data or can't be undone.\n\nPeople, rooms and events appear as placeholders \
-		 like @user-3, !room-1, #alias-2. Use them exactly as written, as complete IDs; \
-		 they're turned back into the real ones for the admin.\n\n# Server now\n\
-		 {snapshot}\n# Admin commands\n{commands}"
+		 tuwunel) run it from its admin panel. Be brief and plain.\n\nWhat you know is the \
+		 snapshot below, taken just now, plus command output in the chat. To look something \
+		 up, or when a command would do what the admin asks, put each command alone in a \
+		 fenced block marked command, without the !admin prefix:\n```command\nusers \
+		 list-users\n```\nCommands that start like one in the read-only list below run by \
+		 themselves at once, and their output comes back to you as the next message: use them \
+		 freely to find out what you need, up to {AUTO_ROUNDS} rounds, instead of asking the \
+		 admin to run them, and only answer once you know. A reply that mixes read-only \
+		 commands with others runs none of them. Every other command waits for the admin to \
+		 click Run. Never claim something changed unless a command's output says so. Use \
+		 only commands from the list below. Say plainly when a command deletes data or can't \
+		 be undone.\n\nPeople, rooms and events appear as placeholders like @user-3, \
+		 !room-1, #alias-2. Use them exactly as written, as complete IDs; they're turned back \
+		 into the real ones before anything runs.\n\n# Server now\n{snapshot}\n# Read-only \
+		 commands\n{read_only}\n\n# Admin commands\n{commands}"
 	);
 
+	let started = Instant::now();
+	let mut history = history.to_vec();
+	let mut said = Vec::new();
+	for round in 0..=AUTO_ROUNDS {
+		let reply = self.ask(&key, &model, &system, &history).await?;
+		history.push(Turn { role: "assistant".into(), content: reply.clone() });
+
+		let proposed = proposed_commands(&reply);
+		let runs = !proposed.is_empty()
+			&& proposed.iter().all(|c| is_read_only(c))
+			&& round < AUTO_ROUNDS
+			&& started.elapsed() < AUTO_TIME;
+
+		said.push(Said {
+			role: "assistant".into(),
+			content: reply,
+			command: None,
+			output: None,
+			ran: runs,
+		});
+		if !runs {
+			break;
+		}
+
+		for command in proposed.into_iter().take(AUTO_PER_ROUND) {
+			let output = self.run_read_only(&command, admin).await;
+			let content =
+				format!("The server ran `{command}` for you. Output:\n```\n{output}\n```");
+			history.push(Turn { role: "user".into(), content: content.clone() });
+			said.push(Said {
+				role: "user".into(),
+				content,
+				command: Some(command),
+				output: Some(output),
+				ran: false,
+			});
+		}
+	}
+
+	Ok(said)
+}
+
+/// One request to Venice with everything masked, and the reply unmasked.
+#[implement(Service)]
+async fn ask(&self, key: &str, model: &str, system: &str, history: &[Turn]) -> Result<String> {
 	// One table for the whole request: a placeholder in the system prompt
 	// and the same one in the reply always name the same thing.
 	let (system, turns) = {
@@ -111,7 +223,7 @@ pub async fn assistant(&self, history: &[Turn]) -> Result<String> {
 		if masks.to.len() > MASKS_MAX {
 			*masks = Masks::default();
 		}
-		let system = masks.mask(&system);
+		let system = masks.mask(system);
 		let mut budget = HISTORY_CHARS;
 		let mut turns: Vec<Turn> = history
 			.iter()
@@ -128,10 +240,62 @@ pub async fn assistant(&self, history: &[Turn]) -> Result<String> {
 		(system, turns)
 	};
 
-	let reply =
-		venice::chat(self.client(), &key, &model, &system, &turns, Vec::new()).await?;
+	let reply = venice::chat(self.client(), key, model, &system, &turns, Vec::new()).await?;
 
 	Ok(self.masks.lock().expect("locked").unmask(&reply))
+}
+
+#[implement(Service)]
+async fn run_read_only(&self, command: &str, admin: &UserId) -> String {
+	let input = CommandInput {
+		command: command.to_owned(),
+		reply_id: None,
+		sender: Some(admin.to_owned()),
+	};
+
+	let output = match self.services.admin.command_in_place(input).await {
+		| Ok(output) => output
+			.map(|o| o.as_str().to_owned())
+			.unwrap_or_else(|| "Done, no output.".into()),
+		| Err(output) => format!("Failed: {}", output.as_str()),
+	};
+
+	match output.char_indices().nth(OUTPUT_CHARS) {
+		| Some((cut, _)) => format!("{}\n… (cut)", &output[..cut]),
+		| None => output,
+	}
+}
+
+/// The commands in a reply's ```command blocks.
+fn proposed_commands(reply: &str) -> Vec<String> {
+	static BLOCK: LazyLock<Regex> =
+		LazyLock::new(|| Regex::new(r"```command[ \t]*\n([\s\S]*?)```").expect("valid regex"));
+
+	BLOCK
+		.captures_iter(reply)
+		.map(|c| {
+			let command = c[1].trim();
+			command
+				.strip_prefix("!admin ")
+				.unwrap_or(command)
+				.trim()
+				.to_owned()
+		})
+		.filter(|c| !c.is_empty())
+		.collect()
+}
+
+/// Whether a command is one line starting with a read-only command's words.
+fn is_read_only(command: &str) -> bool {
+	if command.contains('\n') {
+		return false;
+	}
+
+	let words: Vec<&str> = command.split_whitespace().collect();
+	READ_ONLY.iter().any(|allowed| {
+		let allowed: Vec<&str> = allowed.split(' ').collect();
+		words.len() >= allowed.len() && words[..allowed.len()] == allowed[..]
+	})
 }
 
 /// The server's state, as the assistant is told it.
@@ -172,7 +336,11 @@ async fn snapshot(&self) -> Result<String> {
 	writeln!(
 		out,
 		"- Registration: {}; federation: {}",
-		if config.allow_registration { "open with a token" } else { "closed" },
+		match (config.allow_registration, config.web_signup) {
+			| (false, _) => "closed",
+			| (true, false) => "apps need a token",
+			| (true, true) => "anyone through the web sign-up page with a picture captcha; apps need a token",
+		},
 		if config.allow_federation { "on" } else { "off" },
 	)?;
 	writeln!(out, "- Cleanup limits: {}", serde_json::to_string(&services.cleanup.limits())?)?;
@@ -298,7 +466,21 @@ fn walk(command: &clap::Command, prefix: &str, out: &mut String) {
 
 #[cfg(test)]
 mod tests {
-	use super::Masks;
+	use super::{Masks, is_read_only, proposed_commands};
+
+	#[test]
+	fn only_reads_run_by_themselves() {
+		let reply = "Let me look.\n```command\n!admin query room-timeline last !r:x\n```\nand\n```command\nusers deactivate @a:x\n```";
+		let proposed = proposed_commands(reply);
+		assert_eq!(proposed, ["query room-timeline last !r:x", "users deactivate @a:x"]);
+		assert!(is_read_only(&proposed[0]));
+		assert!(!is_read_only(&proposed[1]));
+		assert!(is_read_only("rooms info !r:x"));
+		assert!(!is_read_only("rooms delete !r:x"));
+		assert!(!is_read_only("rooms listing"));
+		assert!(!is_read_only("rooms info !r:x\nsecond line"));
+		assert!(!is_read_only("server show-config"));
+	}
 
 	#[test]
 	fn placeholders_turn_back_into_ids() {

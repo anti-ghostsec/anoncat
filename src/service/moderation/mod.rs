@@ -11,15 +11,21 @@
 //! nothing readable). Before anything is sent, user IDs, room IDs and
 //! aliases are replaced with placeholders such as U1 and R1; the mapping
 //! stays here.
+//!
+//! Rooms are also checked as a whole (`room_check`): when someone here joins
+//! one, or one someone here is in changes its name, topic or address. Those
+//! checks cover rooms that aren't public too, and a room that looks bad is
+//! watched from then on.
 
 mod assistant;
+mod room_check;
 mod venice;
 
 use std::{
 	collections::{HashMap, HashSet},
 	sync::{
 		Arc, Mutex, RwLock,
-		atomic::{AtomicUsize, Ordering},
+		atomic::{AtomicBool, AtomicUsize, Ordering},
 	},
 	time::{Duration, Instant},
 };
@@ -33,7 +39,7 @@ use ruma::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tuwunel_core::{
 	Err, Result, debug, err, implement,
 	utils::{stream::TryIgnore, time::now_millis},
@@ -42,7 +48,10 @@ use tuwunel_core::{
 use tuwunel_database::Map;
 use tuwunel_matrix::{Event, PduEvent, pdu::MAX_PDU_BYTES};
 
-pub use self::venice::{Model, Turn};
+pub use self::{
+	assistant::Said,
+	venice::{Model, Turn},
+};
 use self::venice::{Part, json_in};
 
 /// Messages waiting before a batch is checked early.
@@ -79,6 +88,11 @@ pub struct Service {
 	masks: Mutex<assistant::Masks>,
 	/// Events skipped because the queue was full, since the last notice.
 	dropped: AtomicUsize,
+	/// Rooms waiting for a room check.
+	pending_rooms: Mutex<HashMap<OwnedRoomId, room_check::Pending>>,
+	room_wake: Notify,
+	/// The panel asked for the room checks to run at once.
+	rooms_now: AtomicBool,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -107,6 +121,8 @@ pub struct Settings {
 	pub extra_rooms: Vec<OwnedRoomId>,
 	pub check_messages: bool,
 	pub check_images: bool,
+	/// Ask the AI about rooms people here join, public or not.
+	pub check_rooms: bool,
 	/// Files at least this large are reported for a look, without the AI.
 	/// 0 turns that off.
 	pub large_file_mb: u64,
@@ -129,6 +145,7 @@ impl Default for Settings {
 			extra_rooms: Vec::new(),
 			check_messages: true,
 			check_images: true,
+			check_rooms: true,
 			large_file_mb: 100,
 			text_model: "auto".into(),
 			vision_model: "auto".into(),
@@ -151,7 +168,7 @@ const DEFAULT_RULES: &str = "\
 pub struct Report {
 	pub id: u64,
 	pub ts: u64,
-	/// "message", "image" or "large_file".
+	/// "message", "image", "large_file" or "room".
 	pub kind: String,
 	pub room_id: String,
 	pub room_name: Option<String>,
@@ -169,7 +186,7 @@ pub struct Report {
 	pub hidden: bool,
 	/// "open", "dismissed" or "resolved".
 	pub status: String,
-	/// "ai" or "size".
+	/// "ai", "size" or "room".
 	pub source: String,
 }
 
@@ -196,6 +213,9 @@ impl crate::Service for Service {
 			last_id: Mutex::new(0),
 			masks: Mutex::default(),
 			dropped: AtomicUsize::new(0),
+			pending_rooms: Mutex::default(),
+			room_wake: Notify::new(),
+			rooms_now: AtomicBool::new(false),
 		}))
 	}
 
@@ -238,6 +258,17 @@ impl crate::Service for Service {
 						continue;
 					}
 				},
+				() = self.room_wake.notified() => {
+					// Joins wait for the batch, so the room's state and
+					// history have arrived; the panel's "check now" doesn't.
+					if !self.rooms_now.swap(false, Ordering::Relaxed) {
+						if deadline.is_none() {
+							let minutes = self.settings().batch_minutes.clamp(1, 60);
+							deadline = Some(tokio::time::Instant::now() + Duration::from_secs(minutes.saturating_mul(60)));
+						}
+						continue;
+					}
+				},
 				() = wait => {},
 				() = self.services.server.until_shutdown() => return Ok(()),
 			}
@@ -247,6 +278,9 @@ impl crate::Service for Service {
 			let mut problems = Vec::new();
 			if let Err(e) = self.check_batch(items).await {
 				problems.push(format!("a check failed: {e}"));
+			}
+			if let Err(e) = self.check_pending_rooms().await {
+				problems.push(format!("room checks: {e}"));
 			}
 			let dropped = self.dropped.swap(0, Ordering::Relaxed);
 			if dropped > 0 {
@@ -353,12 +387,26 @@ async fn model(&self, configured: &str, vision: bool) -> Result<String> {
 /// worker.
 #[implement(Service)]
 pub fn notify(&self, pdu: &PduEvent) {
-	if *pdu.kind() != TimelineEventType::RoomMessage
-		|| pdu.sender() == self.services.globals.server_user
+	if pdu.sender() == self.services.globals.server_user
 		|| pdu.content().get().len() > MAX_PDU_BYTES
 		|| !self.settings.read().expect("locked").enabled
 	{
 		return;
+	}
+
+	match pdu.kind() {
+		| TimelineEventType::RoomMessage => {},
+		| TimelineEventType::RoomMember => {
+			self.member_event(pdu);
+			return;
+		},
+		| TimelineEventType::RoomName
+		| TimelineEventType::RoomTopic
+		| TimelineEventType::RoomCanonicalAlias => {
+			self.queue_room(pdu.room_id(), Some(pdu), false);
+			return;
+		},
+		| _ => return,
 	}
 
 	let Ok(content) = serde_json::from_str(pdu.content().get()) else {
@@ -738,6 +786,19 @@ fn severity(value: &Value) -> String {
 
 #[implement(Service)]
 async fn new_report(&self, kind: &str, item: &Item, source: &str) -> Report {
+	self.new_report_in(kind, &item.room_id, item.event_id.as_str(), item.sender.as_str(), source)
+		.await
+}
+
+#[implement(Service)]
+async fn new_report_in(
+	&self,
+	kind: &str,
+	room_id: &RoomId,
+	event_id: &str,
+	sender: &str,
+	source: &str,
+) -> Report {
 	let now = now_millis();
 	let id = {
 		let mut last = self.last_id.lock().expect("locked");
@@ -749,15 +810,15 @@ async fn new_report(&self, kind: &str, item: &Item, source: &str) -> Report {
 		id,
 		ts: now,
 		kind: kind.into(),
-		room_id: item.room_id.to_string(),
+		room_id: room_id.to_string(),
 		room_name: self
 			.services
 			.state_accessor
-			.get_name(&item.room_id)
+			.get_name(room_id)
 			.await
 			.ok(),
-		event_id: item.event_id.to_string(),
-		sender: item.sender.to_string(),
+		event_id: event_id.to_owned(),
+		sender: sender.to_owned(),
 		mxc: None,
 		excerpt: String::new(),
 		category: String::new(),

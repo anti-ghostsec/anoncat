@@ -33,6 +33,7 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/moderation/reports/{id}", post(m::act_route))
 		.route("/_anoncat/admin/v1/moderation/media/{server}/{media_id}", get(m::media_route))
 		.route("/_anoncat/admin/v1/moderation/assistant", post(m::assistant_route))
+		.route("/_anoncat/admin/v1/moderation/rooms/check", post(m::check_rooms_route))
 		.route("/_anoncat/admin/v1/plugins", get(a::plugins::list_route))
 		.route("/_anoncat/admin/v1/plugins/{name}", post(a::plugins::act_route))
 		.route("/_anoncat/admin/v1/cleanup", get(a::cleanup::get_route).merge(put(a::cleanup::put_route)))

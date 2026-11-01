@@ -11,7 +11,7 @@ use ruma::Mxc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tuwunel_core::{Err, Result};
-use tuwunel_service::moderation::{Model, Report, Settings, Turn};
+use tuwunel_service::moderation::{Model, Report, Said, Settings, Turn};
 
 /// Most reports one request returns.
 const LIMIT: usize = 500;
@@ -172,7 +172,8 @@ pub(crate) struct AssistantRequest {
 
 #[derive(Serialize)]
 pub(crate) struct AssistantResponse {
-	reply: String,
+	/// What it said and the commands it ran on its own, in order.
+	turns: Vec<Said>,
 }
 
 pub(crate) async fn assistant_route(
@@ -180,10 +181,25 @@ pub(crate) async fn assistant_route(
 	headers: HeaderMap,
 	Json(body): Json<AssistantRequest>,
 ) -> Result<Json<AssistantResponse>> {
-	super::require_admin_token(&services, &headers).await?;
-	let reply = services
+	let admin = super::require_admin_token(&services, &headers).await?;
+	let turns = services
 		.moderation
-		.assistant(&body.messages)
+		.assistant(&body.messages, &admin)
 		.await?;
-	Ok(Json(AssistantResponse { reply }))
+	Ok(Json(AssistantResponse { turns }))
+}
+
+/// `POST .../moderation/rooms/check`: checks every room someone here is in.
+pub(crate) async fn check_rooms_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+) -> Result<Json<MessageResponse>> {
+	super::require_admin_token(&services, &headers).await?;
+	let count = services.moderation.check_all_rooms().await?;
+	Ok(Json(MessageResponse {
+		message: format!(
+			"Checking {count} rooms. Anything that looks wrong shows up under Reports and as a \
+			 notice."
+		),
+	}))
 }
