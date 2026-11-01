@@ -37,6 +37,9 @@ ip_source = "connect_info"
 
 log = "warn"
 
+# Biggest single upload. Uploads are held in memory while they arrive.
+max_request_size = "512 MiB"
+
 # --- registration --------------------------------------------------------------
 # Apps signing up need a token: this one (from the installer) or invite tokens
 # made in the panel. The first account registered becomes the server admin.
