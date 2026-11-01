@@ -70,7 +70,7 @@ fn page(services: &Services, status: StatusCode, title: &str, body: &str) -> Res
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="same-origin">
 <meta name="robots" content="noindex">
 <title>{title} · {server}</title>
 <link rel="stylesheet" href="/style.css">
@@ -88,7 +88,7 @@ fn page(services: &Services, status: StatusCode, title: &str, body: &str) -> Res
 	let headers = response.headers_mut();
 	headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
 	headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-	headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
+	headers.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
 	headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
 	headers.insert(X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
 	response
@@ -102,14 +102,18 @@ fn see_other(to: &str) -> Response {
 	response
 }
 
-/// Refuses form posts sent from another site.
+/// Refuses form posts sent from another site. The pages send their referrer
+/// only to themselves (`same-origin`); under `no-referrer` browsers send
+/// `Origin: null` on every form post, which looks like another site.
 fn same_origin(headers: &HeaderMap, uri: &Uri) -> bool {
 	let site = headers
 		.get("sec-fetch-site")
 		.and_then(|v| v.to_str().ok());
 
-	if matches!(site, Some("cross-site" | "same-site")) {
-		return false;
+	match site {
+		| Some("same-origin") => return true,
+		| Some("cross-site" | "same-site") => return false,
+		| _ => {},
 	}
 
 	let Some(origin) = headers.get(ORIGIN) else {
