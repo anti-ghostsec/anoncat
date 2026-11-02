@@ -39,14 +39,16 @@ function toast(text, ms = 3500) {
 }
 
 // A modal with the given fields; resolves to the entered values, or null.
-function ask(title, { text, pre, fields = [], confirm = "OK", danger = false } = {}) {
+function ask(title, { text, pre, content, fields = [], confirm = "OK", danger = false, cancel = true } = {}) {
 	const dialog = $("#dialog");
 	const body = $("#dialog-body");
 	const inputs = {};
-	body.replaceChildren(
+	dialog.classList.toggle("wide", Boolean(content));
+	fill(body,
 		h("h2", {}, title),
 		text ? h("p", {}, text) : null,
 		pre ? h("pre", { class: "notice-body mono" }, pre) : null,
+		content || null,
 		...fields.map((f) => {
 			const input = f.type === "checkbox"
 				? h("input", { type: "checkbox", name: f.name, checked: f.value })
@@ -55,9 +57,8 @@ function ask(title, { text, pre, fields = [], confirm = "OK", danger = false } =
 			return h("label", {}, f.label, input);
 		}),
 		h("div", { class: "buttons" },
-			h("button", { value: "cancel", class: "ghost", formnovalidate: true }, "Cancel"),
-			h("button", { value: "ok", class: danger ? "danger" : "" }, confirm)),
-	);
+			cancel ? h("button", { value: "cancel", class: "ghost", formnovalidate: true }, "Cancel") : null,
+			h("button", { value: "ok", class: danger ? "danger" : "" }, confirm)));
 	return new Promise((resolve) => {
 		dialog.onclose = () => {
 			if (dialog.returnValue !== "ok") return resolve(null);
@@ -144,6 +145,12 @@ function stat(label, value, sub, extra) {
 	return h("div", { class: "card stat" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value), sub ? h("div", { class: "sub" }, sub) : null, extra);
 }
 
+// Like replaceChildren, which would write a left-out (null) part as the
+// text "null".
+function fill(el, ...children) {
+	el.replaceChildren(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
+}
+
 function table(columns, rows, empty = "Nothing here.") {
 	if (!rows.length) return h("p", { class: "muted" }, empty);
 	return h("table", {},
@@ -177,7 +184,7 @@ pages.dashboard = async (main) => {
 		if (r) { output.hidden = false; output.textContent = r.output || (r.ok ? "Done." : "Failed."); }
 	} }, label);
 
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Dashboard"),
 		h("div", { class: "grid" },
 			stat("Disk (vault)", diskUsed !== null ? `${((diskUsed / s.disk_total) * 100).toFixed(0)}%` : "—", `${bytes(diskUsed)} of ${bytes(s.disk_total)}`, s.disk_total ? meter(diskUsed / s.disk_total) : null),
@@ -229,7 +236,7 @@ pages.users = async (main, params) => {
 		h("td", { class: "small muted" }, date(u.last_seen_ts)),
 		h("td", { class: "actions" }, userActions(u, () => go({})))));
 
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Users"),
 		h("div", { class: "toolbar" }, search,
 			h("label", { class: "small" }, h("input", { type: "checkbox", checked: showDeactivated, onchange: (e) => go({ deactivated: e.target.checked ? "1" : "", from: 0 }) }), " include deactivated")),
@@ -290,7 +297,7 @@ pages.tokens = async (main) => {
 				if (await attempt("Deleted", () => api("DELETE", `/_synapse/admin/v1/registration_tokens/${enc(t.token)}`))) refresh();
 			} }, "Delete"))));
 
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Invites"),
 		h("p", { class: "muted" }, "Registration tokens. New accounts need one when registration requires a token."),
 		h("div", { class: "toolbar" }, h("button", { onclick: async () => {
@@ -323,7 +330,7 @@ pages.rooms = async (main, params) => {
 			r.federatable === false ? h("span", { class: "tag" }, "local only") : null),
 		h("td", { class: "actions" }, roomActions(r, () => go({})))));
 
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Rooms"),
 		h("div", { class: "toolbar" }, h("input", { placeholder: "Search rooms", value: q, onkeydown: (e) => e.key === "Enter" && go({ q: e.target.value, from: 0 }) })),
 		table(["Room", "Members", "", ""], rows, "No rooms match."),
@@ -373,10 +380,32 @@ pages.media = async (main, params) => {
 	}
 
 	const lookup = h("input", { placeholder: "@user:server — show their uploads", value: user, onkeydown: (e) => e.key === "Enter" && navigate("media", { user: e.target.value }) });
-	main.replaceChildren(
+	let list;
+	if (room || user) {
+		list = items.length
+			? h("div", { class: "media-grid" }, items.map((m) => mediaItem(m)))
+			: h("p", { class: "muted" }, room
+				? "No media found. Encrypted rooms don't count: the server can't see which files their messages point to."
+				: "No uploads.");
+	} else {
+		list = await uploaders();
+	}
+	fill(main, 
 		h("h1", {}, title),
 		h("div", { class: "toolbar" }, lookup, h("span", { class: "muted small" }, "or open a room's media from Rooms. Previews are blurred; click to reveal.")),
-		room || user ? (items.length ? h("div", { class: "media-grid" }, items.map((m) => mediaItem(m))) : h("p", { class: "muted" }, "No media.")) : null);
+		list);
+}
+
+// Everyone here who uploaded something, biggest first.
+async function uploaders() {
+	const res = await api("GET", "/_synapse/admin/v1/statistics/users/media?order_by=media_length&dir=b&limit=500");
+	const rows = (res.users || []).map((u) => h("tr", {},
+		h("td", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); navigate("media", { user: u.user_id }); } }, u.user_id)),
+		h("td", {}, String(u.media_count)),
+		h("td", {}, bytes(u.media_length))));
+	return h("div", {},
+		h("h2", {}, "Uploaders"),
+		table(["User", "Files", "Size"], rows, "Nobody here has uploaded anything."));
 }
 
 function mediaItem(m) {
@@ -422,7 +451,7 @@ pages.federation = async (main, params) => {
 		h("td", { class: "small muted" }, d.retry_last_ts ? date(d.retry_last_ts) : "—"),
 		h("td", { class: "actions" }, h("button", { class: "ghost small", onclick: () =>
 			attempt("Connection reset", () => api("POST", `/_synapse/admin/v1/federation/destinations/${enc(d.destination)}/reset_connection`, {})) }, "Reset"))));
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Federation"),
 		table(["Server", "State", "Last retry", ""], rows, "No other servers yet."),
 		pager(from, res.total, (f) => navigate("federation", { from: f })));
@@ -440,7 +469,7 @@ pages.console = async (main) => {
 		output.textContent = r ? (r.output || (r.ok ? "Done." : "Failed.")) : "Failed.";
 	};
 	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) runIt(); });
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Console"),
 		h("p", { class: "muted" }, "Runs server admin commands. Try \"help\". Ctrl+Enter runs."),
 		input,
@@ -454,7 +483,7 @@ pages.notices = async (main) => {
 		h("div", { class: `card notice${n.loud ? " loud" : ""}` },
 			h("div", { class: "small muted" }, date(n.ts)),
 			h("pre", { class: "notice-body" }, n.body)));
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Notices"),
 		h("p", { class: "muted" }, "What the server reports: new users, cleanup runs, plugin failures, reports. Highlighted ones need a look."),
 		items.length ? h("div", { class: "notices" }, items) : h("p", { class: "muted" }, "Nothing yet."));
@@ -471,7 +500,7 @@ pages.reports = async (main, params) => {
 	const sevTag = (s) => h("span", { class: `tag ${s === "high" ? "bad" : s === "medium" ? "warn" : ""}` }, s);
 	const items = res.reports.map((r) => {
 		const act = (action, done) => attempt(done, () => api("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => x && refresh());
-		const buttons = [];
+		const buttons = [h("button", { class: "small", onclick: () => lookAt(r) }, r.kind === "room" ? "Look at room" : "Look at message")];
 		if (r.status === "open") {
 			if (r.mxc) buttons.push(r.hidden
 				? h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide")
@@ -508,13 +537,82 @@ pages.reports = async (main, params) => {
 				: `${r.sender} in ${r.room_name || r.room_id}`),
 			h("div", { class: "toolbar" }, buttons));
 	});
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Reports"),
 		h("p", { class: "muted" }, "What the AI moderation and the size rule flagged. Nothing is removed until you choose to; the AI may only hide images, and only if Settings allow it."),
 		h("div", { class: "toolbar" },
 			h("button", { class: "ghost small", onclick: () => navigate("reports", all ? {} : { all: "1" }) }, all ? "Show open only" : "Show closed too")),
 		items.length ? h("div", { class: "notices" }, items) : h("p", { class: "muted" }, all ? "No reports yet." : "Nothing open."));
 };
+
+// The evidence behind a report: the message with what was said around it, or
+// for a room its details and latest messages.
+async function lookAt(r) {
+	const content = h("div", { class: "evidence" }, h("p", { class: "muted" }, "Loading…"));
+	const shown = ask(r.kind === "room" ? "Reported room" : "Reported message", { content, confirm: "Close", cancel: false });
+	try {
+		const room = enc(r.room_id);
+		const [details, timeline] = await Promise.all([
+			api("GET", `/_synapse/admin/v1/rooms/${room}`).catch(() => null),
+			r.kind === "room" || !r.event_id
+				? api("GET", `/_synapse/admin/v1/rooms/${room}/messages?dir=b&limit=40`).then((m) => ({ events: (m.chunk || []).reverse() }))
+				: api("GET", `/_synapse/admin/v1/rooms/${room}/context/${enc(r.event_id)}?limit=20`).then((c) =>
+					({ events: [...(c.events_before || []).reverse(), c.event, ...(c.events_after || [])].filter(Boolean) })),
+		]);
+		const lines = timeline.events.filter((ev) => SHOWN_EVENTS.has(ev.type)).map((ev) => eventLine(ev, ev.event_id === r.event_id));
+		fill(content,
+			details ? roomFacts(details) : h("p", { class: "muted" }, r.room_id),
+			details?.encryption ? h("p", { class: "muted small" }, "This room is encrypted: the server only sees that messages were sent, not what they say.") : null,
+			lines.length ? h("div", { class: "timeline" }, lines) : h("p", { class: "muted" }, "No messages this server holds."));
+		content.querySelector(".line.reported")?.scrollIntoView({ block: "center" });
+	} catch (e) {
+		fill(content, h("p", { class: "error" }, `Couldn't load it: ${e.message}`));
+	}
+	await shown;
+}
+
+// What people said and did; room setup events would bury it.
+const SHOWN_EVENTS = new Set(["m.room.message", "m.room.encrypted", "m.sticker", "m.room.member", "m.room.name", "m.room.topic"]);
+
+function roomFacts(d) {
+	const facts = [
+		["Name", d.name || "—"],
+		["Topic", d.topic || "—"],
+		["Address", d.canonical_alias || "—"],
+		["Members", `${d.joined_members ?? "?"} (${d.joined_local_members ?? "?"} from here)`],
+		["Public", d.public ? "listed in the directory" : "no"],
+		["Encrypted", d.encryption ? "yes" : "no"],
+		["Made by", d.creator || "—"],
+	];
+	return h("dl", { class: "facts" }, facts.flatMap(([k, v]) => [h("dt", {}, k), h("dd", {}, v)]));
+}
+
+function eventLine(ev, reported) {
+	const c = ev.content || {};
+	let body;
+	let preview = null;
+	if (ev.type === "m.room.encrypted") body = h("span", { class: "muted" }, "[encrypted]");
+	else if (ev.type === "m.room.message" || ev.type === "m.sticker") {
+		if (!c.body && !c.url) body = h("span", { class: "muted" }, "[removed]");
+		else if (c.msgtype === "m.image" || ev.type === "m.sticker" || c.msgtype === "m.video" || c.msgtype === "m.file" || c.msgtype === "m.audio") {
+			body = `[${(c.msgtype || "m.sticker").slice(2)}] ${c.body || ""}`;
+			const mxc = c.msgtype === "m.image" || ev.type === "m.sticker" ? c.url : c.info?.thumbnail_url;
+			if (typeof mxc === "string" && mxc.startsWith("mxc://")) {
+				const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+				preview = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, "image"));
+				preview.addEventListener("click", () => preview.classList.toggle("revealed"));
+				loadPreview(preview, server, mediaId);
+			}
+		} else body = c.body;
+	} else if (ev.type === "m.room.member") body = h("span", { class: "muted" }, `${c.membership}${ev.state_key !== ev.sender ? ` ${ev.state_key}` : ""}`);
+	else if (ev.type === "m.room.name") body = h("span", { class: "muted" }, `named the room "${c.name || ""}"`);
+	else if (ev.type === "m.room.topic") body = h("span", { class: "muted" }, `set the topic "${c.topic || ""}"`);
+	else body = h("span", { class: "muted" }, ev.type);
+	return h("div", { class: `line${reported ? " reported" : ""}` },
+		h("div", { class: "small muted" }, `${ev.sender} · ${date(ev.origin_server_ts)}`),
+		h("div", { class: "line-body" }, body),
+		preview);
+}
 
 // Reported images come from the moderation's own preview, which serves them
 // even while hidden.
@@ -622,7 +720,7 @@ pages.settings = async (main) => {
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});
 
-	main.replaceChildren(h("h1", {}, "Settings"), form);
+	fill(main, h("h1", {}, "Settings"), form);
 };
 
 // The assistant's chat lives only in this tab.
@@ -659,7 +757,7 @@ pages.assistant = async (main) => {
 	};
 	redrawChat = draw;
 	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); });
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Assistant"),
 		h("p", { class: "muted" }, "Chats with Venice AI. It sees a snapshot of the server's state each time you send, with people and rooms replaced by placeholders. Commands that only look things up it runs by itself and reads their output; anything that changes something only runs when you click Run and confirm. Ctrl+Enter sends."),
 		log, input,
@@ -765,7 +863,7 @@ pages.plugins = async (main) => {
 					h("pre", { class: "notice-body excerpt" }, p.alerts.slice().reverse().map((a) => `${date(a.ts)}  ${a.message}`).join("\n"))) : null,
 				h("div", { class: "toolbar" }, buttons));
 		});
-		main.replaceChildren(
+		fill(main, 
 			h("h1", {}, "Plugins"),
 			h("p", { class: "muted" }, "WebAssembly plugins from ", h("span", { class: "mono" }, res.dir), ": put ", h("span", { class: "mono" }, "<name>.wasm"), " and its manifest ", h("span", { class: "mono" }, "<name>.toml"), " there. A plugin loads only once you approve the capabilities its manifest declares. A plugin that keeps failing (a time or memory limit) is unloaded and shows here."),
 			h("div", { class: "toolbar" }, h("button", { class: "ghost small", onclick: () => render() }, "Refresh")),
@@ -864,7 +962,7 @@ pages.cleanup = async (main) => {
 				rep.disk_percent !== null && rep.disk_percent !== undefined ? h("span", { class: "muted small" }, ` · disk ${rep.disk_percent}%`) : null));
 	});
 
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Cleanup"),
 		h("p", { class: "muted" }, "Limits for the scheduled cleanup. A value set here replaces the config file's cleanup_* option until you clear it; leave a box empty to use the config file. Durations like 30d, 12h; sizes like 50 GiB; 0 turns a rule off."),
 		table(["Rule", "In force", "Config file", "Set here"], rows),
@@ -903,8 +1001,7 @@ pages.backups = async (main) => {
 		} }, "Verify"))));
 
 	const last = s.last;
-	// replaceChildren would print a null; h() skips them.
-	main.replaceChildren(...[
+	fill(main, ...[
 		h("h1", {}, "Backups"),
 		!s.path
 			? h("p", { class: "error" }, "Backups are off: set database_backup_path (inside the vault) and database_backups_to_keep in the config.")
@@ -941,7 +1038,7 @@ pages.logs = async (main, params) => {
 	const text = lines.slice().reverse().map((l) => `${new Date(l.ts).toLocaleTimeString()} ${l.level.padEnd(5)} ${l.target.replace(/^tuwunel_/, "")}: ${l.message}`).join("\n");
 	const go = (changes) => navigate("logs", { level, q, ...changes });
 
-	main.replaceChildren(
+	fill(main, 
 		h("h1", {}, "Logs"),
 		h("p", { class: "muted" }, "The server's recent log lines, newest first, kept in memory only (the last 2,000 since it started). IP addresses are blanked."),
 		h("div", { class: "toolbar" },
@@ -968,11 +1065,11 @@ async function render() {
 	const page = Object.hasOwn(pages, path) ? path : "dashboard";
 	for (const a of document.querySelectorAll(".side a")) a.classList.toggle("active", a.dataset.page === page);
 	const main = $("#main");
-	main.replaceChildren(h("p", { class: "muted" }, "Loading…"));
+	fill(main, h("p", { class: "muted" }, "Loading…"));
 	try {
 		await pages[page](main, new URLSearchParams(query || ""));
 	} catch (e) {
-		main.replaceChildren(h("h1", {}, "Couldn't load this page"), h("p", { class: "error" }, e.message));
+		fill(main, h("h1", {}, "Couldn't load this page"), h("p", { class: "error" }, e.message));
 	}
 }
 
