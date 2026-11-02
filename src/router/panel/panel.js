@@ -340,6 +340,7 @@ pages.rooms = async (main, params) => {
 function roomActions(r, refresh) {
 	const id = enc(r.room_id);
 	return [
+		h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: r.room_id }, r.name || r.canonical_alias || "Room") }, "Look"),
 		h("button", { class: "ghost small", onclick: () => navigate("media", { room: r.room_id }) }, "Media"),
 		h("button", { class: "ghost small", onclick: async () => {
 			const v = await ask(`Delete history in ${r.name || r.room_id}`, {
@@ -546,10 +547,11 @@ pages.reports = async (main, params) => {
 };
 
 // The evidence behind a report: the message with what was said around it, or
-// for a room its details and latest messages.
-async function lookAt(r) {
+// for a room its details and latest messages. Rooms opens it too; nobody has
+// to join, but only what this server holds shows.
+async function lookAt(r, title) {
 	const content = h("div", { class: "evidence" }, h("p", { class: "muted" }, "Loading…"));
-	const shown = ask(r.kind === "room" ? "Reported room" : "Reported message", { content, confirm: "Close", cancel: false });
+	const shown = ask(title || (r.kind === "room" ? "Reported room" : "Reported message"), { content, confirm: "Close", cancel: false });
 	try {
 		const room = enc(r.room_id);
 		const [details, timeline] = await Promise.all([
@@ -563,7 +565,7 @@ async function lookAt(r) {
 		fill(content,
 			details ? roomFacts(details) : h("p", { class: "muted" }, r.room_id),
 			details?.encryption ? h("p", { class: "muted small" }, "This room is encrypted: the server only sees that messages were sent, not what they say.") : null,
-			lines.length ? h("div", { class: "timeline" }, lines) : h("p", { class: "muted" }, "No messages this server holds."));
+			lines.length ? h("div", { class: "timeline" }, lines) : h("p", { class: "muted" }, "No messages this server holds. It only has what was sent while someone here was in the room."));
 		content.querySelector(".line.reported")?.scrollIntoView({ block: "center" });
 	} catch (e) {
 		fill(content, h("p", { class: "error" }, `Couldn't load it: ${e.message}`));
