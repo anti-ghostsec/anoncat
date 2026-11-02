@@ -429,9 +429,9 @@ const RASTER = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "i
 
 // Thumbnails need the access token, which <img> can't send, so fetch them
 // and show a blob: URL.
-async function loadThumb(el, server, mediaId) {
+async function loadThumb(el, server, mediaId, remote = false) {
 	try {
-		const res = await fetch(`/_matrix/client/v1/media/thumbnail/${enc(server)}/${enc(mediaId)}?width=320&height=240&method=scale&allow_remote=false`,
+		const res = await fetch(`/_matrix/client/v1/media/thumbnail/${enc(server)}/${enc(mediaId)}?width=320&height=240&method=scale&allow_remote=${remote}`,
 			{ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit" });
 		if (!res.ok) return;
 		// Only raster images become blob: URLs; an SVG or HTML one would be a
@@ -557,7 +557,7 @@ async function lookAt(r, title) {
 		const [details, timeline] = await Promise.all([
 			api("GET", `/_synapse/admin/v1/rooms/${room}`).catch(() => null),
 			r.kind === "room" || !r.event_id
-				? api("GET", `/_synapse/admin/v1/rooms/${room}/messages?dir=b&limit=40`).then((m) => ({ events: (m.chunk || []).reverse() }))
+				? api("GET", `/_synapse/admin/v1/rooms/${room}/messages?dir=b&limit=40&filter=${enc(JSON.stringify({ types: SAID_EVENTS }))}`).then((m) => ({ events: (m.chunk || []).reverse() }))
 				: api("GET", `/_synapse/admin/v1/rooms/${room}/context/${enc(r.event_id)}?limit=20`).then((c) =>
 					({ events: [...(c.events_before || []).reverse(), c.event, ...(c.events_after || [])].filter(Boolean) })),
 		]);
@@ -565,7 +565,7 @@ async function lookAt(r, title) {
 		fill(content,
 			details ? roomFacts(details) : h("p", { class: "muted" }, r.room_id),
 			details?.encryption ? h("p", { class: "muted small" }, "This room is encrypted: the server only sees that messages were sent, not what they say.") : null,
-			lines.length ? h("div", { class: "timeline" }, lines) : h("p", { class: "muted" }, "No messages this server holds. It only has what was sent while someone here was in the room."));
+			lines.length ? h("div", { class: "timeline" }, lines) : h("p", { class: "muted" }, r.kind === "room" ? "No messages this server holds, only joins and leaves. It has what was sent while someone here was in the room, not from before." : "No messages this server holds."));
 		content.querySelector(".line.reported")?.scrollIntoView({ block: "center" });
 	} catch (e) {
 		fill(content, h("p", { class: "error" }, `Couldn't load it: ${e.message}`));
@@ -575,6 +575,8 @@ async function lookAt(r, title) {
 
 // What people said and did; room setup events would bury it.
 const SHOWN_EVENTS = new Set(["m.room.message", "m.room.encrypted", "m.sticker", "m.room.member", "m.room.name", "m.room.topic"]);
+// A room's view leaves out joins and leaves, which fill busy rooms.
+const SAID_EVENTS = ["m.room.message", "m.room.encrypted", "m.sticker", "m.room.name", "m.room.topic"];
 
 function roomFacts(d) {
 	const facts = [
@@ -622,7 +624,8 @@ async function loadPreview(el, server, mediaId) {
 	try {
 		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`,
 			{ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit", cache: "no-store" });
-		if (!res.ok) return;
+		// Not stored here: from another server, so fetch a thumbnail through ours.
+		if (!res.ok) return loadThumb(el, server, mediaId, true);
 		const blob = await res.blob();
 		if (!RASTER.has(blob.type)) return;
 		const url = URL.createObjectURL(blob);
