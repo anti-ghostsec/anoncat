@@ -94,10 +94,14 @@ def natpmp(payload, size):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, b"wg0")
         s.settimeout(3)
         s.sendto(payload, (GATEWAY, 5351))
-        while True:
-            data, sender = s.recvfrom(64)
-            if sender == (GATEWAY, 5351) and len(data) >= size and data[1] == 128 + payload[1]:
-                break
+        try:
+            while True:
+                data, sender = s.recvfrom(64)
+                if sender == (GATEWAY, 5351) and len(data) >= size and data[1] == 128 + payload[1]:
+                    break
+        except TimeoutError:
+            raise TimeoutError("Proton's gateway didn't answer the port-forward renewal; "
+                               "the VPN tunnel is probably down") from None
     rc = struct.unpack("!H", data[2:4])[0]
     if rc != 0:
         raise RuntimeError(f"NAT-PMP error code {rc}")
@@ -508,7 +512,7 @@ def publish_logged(ip, port):
     try:
         publish(ip, port)
     except Exception as e:  # tried again on the next renewal
-        log(f"error: {e}")
+        log(f"error publishing DNS or pages: {e}")
 
 
 def publish(ip, port, dry_run=False):
@@ -554,11 +558,16 @@ def main():
     if args and args[0] in ("--once", "--dry-run"):
         step(dry_run=args[0] == "--dry-run")
         return
+    failing_since = None
     while True:
         try:
             step(background=True)
+            if failing_since is not None:
+                log(f"port forward renewed again after {int(time.time() - failing_since)}s of failures")
+                failing_since = None
         except Exception as e:  # keep renewing; a missed lease only costs the port
-            log(f"error: {e}")
+            failing_since = failing_since or time.time()
+            log(f"error renewing the port forward: {e}")
         time.sleep(RENEW)
 
 

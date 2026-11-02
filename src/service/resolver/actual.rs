@@ -284,8 +284,8 @@ async fn query_direct(&self, hostname: &str, cache: bool) -> Result {
 	self.resolver
 		.resolver
 		.lookup_ip(hostname)
-		.map_ok(drop)
-		.or_else(|error| ready(Self::handle_resolve_error(&error, hostname)))
+		.map_ok(|_| self.dns_answered())
+		.or_else(|error| ready(self.handle_resolve_error(&error, hostname)))
 		.await
 }
 
@@ -327,8 +327,9 @@ async fn query_and_cache_override(
 		.lookup_ip(hostname.to_owned())
 		.await
 	{
-		| Err(e) => Self::handle_resolve_error(&e, hostname),
+		| Err(e) => self.handle_resolve_error(&e, hostname),
 		| Ok(override_ip) => {
+			self.dns_answered();
 			debug_info!(?untername, ?hostname, "Overriding hostname");
 			self.cache
 				.set_override(untername, &CachedOverride {
@@ -355,8 +356,9 @@ async fn query_srv_record(&self, hostname: &'_ str) -> Result<Option<FedDest>> {
 		debug!("querying SRV for {hostname:?}");
 		let hostname = hostname.trim_end_matches('.');
 		match self.resolver.resolver.srv_lookup(hostname).await {
-			| Err(e) => Self::handle_resolve_error(&e, hostname)?,
+			| Err(e) => self.handle_resolve_error(&e, hostname)?,
 			| Ok(result) => {
+				self.dns_answered();
 				let srv = result
 					.answers()
 					.iter()
@@ -382,7 +384,7 @@ fn srv_dest(srv: &SRV) -> FedDest {
 }
 
 #[implement(super::Service)]
-fn handle_resolve_error(e: &NetError, host: &'_ str) -> Result {
+fn handle_resolve_error(&self, e: &NetError, host: &'_ str) -> Result {
 	// `NetError::Dns(_)` covers responses returned by the remote side (NXDOMAIN,
 	// SERVFAIL, REFUSED, ...) only seen with verbose-logging. Local-origin failures
 	// (Timeout, NoConnections, Io, ...) keep their warn/error level so an operator
@@ -391,17 +393,23 @@ fn handle_resolve_error(e: &NetError, host: &'_ str) -> Result {
 		| NetError::Dns(DnsError::NoRecordsFound(_)) => {
 			// Raise to debug_warn if we can find out the result wasn't from cache
 			debug!(%host, "No DNS records found: {e}");
+			self.dns_answered();
 			Ok(())
 		},
 		| NetError::Dns(_) => {
 			debug_warn!(%host, "DNS response error: {e}");
+			self.dns_answered();
 			Ok(())
 		},
 		// Remote-supplied name (server name, delegation or SRV target), not a local fault.
 		| NetError::Proto(_) if Name::from_utf8(host).is_err() =>
 			Err!(debug_error!(%host, error = %e, "Invalid DNS name")),
-		| NetError::Timeout => Err!(warn!(%host, "DNS {e}")),
+		| NetError::Timeout => {
+			self.dns_unanswered();
+			Err!(warn!(%host, "DNS {e}"))
+		},
 		| NetError::NoConnections => {
+			self.dns_unanswered();
 			error!(
 				"Your DNS server is overloaded and has ran out of connections. It is strongly \
 				 recommended you remediate this issue to ensure proper federation connectivity."

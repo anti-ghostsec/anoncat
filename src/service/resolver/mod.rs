@@ -2,6 +2,7 @@ pub mod actual;
 pub mod cache;
 mod dns;
 pub mod fed;
+mod outage;
 #[cfg(test)]
 mod tests;
 mod well_known;
@@ -20,6 +21,7 @@ pub struct Service {
 	pub cache: Arc<Cache>,
 	pub resolver: Arc<Resolver>,
 	resolving: Resolving,
+	outage: outage::Outage,
 	services: Arc<crate::services::OnceServices>,
 }
 
@@ -34,6 +36,7 @@ impl crate::Service for Service {
 			cache: cache.clone(),
 			resolver: Resolver::build(args.server, cache)?,
 			resolving: MutexMap::new(),
+			outage: outage::Outage::default(),
 			services: args.services.clone(),
 		}))
 	}
