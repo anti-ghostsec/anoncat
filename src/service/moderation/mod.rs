@@ -19,6 +19,7 @@
 
 mod assistant;
 mod blocklist;
+mod stand_in;
 mod room_check;
 mod venice;
 
@@ -52,6 +53,7 @@ use tuwunel_matrix::{Event, PduEvent, pdu::MAX_PDU_BYTES};
 pub use self::{
 	assistant::Said,
 	blocklist::Blocked,
+	stand_in::{BUILT_IN as STAND_IN_BUILT_IN, StandIn},
 	venice::{Model, Turn},
 };
 use self::venice::{Part, json_in};
@@ -97,6 +99,8 @@ pub struct Service {
 	rooms_now: AtomicBool,
 	/// Blocked users and servers, keyed by user ID or server name.
 	blocked: RwLock<blocklist::Blocklist>,
+	/// The admin's own stand-in picture, when uploaded.
+	custom_stand_in: RwLock<Option<Arc<StandIn>>>,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -137,6 +141,11 @@ pub struct Settings {
 	pub rules: String,
 	/// How long new messages collect before they're checked together.
 	pub batch_minutes: u64,
+	/// People here see a picture in place of hidden media and media from
+	/// blocked servers, instead of a broken image.
+	pub cat_stand_in: bool,
+	/// Which: one of [`STAND_IN_BUILT_IN`] or "custom", the uploaded one.
+	pub stand_in_image: String,
 }
 
 impl Default for Settings {
@@ -155,6 +164,8 @@ impl Default for Settings {
 			vision_model: "auto".into(),
 			rules: DEFAULT_RULES.into(),
 			batch_minutes: 2,
+			cat_stand_in: true,
+			stand_in_image: "orange".into(),
 		}
 	}
 }
@@ -221,11 +232,13 @@ impl crate::Service for Service {
 			room_wake: Notify::new(),
 			rooms_now: AtomicBool::new(false),
 			blocked: RwLock::default(),
+			custom_stand_in: RwLock::default(),
 		}))
 	}
 
 	async fn worker(self: Arc<Self>) -> Result {
 		self.load_blocklist().await;
+		self.load_stand_in().await;
 
 		if let Ok(stored) = self.settings_map.get(SETTINGS_KEY).await {
 			match serde_json::from_slice::<Settings>(&stored) {
@@ -311,6 +324,20 @@ impl crate::Service for Service {
 #[must_use]
 pub fn settings(&self) -> Settings { self.settings.read().expect("locked").clone() }
 
+#[implement(Service)]
+#[must_use]
+pub fn cat_stand_in(&self) -> bool { self.settings.read().expect("locked").cat_stand_in }
+
+/// The stand-in picture's name, or `None` when stand-ins are off.
+#[implement(Service)]
+#[must_use]
+pub fn stand_in_image(&self) -> Option<String> {
+	let settings = self.settings.read().expect("locked");
+	settings
+		.cat_stand_in
+		.then(|| settings.stand_in_image.clone())
+}
+
 /// Checks and stores new settings. Aliases in `extra` are resolved to room IDs.
 #[implement(Service)]
 pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Result<Settings> {
@@ -335,6 +362,11 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	settings.extra_rooms = rooms;
 	settings.batch_minutes = settings.batch_minutes.clamp(1, 60);
 	settings.rules.truncate(4000);
+	if settings.stand_in_image != "custom"
+		&& !stand_in::BUILT_IN.contains(&settings.stand_in_image.as_str())
+	{
+		settings.stand_in_image = "orange".into();
+	}
 	for model in [&mut settings.text_model, &mut settings.vision_model] {
 		let trimmed = model.trim();
 		*model = if trimmed.is_empty() { "auto".into() } else { trimmed.into() };

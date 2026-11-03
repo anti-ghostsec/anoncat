@@ -17,9 +17,27 @@ use tuwunel_core::{
 	Err, Result, err,
 	utils::{content_disposition::make_content_disposition, math::ruma_from_usize},
 };
-use tuwunel_service::media::{Animate, CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, Media};
+use tuwunel_service::media::{
+	Animate, CACHE_CONTROL_IMMUTABLE, CACHE_CONTROL_NO_STORE, CORP_CROSS_ORIGIN, Dim, Media,
+};
 
 use crate::{Ruma, RumaResponse};
+
+/// Answers with the cat when the item is hidden or its server blocked.
+macro_rules! stand_in {
+	($services:expr, $mxc:expr, $($response:ident)::+ $(, $wrap:expr)?) => {
+		if let Some(cat) = $services.media.stand_in($mxc) {
+			let response = $($response)::+ {
+				file: cat.content,
+				content_type: cat.content_type.map(Into::into),
+				cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
+				cache_control: Some(CACHE_CONTROL_NO_STORE.into()),
+				content_disposition: cat.content_disposition,
+			};
+			return Ok($($wrap)?(response).into_response());
+		}
+	};
+}
 
 /// # `GET /_matrix/media/v3/config`
 ///
@@ -92,6 +110,8 @@ pub(crate) async fn get_content_legacy_route(
 		server_name: &body.server_name,
 		media_id: &body.media_id,
 	};
+
+	stand_in!(services, &mxc, get_content::v3::Response, RumaResponse);
 
 	if body.allow_redirect
 		&& services.globals.server_is_ours(&body.server_name)
@@ -177,6 +197,8 @@ pub(crate) async fn get_content_as_filename_legacy_route(
 		server_name: &body.server_name,
 		media_id: &body.media_id,
 	};
+
+	stand_in!(services, &mxc, get_content_as_filename::v3::Response, RumaResponse);
 
 	if body.allow_redirect
 		&& services.globals.server_is_ours(&body.server_name)
@@ -266,6 +288,8 @@ pub(crate) async fn get_content_thumbnail_legacy_route(
 	let dim = Dim::from_ruma(body.width, body.height, body.method.clone())?;
 	let animate = Animate::from(body.animated);
 	let ours = services.globals.server_is_ours(&body.server_name);
+
+	stand_in!(services, &mxc, ThumbnailResponse, RumaResponse);
 
 	if body.allow_redirect
 		&& ours

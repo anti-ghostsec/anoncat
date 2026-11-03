@@ -363,6 +363,7 @@ function roomActions(r, refresh) {
 }
 
 pages.media = async (main, params) => {
+	if (params.get("view") === "remote") return remoteMedia(main, params);
 	const room = params.get("room");
 	const user = params.get("user") || "";
 	const items = [];
@@ -391,8 +392,89 @@ pages.media = async (main, params) => {
 	}
 	fill(main, 
 		h("h1", {}, title),
+		mediaTabs("here"),
 		h("div", { class: "toolbar" }, lookup, h("span", { class: "muted small" }, "or open a room's media from Rooms. Previews are blurred; click to reveal.")),
 		list);
+}
+
+function mediaTabs(current) {
+	const tab = (key, label, params) => h("button", { type: "button", class: key === current ? "small" : "ghost small",
+		onclick: () => navigate("media", params) }, label);
+	return h("div", { class: "toolbar" },
+		tab("here", "Uploaded here", {}),
+		tab("remote", "From other servers", { view: "remote" }));
+}
+
+// Copies of other servers' media, kept here because someone here viewed it.
+async function remoteMedia(main, params) {
+	const only = params.get("server") || "";
+	const res = await api("GET", `/_anoncat/admin/v1/media/cached${only ? `?server=${enc(only)}` : ""}`);
+	const reload = () => remoteMedia(main, params);
+
+	const serverRows = res.servers.map((s) => h("tr", {},
+		h("td", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); navigate("media", { view: "remote", server: s.server }); } }, s.server),
+			s.blocked ? h("span", { class: "tag warn" }, "blocked") : null),
+		h("td", {}, String(s.items)),
+		h("td", {}, bytes(s.bytes)),
+		h("td", { class: "actions" }, h("span", {},
+			h("button", { class: "danger small", onclick: async () => {
+				if (!(await ask(`Delete everything cached from ${s.server}?`, {
+					text: `${s.items} files, ${bytes(s.bytes)}. Only this server's copies go; anything someone here opens again is fetched again${s.blocked ? "" : ", unless you block the server"}.`,
+					confirm: "Delete", danger: true }))) return;
+				const r = await attempt(null, () => api("POST", "/_anoncat/admin/v1/media/cached/purge", { server: s.server }));
+				if (r) { toast(`Deleted ${r.items} files, ${bytes(r.bytes)}`); reload(); }
+			} }, "Delete all"),
+			s.blocked ? null : h("button", { class: "ghost small", onclick: thenAsk(async () => { if (await blockTarget(s.server)) reload(); }) }, "Block server")))));
+
+	const grid = res.media.length
+		? h("div", { class: "media-grid" }, res.media.map((m) => cachedItem(m, res.cat_stand_in)))
+		: h("p", { class: "muted" }, only ? "Nothing cached from this server." : "Nothing cached from other servers.");
+
+	fill(main,
+		h("h1", {}, only ? `Media from ${only}` : "Media from other servers"),
+		mediaTabs("remote"),
+		h("p", { class: "muted small" },
+			`${res.items} files, ${bytes(res.bytes)} in all. These are copies kept here after someone on this server viewed them. `,
+			"Deleting a copy frees the space, but it's fetched again if someone opens it, unless its server is blocked. ",
+			res.cat_stand_in
+				? "Hidden media and media from blocked servers show up for people here as the stand-in picture chosen in Settings."
+				: "Stand-in pictures are off in Settings, so hidden and blocked media shows as a broken image."),
+		only ? h("div", { class: "toolbar" }, h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote" }) }, "All servers")) : null,
+		only ? null : h("h2", {}, "By server"),
+		only ? null : table(["Server", "Files", "Size", ""], serverRows, "Nothing cached."),
+		h("h2", {}, only ? "Files" : res.media.length < res.items ? `Biggest ${res.media.length} files` : "Files"),
+		grid);
+}
+
+function cachedItem(m, catOn) {
+	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
+	const path = `/_anoncat/admin/v1/media/cached/${enc(server)}/${enc(mediaId)}`;
+	const thumb = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, m.media_type || "media"));
+	thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
+	if (!m.media_type || RASTER.has(m.media_type)) loadPreview(thumb, server, mediaId);
+	const tag = h("span", {});
+	const swap = h("button", { class: "ghost small" });
+	const show = (hidden) => {
+		m.hidden = hidden;
+		fill(tag, hidden ? h("span", { class: "tag warn" }, catOn ? "swapped" : "hidden") : null);
+		swap.textContent = hidden ? "Show again" : catOn ? "Swap for stand-in" : "Hide";
+	};
+	swap.onclick = async () => {
+		const done = await attempt(m.hidden ? "Shown again" : "Hidden", () => api(m.hidden ? "DELETE" : "POST", `${path}/hide`));
+		if (done) show(done.hidden);
+	};
+	show(m.hidden);
+	const item = h("div", { class: "media-item" },
+		thumb,
+		h("div", { class: "mono muted" }, mediaId, " ", tag),
+		h("div", { class: "small muted" }, [server, bytes(m.bytes), m.fetched_ts ? date(m.fetched_ts) : null].filter(Boolean).join(" · ")),
+		h("div", { class: "toolbar" },
+			swap,
+			h("button", { class: "danger small", onclick: async () => {
+				if (!(await ask("Delete this copy?", { text: `${m.mxc}\nIt's fetched again if someone here opens it, unless it's hidden or its server is blocked.`, confirm: "Delete", danger: true }))) return;
+				if (await attempt("Deleted", () => api("DELETE", path))) item.remove();
+			} }, "Delete")));
+	return item;
 }
 
 // Everyone here who uploaded something, biggest first.
@@ -799,6 +881,7 @@ pages.settings = async (main) => {
 		h("section", { class: "card" },
 			h("h2", {}, "Images the AI judges clearly bad"),
 			mode),
+		standInCard(s),
 		h("section", { class: "card" },
 			h("h2", {}, "Models and rules"),
 			field("Text model", modelSelect("text_model", false)),
@@ -823,12 +906,72 @@ pages.settings = async (main) => {
 			text_model: f.get("text_model"),
 			vision_model: f.get("vision_model"),
 			rules: f.get("rules"),
+			cat_stand_in: f.has("cat_stand_in"),
+			stand_in_image: f.get("stand_in_image") || "orange",
 		};
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});
 
 	fill(main, h("h1", {}, "Settings"), form);
 };
+
+// What people here see in place of hidden media and media from blocked
+// servers: a built-in picture or the admin's own.
+function standInCard(s) {
+	const BASE = "/_anoncat/admin/v1/media/stand-in";
+	const choices = [["orange", "Orange cat"], ["grey", "Grey cat"], ["black", "Black cat"], ["plain", "Plain"], ["custom", "Your own"]];
+	const picture = (name) => {
+		const box = h("div", { class: "stand-in-pic" }, h("span", { class: "muted small" }, name === "custom" ? "none uploaded" : ""));
+		(async () => {
+			try {
+				const res = await fetch(`${BASE}/${name}`, { headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit", cache: "no-store" });
+				if (!res.ok) return;
+				const blob = await res.blob();
+				if (!RASTER.has(blob.type)) return;
+				const url = URL.createObjectURL(blob);
+				box.replaceChildren(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
+			} catch { /* leave the placeholder */ }
+		})();
+		return box;
+	};
+	const radios = h("div", { class: "stand-in-choices" });
+	const drawChoices = () => fill(radios, choices.map(([name, label]) => h("label", { class: "stand-in-choice" },
+		h("input", { type: "radio", name: "stand_in_image", value: name, checked: (s.stand_in_image || "orange") === name }),
+		picture(name),
+		h("span", { class: "small" }, label))));
+	drawChoices();
+
+	const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/webp", class: "hidden-input", onchange: async () => {
+		const f = file.files[0];
+		file.value = "";
+		if (!f) return;
+		const done = await attempt("Picture saved, without its metadata", async () => {
+			const res = await fetch(BASE, { method: "PUT", headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}`, "Content-Type": "application/octet-stream" },
+				body: f, credentials: "omit", cache: "no-store" });
+			const json = await res.json().catch(() => ({}));
+			if (!res.ok) throw new ApiError(res.status, json);
+			return json;
+		});
+		if (done) { s.stand_in_image = "custom"; drawChoices(); }
+	} });
+
+	return h("section", { class: "card" },
+		h("h2", {}, "Hidden and blocked media"),
+		h("label", { class: "check" }, h("input", { type: "checkbox", name: "cat_stand_in", checked: s.cat_stand_in !== false }),
+			h("span", {}, "Show a stand-in picture instead", h("span", { class: "muted small block" },
+				"People here see this picture in place of media you or the AI hid and media from servers you blocked, instead of a broken image. It gets a random file name each time and carries no metadata."))),
+		radios,
+		h("div", { class: "toolbar" },
+			h("button", { type: "button", class: "ghost small", onclick: () => file.click() }, "Upload your own…"),
+			h("button", { type: "button", class: "ghost small", onclick: async () => {
+				if (await attempt("Removed", () => api("DELETE", BASE))) {
+					if (s.stand_in_image === "custom") s.stand_in_image = "orange";
+					drawChoices();
+				}
+			} }, "Remove yours"),
+			h("span", { class: "muted small" }, "PNG, JPEG or WebP up to 2 MiB. Its metadata (location, camera, dates) is removed when it's saved. Click Save settings to switch to it.")),
+		file);
+}
 
 // The assistant's chat lives only in this tab.
 const chat = [];

@@ -21,10 +21,29 @@ use tuwunel_core::{
 };
 use tuwunel_service::{
 	Services,
-	media::{Animate, CACHE_CONTROL_IMMUTABLE, CORP_CROSS_ORIGIN, Dim, MXC_LENGTH, Media},
+	media::{
+		Animate, CACHE_CONTROL_IMMUTABLE, CACHE_CONTROL_NO_STORE, CORP_CROSS_ORIGIN, Dim, MXC_LENGTH,
+		Media,
+	},
 };
 
 use crate::Ruma;
+
+/// Answers with the cat when the item is hidden or its server blocked.
+macro_rules! stand_in {
+	($services:expr, $mxc:expr, $($response:ident)::+ $(, $wrap:expr)?) => {
+		if let Some(cat) = $services.media.stand_in($mxc) {
+			let response = $($response)::+ {
+				file: cat.content,
+				content_type: cat.content_type.map(Into::into),
+				cross_origin_resource_policy: Some(CORP_CROSS_ORIGIN.into()),
+				cache_control: Some(CACHE_CONTROL_NO_STORE.into()),
+				content_disposition: cat.content_disposition,
+			};
+			return Ok($($wrap)?(response));
+		}
+	};
+}
 
 /// # `GET /_matrix/client/v1/media/config`
 pub(crate) async fn get_media_config_route(
@@ -166,6 +185,8 @@ pub(crate) async fn get_content_thumbnail_route(
 		media_id: &body.media_id,
 	};
 
+	stand_in!(services, &mxc, get_content_thumbnail::v1::Response);
+
 	let Media {
 		content,
 		content_type,
@@ -198,6 +219,8 @@ pub(crate) async fn get_content_route(
 		media_id: &body.media_id,
 	};
 
+	stand_in!(services, &mxc, get_content::v1::Response);
+
 	let Media {
 		content,
 		content_type,
@@ -229,6 +252,8 @@ pub(crate) async fn get_content_as_filename_route(
 		server_name: &body.server_name,
 		media_id: &body.media_id,
 	};
+
+	stand_in!(services, &mxc, get_content_as_filename::v1::Response);
 
 	let Media {
 		content,

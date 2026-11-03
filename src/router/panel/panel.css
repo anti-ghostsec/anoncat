@@ -226,3 +226,12 @@ button.tiny { padding: 0 6px; font-size: 11px; line-height: 18px; margin-left: 8
 .timeline .line-head button.tiny { opacity: 0; }
 .timeline .line:hover .line-head button.tiny, .timeline .line-head button.tiny:focus { opacity: 1; }
 @media (hover: none) { .timeline .line-head button.tiny { opacity: 1; } }
+
+.stand-in-choices { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; }
+.stand-in-choice { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; cursor: pointer; }
+.stand-in-pic { width: 88px; height: 88px; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; background: var(--bg); border: 2px solid var(--line); }
+.stand-in-pic img { width: 100%; height: 100%; object-fit: cover; }
+.stand-in-choice input { position: absolute; opacity: 0; pointer-events: none; }
+.stand-in-choice input:checked + .stand-in-pic { border-color: var(--accent); }
+.stand-in-choice input:focus-visible + .stand-in-pic { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hidden-input { display: none; }

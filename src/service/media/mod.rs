@@ -1,9 +1,11 @@
+mod cached;
 mod data;
 pub(super) mod migrations;
 pub mod strip;
 mod preview;
 mod remote;
 mod space;
+mod stand_in;
 mod tests;
 mod thumbnail;
 #[cfg(feature = "media_thumbnail")]
@@ -48,6 +50,7 @@ pub use self::{
 	preview::UrlPreviewData,
 	thumbnail::{Animate, Dim},
 };
+pub use self::{cached::CachedMedia, stand_in::CACHE_CONTROL_NO_STORE};
 use crate::storage::Provider;
 
 #[derive(Debug)]
