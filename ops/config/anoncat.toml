@@ -24,6 +24,11 @@ admin_panel_address = "127.0.0.1:8450"
 # vault; the AI stays off until the file exists and it's switched on.
 ai_key_file = "/Drives/server/data/secrets/venice"
 
+# Video previews: one still frame per video, taken by ffmpeg at lowest
+# priority, one at a time (media_video_thumbnail_concurrency), so videos show
+# a picture in clients and in the panel instead of a grey box.
+media_video_thumbnail_command = ["nice", "-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "1", "-i", "{input}", "-vf", "thumbnail=30", "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"]
+
 # Online database backups (RocksDB backup engine), inside the vault; unchanged
 # files are shared between backups. The daily anoncat-backup timer asks for
 # one with SIGUSR2; the panel's Backups page shows them. See ops/backup/README.md.

@@ -453,9 +453,7 @@ async function remoteMedia(main, params) {
 
 function cachedItem(m, blocked) {
 	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
-	const thumb = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, m.media_type || "media"));
-	thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
-	if (!m.media_type || RASTER.has(m.media_type)) loadPreview(thumb, server, mediaId);
+	const thumb = mediaThumb(m.mxc, m.media_type);
 	const item = h("div", { class: "media-item" },
 		thumb,
 		h("div", { class: "mono muted" }, mediaId),
@@ -478,9 +476,7 @@ async function uploaders() {
 
 function mediaItem(m) {
 	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
-	const thumb = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, m.type || "media"));
-	thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
-	if (!m.type || RASTER.has(m.type)) loadThumb(thumb, server, mediaId);
+	const thumb = mediaThumb(m.mxc, m.type);
 	const item = h("div", { class: "media-item" },
 		thumb,
 		h("div", { class: "mono muted" }, m.name || mediaId),
@@ -491,20 +487,99 @@ function mediaItem(m) {
 
 const RASTER = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/bmp"]);
 
-// Thumbnails need the access token, which <img> can't send, so fetch them
-// and show a blob: URL.
-async function loadThumb(el, server, mediaId, remote = false) {
+// A blurred preview of any media: a small still (a frame, for a video),
+// fetched once it scrolls into view and only a few at a time, so long lists
+// stay quick. Videos and audio play in place.
+function mediaThumb(mxc, type, { still = mxc, cls = "" } = {}) {
+	const kind = !type || RASTER.has(type) ? "image"
+		: type.startsWith("video/") ? "video"
+		: type.startsWith("audio/") ? "audio" : "file";
+	const label = h("span", { class: "thumb-label" }, { image: type || "media", video: "video", audio: "audio" }[kind] || type);
+	const el = h("div", { class: `media-thumb ${kind}${cls ? ` ${cls}` : ""}`, title: "Click to reveal" }, label);
+	el.addEventListener("click", (e) => {
+		if (!e.target.closest("video, audio, .play")) el.classList.toggle("revealed");
+	});
+	if (kind === "image" || kind === "video" || still !== mxc) whenSeen(el, () => loadPreview(el, still));
+	if (kind === "video" || kind === "audio") {
+		el.append(h("button", { class: "play", type: "button", title: `Play the ${kind} here`, "aria-label": `Play the ${kind}`,
+			onclick: () => playInline(el, mxc, kind) }, "\u25B6"));
+	}
+	return el;
+}
+
+// Runs `load` once the element is close to being on screen.
+const seen = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+	for (const entry of entries) {
+		if (!entry.isIntersecting) continue;
+		seen.unobserve(entry.target);
+		entry.target._load?.();
+	}
+}, { rootMargin: "300px" }) : null;
+function whenSeen(el, load) {
+	if (!seen) return void load();
+	el._load = load;
+	seen.observe(el);
+}
+
+// At most this many previews download at once; the rest wait their turn.
+const PREVIEWS_AT_ONCE = 3;
+const previewQueue = { running: 0, waiting: [] };
+function queued(task) {
+	return new Promise((resolve) => {
+		previewQueue.waiting.push(async () => {
+			try { resolve(await task()); } catch { resolve(null); } finally {
+				previewQueue.running--;
+				nextPreview();
+			}
+		});
+		nextPreview();
+	});
+}
+function nextPreview() {
+	while (previewQueue.running < PREVIEWS_AT_ONCE && previewQueue.waiting.length) {
+		previewQueue.running++;
+		previewQueue.waiting.shift()();
+	}
+}
+
+const authed = () => ({ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit", cache: "no-store" });
+
+// The moderation's own preview serves stored media even while hidden. Media
+// this server has no copy of comes through the ordinary thumbnail route,
+// which fetches it from its server.
+async function loadPreview(el, mxc) {
+	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+	const blob = await queued(async () => {
+		if (!el.isConnected) return null;
+		let res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?thumb=1`, authed());
+		if (!res.ok) res = await fetch(`/_matrix/client/v1/media/thumbnail/${enc(server)}/${enc(mediaId)}?width=320&height=240&method=scale&allow_remote=true`, authed());
+		return res.ok ? res.blob() : null;
+	});
+	// Only raster images become blob: URLs; an SVG or HTML one would be a
+	// document on the panel's own origin.
+	if (!blob || !RASTER.has(blob.type) || !el.isConnected) return;
+	const url = URL.createObjectURL(blob);
+	el.querySelector(".thumb-label")?.replaceWith(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
+}
+
+async function playInline(el, mxc, kind) {
+	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+	const button = el.querySelector(".play");
+	button.disabled = true;
+	button.textContent = "\u2026";
 	try {
-		const res = await fetch(`/_matrix/client/v1/media/thumbnail/${enc(server)}/${enc(mediaId)}?width=320&height=240&method=scale&allow_remote=${remote}`,
-			{ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit" });
-		if (!res.ok) return;
-		// Only raster images become blob: URLs; an SVG or HTML one would be a
-		// document on the panel's own origin.
+		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed());
+		if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
 		const blob = await res.blob();
-		if (!RASTER.has(blob.type)) return;
+		if (!blob.type.startsWith(`${kind}/`)) throw new Error("Not something the panel can play.");
 		const url = URL.createObjectURL(blob);
-		el.replaceChildren(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
-	} catch { /* leave the placeholder */ }
+		el.classList.add("revealed", "playing");
+		el.replaceChildren(h(kind, { src: url, controls: true, autoplay: true, preload: "metadata" }));
+	} catch (e) {
+		toast(`Couldn't play it: ${e.message}`);
+		button.disabled = false;
+		button.textContent = "\u25B6";
+	}
 }
 
 pages.federation = async (main, params) => {
@@ -682,13 +757,7 @@ pages.reports = async (main, params) => {
 			if (r.hidden) buttons.push(h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide"));
 		}
 		let preview = null;
-		if (r.mxc && r.kind === "image") {
-			const [server, mediaId] = r.mxc.replace("mxc://", "").split("/");
-			preview = h("div", { class: "media-thumb report-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, "image"));
-			preview.addEventListener("click", () => preview.classList.toggle("revealed"));
-			loadPreview(preview, server, mediaId);
-		}
-		if (r.mxc) preview = h("div", {}, preview, mediaActions(r.mxc, { onChanged: refresh }));
+		if (r.mxc) preview = h("div", {}, mediaThumb(r.mxc, null, { cls: "report-thumb" }), mediaActions(r.mxc, { onChanged: refresh }));
 		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}` },
 			h("div", { class: "report-head" },
 				sevTag(r.severity),
@@ -866,14 +935,11 @@ function eventLine(ev, reported) {
 		if (!c.body && !c.url) body = h("span", { class: "muted" }, "[removed]");
 		else if (c.msgtype === "m.image" || ev.type === "m.sticker" || c.msgtype === "m.video" || c.msgtype === "m.file" || c.msgtype === "m.audio") {
 			body = `[${(c.msgtype || "m.sticker").slice(2)}] ${c.body || ""}`;
-			const shown = c.msgtype === "m.image" || ev.type === "m.sticker" ? c.url : c.info?.thumbnail_url;
-			const thumb = typeof shown === "string" && shown.startsWith("mxc://") ? h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, "image")) : null;
-			if (thumb) {
-				const [server, mediaId] = shown.replace("mxc://", "").split("/");
-				thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
-				loadPreview(thumb, server, mediaId);
-			}
-			const file = typeof c.url === "string" && c.url.startsWith("mxc://") ? c.url : null;
+			const isMxc = (u) => typeof u === "string" && u.startsWith("mxc://");
+			const file = isMxc(c.url) ? c.url : null;
+			const still = isMxc(c.info?.thumbnail_url) ? c.info.thumbnail_url : null;
+			const type = c.info?.mimetype || { "m.image": null, "m.video": "video/mp4", "m.audio": "audio/mpeg" }[c.msgtype] || (ev.type === "m.sticker" ? null : "application/octet-stream");
+			const thumb = file && (c.msgtype !== "m.file" || still) ? mediaThumb(file, type, { still: still || file }) : null;
 			preview = thumb || file ? h("div", {}, thumb, file ? mediaActions(file, { compact: true }) : null) : null;
 		} else body = c.body;
 	} else if (ev.type === "m.room.member") body = h("span", { class: "muted" }, `${c.membership}${ev.state_key !== ev.sender ? ` ${ev.state_key}` : ""}`);
@@ -886,21 +952,6 @@ function eventLine(ev, reported) {
 			ev.sender !== me ? h("button", { class: "ghost tiny", type: "button", title: `Block ${ev.sender}`, onclick: thenAsk(() => blockTarget(ev.sender)) }, "Block") : null),
 		h("div", { class: "line-body" }, body),
 		preview);
-}
-
-// Reported images come from the moderation's own preview, which serves them
-// even while hidden.
-async function loadPreview(el, server, mediaId) {
-	try {
-		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`,
-			{ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit", cache: "no-store" });
-		// Not stored here: from another server, so fetch a thumbnail through ours.
-		if (!res.ok) return loadThumb(el, server, mediaId, true);
-		const blob = await res.blob();
-		if (!RASTER.has(blob.type)) return;
-		const url = URL.createObjectURL(blob);
-		el.replaceChildren(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
-	} catch { /* leave the placeholder */ }
 }
 
 pages.settings = async (main) => {
@@ -1455,9 +1506,7 @@ function lookupCard(item, blocked) {
 			if (item.kind === "media") {
 				const [server, mediaId] = item.id.replace("mxc://", "").split("/");
 				const info = await api("GET", `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`);
-				const thumb = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, info.media_type || "media"));
-				thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
-				if (!info.media_type || RASTER.has(info.media_type)) loadPreview(thumb, server, mediaId);
+				const thumb = mediaThumb(item.id, info.media_type);
 				body(
 					h("p", { class: "small muted" }, [
 						info.local ? `uploaded here${info.uploader ? ` by ${info.uploader}` : ""}` : `from ${server}${info.server_blocked ? " (blocked)" : ""}`,

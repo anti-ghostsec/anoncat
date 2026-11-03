@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0d12">
 <title>anoncat admin</title>
 <link rel="stylesheet" href="panel.css">
 <script src="panel.js" defer></script>
@@ -11,6 +13,7 @@
 <body>
 <div id="login" class="login" hidden>
 	<form id="login-form" class="card login-card">
+		<div class="login-logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.5 9.5 6 3.5l4 3.2h4l4-3.2 1.5 6c.7 1.3 1 2.6 1 4 0 4.4-4 7-8.5 7S3.5 17.9 3.5 13.5c0-1.4.3-2.7 1-4z"/><path d="M9 13h.01M15 13h.01M10.5 16.5c.9.7 2.1.7 3 0"/></svg></div>
 		<h1>anoncat</h1>
 		<p class="muted">Sign in with a server admin account.</p>
 		<label>Username <input name="user" autocomplete="username" required></label>
@@ -22,30 +25,37 @@
 
 <div id="app" class="app" hidden>
 	<nav class="side">
-		<div class="brand">anoncat <span id="server-name" class="muted"></span></div>
+		<div class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4.5 9.5 6 3.5l4 3.2h4l4-3.2 1.5 6c.7 1.3 1 2.6 1 4 0 4.4-4 7-8.5 7S3.5 17.9 3.5 13.5c0-1.4.3-2.7 1-4z"/><path d="M9 13h.01M15 13h.01M10.5 16.5c.9.7 2.1.7 3 0"/></svg></span><span class="brand-text">anoncat<span id="server-name" class="muted"></span></span></div>
 		<form id="lookup-form" class="side-lookup" role="search">
+			<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>
 			<input id="lookup-input" placeholder="Paste a link or ID…" aria-label="Look up a pasted link or ID" spellcheck="false">
 		</form>
-		<a href="#/dashboard" data-page="dashboard">Dashboard</a>
-		<a href="#/lookup" data-page="lookup">Look up</a>
-		<a href="#/users" data-page="users">Users</a>
-		<a href="#/tokens" data-page="tokens">Invites</a>
-		<a href="#/rooms" data-page="rooms">Rooms</a>
-		<a href="#/media" data-page="media">Media</a>
-		<a href="#/federation" data-page="federation">Federation</a>
-		<a href="#/reports" data-page="reports">Reports</a>
-		<a href="#/blocklist" data-page="blocklist">Blocklist</a>
-		<a href="#/notices" data-page="notices">Notices</a>
-		<a href="#/assistant" data-page="assistant">Assistant</a>
-		<a href="#/plugins" data-page="plugins">Plugins</a>
-		<a href="#/cleanup" data-page="cleanup">Cleanup</a>
-		<a href="#/backups" data-page="backups">Backups</a>
-		<a href="#/logs" data-page="logs">Logs</a>
-		<a href="#/settings" data-page="settings">Settings</a>
-		<a href="#/console" data-page="console">Console</a>
-		<div class="grow"></div>
-		<div class="muted small" id="whoami"></div>
-		<button id="logout" class="ghost">Sign out</button>
+		<div class="nav-scroll">
+			<a href="#/dashboard" data-page="dashboard"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Dashboard</a>
+			<a href="#/lookup" data-page="lookup"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></svg>Look up</a>
+			<div class="nav-group">People and rooms</div>
+			<a href="#/users" data-page="users"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.8c1.6.8 2.6 2.6 3 5.2"/></svg>Users</a>
+			<a href="#/tokens" data-page="tokens"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/></svg>Invites</a>
+			<a href="#/rooms" data-page="rooms"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9h15M4 15h15M10 3 8 21M16 3l-2 18"/></svg>Rooms</a>
+			<a href="#/media" data-page="media"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="m4 18 5-5 4 4 3-3 4 4"/></svg>Media</a>
+			<a href="#/federation" data-page="federation"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>Federation</a>
+			<div class="nav-group">Moderation</div>
+			<a href="#/reports" data-page="reports"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>Reports</a>
+			<a href="#/blocklist" data-page="blocklist"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m5.7 5.7 12.6 12.6"/></svg>Blocklist</a>
+			<a href="#/notices" data-page="notices"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></svg>Notices</a>
+			<a href="#/assistant" data-page="assistant"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 13.8 9l5.7 1.8-5.7 1.8L12 18.5l-1.8-5.9L4.5 10.8 10.2 9z"/><path d="M19 3v3M17.5 4.5h3"/></svg>Assistant</a>
+			<div class="nav-group">Server</div>
+			<a href="#/plugins" data-page="plugins"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3v5M15 3v5M6.5 8h11v3.5a5.5 5.5 0 0 1-11 0zM12 17v4"/></svg>Plugins</a>
+			<a href="#/cleanup" data-page="cleanup"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13M10 11v6M14 11v6"/></svg>Cleanup</a>
+			<a href="#/backups" data-page="backups"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9M10 13h4"/></svg>Backups</a>
+			<a href="#/logs" data-page="logs"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>Logs</a>
+			<a href="#/settings" data-page="settings"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>Settings</a>
+			<a href="#/console" data-page="console"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12.5 15H17"/></svg>Console</a>
+		</div>
+		<div class="side-foot">
+			<div class="muted small" id="whoami"></div>
+			<button id="logout" class="ghost small">Sign out</button>
+		</div>
 	</nav>
 	<main id="main"></main>
 </div>

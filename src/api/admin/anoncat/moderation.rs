@@ -7,11 +7,14 @@ use axum::{
 	http::{HeaderMap, HeaderValue, Uri, header},
 	response::{IntoResponse, Response},
 };
-use ruma::Mxc;
+use ruma::{Mxc, media::Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tuwunel_core::{Err, Result};
-use tuwunel_service::moderation::{Blocked, Model, Report, Said, Settings, Turn};
+use tuwunel_service::{
+	media::{Animate, Dim},
+	moderation::{Blocked, Model, Report, Said, Settings, Turn},
+};
 
 /// Most reports one request returns.
 const LIMIT: usize = 500;
@@ -19,6 +22,20 @@ const LIMIT: usize = 500;
 /// Media types the preview hands over: raster images only, which a browser
 /// can't run as a document on the panel's origin.
 const PREVIEW_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+/// Videos and sound browsers play, which the panel can play in full.
+const PLAYABLE_TYPES: [&str; 9] = [
+	"video/mp4",
+	"video/webm",
+	"video/ogg",
+	"audio/mpeg",
+	"audio/ogg",
+	"audio/mp4",
+	"audio/webm",
+	"audio/wav",
+	"audio/flac",
+];
+/// Largest video or sound the panel plays; it's held in memory while sent.
+const PLAY_MAX_BYTES: usize = 100 << 20;
 
 #[derive(Serialize)]
 pub(crate) struct SettingsResponse {
@@ -138,23 +155,41 @@ pub(crate) async fn act_route(
 	Ok(Json(services.moderation.act(id, &body.action).await?))
 }
 
-/// A reported picture for the admin to judge, served even while hidden.
+/// Media for the admin to judge, served even while hidden: a small still
+/// with `?thumb=1` (a frame for a video, when frames are set up), else the
+/// file itself, pictures and playable videos only.
 pub(crate) async fn media_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
 	Path((server, media_id)): Path<(String, String)>,
+	uri: Uri,
 ) -> Result<Response> {
 	super::require_admin_token(&services, &headers).await?;
 
 	let mxc = format!("mxc://{server}/{media_id}");
 	let mxc: Mxc<'_> = mxc.as_str().try_into()?;
-	let media = services.media.get_stored(&mxc).await?;
-	let Some(kind) = media
-		.content_type
-		.filter(|t| PREVIEW_TYPES.contains(&t.as_str()))
-	else {
-		return Err!(Request(Unrecognized("Only images can be previewed here.")));
+	let thumb = uri
+		.query()
+		.is_some_and(|q| q.split('&').any(|p| p == "thumb=1"));
+
+	let media = if thumb {
+		let dim = Dim::new(320, 240, Some(Method::Scale));
+		services
+			.media
+			.get_stored_thumbnail(&mxc, &dim, Animate::Never)
+			.await?
+	} else {
+		services.media.get_stored(&mxc).await?
 	};
+
+	let Some(kind) = media.content_type.filter(|t| {
+		PREVIEW_TYPES.contains(&t.as_str()) || (!thumb && PLAYABLE_TYPES.contains(&t.as_str()))
+	}) else {
+		return Err!(Request(Unrecognized("Only pictures and videos can be previewed here.")));
+	};
+	if !thumb && PLAYABLE_TYPES.contains(&kind.as_str()) && media.content.len() > PLAY_MAX_BYTES {
+		return Err!(Request(TooLarge("Too big to play in the panel.")));
+	}
 
 	let mut response = media.content.into_response();
 	let headers = response.headers_mut();

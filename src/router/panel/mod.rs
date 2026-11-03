@@ -20,7 +20,7 @@ const STYLE: &str = include_str!("panel.css");
 
 /// Only our own files; images from blob: URLs made from authenticated media
 /// downloads; nothing may frame the panel.
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; \
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; media-src blob:; \
                    connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
 
 /// The panel listener: the panel's files plus the whole app, for requests that
