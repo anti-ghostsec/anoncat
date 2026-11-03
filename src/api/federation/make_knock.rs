@@ -26,6 +26,10 @@ pub(crate) async fn create_knock_event_template_route(
 		return Err!(Request(BadJson("Not allowed to knock on behalf of another server/user.")));
 	}
 
+	if services.moderation.user_blocked(&body.user_id) {
+		return Err!(Request(Forbidden("You are blocked on this homeserver.")));
+	}
+
 	if let Some(server) = body.room_id.server_name()
 		&& services
 			.config

@@ -18,6 +18,7 @@
 //! watched from then on.
 
 mod assistant;
+mod blocklist;
 mod room_check;
 mod venice;
 
@@ -50,6 +51,7 @@ use tuwunel_matrix::{Event, PduEvent, pdu::MAX_PDU_BYTES};
 
 pub use self::{
 	assistant::Said,
+	blocklist::Blocked,
 	venice::{Model, Turn},
 };
 use self::venice::{Part, json_in};
@@ -93,6 +95,8 @@ pub struct Service {
 	room_wake: Notify,
 	/// The panel asked for the room checks to run at once.
 	rooms_now: AtomicBool,
+	/// Blocked users and servers, keyed by user ID or server name.
+	blocked: RwLock<blocklist::Blocklist>,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -216,10 +220,13 @@ impl crate::Service for Service {
 			pending_rooms: Mutex::default(),
 			room_wake: Notify::new(),
 			rooms_now: AtomicBool::new(false),
+			blocked: RwLock::default(),
 		}))
 	}
 
 	async fn worker(self: Arc<Self>) -> Result {
+		self.load_blocklist().await;
+
 		if let Ok(stored) = self.settings_map.get(SETTINGS_KEY).await {
 			match serde_json::from_slice::<Settings>(&stored) {
 				| Ok(stored) => *self.settings.write().expect("locked") = stored,
@@ -387,7 +394,9 @@ async fn model(&self, configured: &str, vision: bool) -> Result<String> {
 /// worker.
 #[implement(Service)]
 pub fn notify(&self, pdu: &PduEvent) {
+	// A blocked sender is hidden already; checking them costs for nothing.
 	if pdu.sender() == self.services.globals.server_user
+		|| self.user_blocked(pdu.sender())
 		|| pdu.content().get().len() > MAX_PDU_BYTES
 		|| !self.settings.read().expect("locked").enabled
 	{

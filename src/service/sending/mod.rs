@@ -15,7 +15,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, future::ready};
 use loole::unbounded;
 use ruma::{OwnedServerName, RoomId, ServerName, UserId};
 use tokio::task::JoinSet;
@@ -219,7 +219,9 @@ async fn queue_and_dispatch_servers<'a, S>(&self, servers: S, event: SendingEven
 where
 	S: Stream<Item = &'a ServerName> + Send + 'a,
 {
+	// Blocked servers get nothing from here.
 	let requests: Vec<_> = servers
+		.filter(|server| ready(!self.services.moderation.server_blocked(server)))
 		.map(|server| (event.clone(), Destination::Federation(server.to_owned())))
 		.collect()
 		.await;
@@ -241,6 +243,10 @@ where
 #[implement(Service)]
 #[tracing::instrument(skip(self, server, serialized), level = "debug")]
 pub fn send_edu_server(&self, server: &ServerName, serialized: EduBuf) -> Result {
+	if self.services.moderation.server_blocked(server) {
+		return Ok(());
+	}
+
 	let dest = Destination::Federation(server.to_owned());
 	let event = SendingEvent::Edu(serialized);
 	let _cork = self.db.db.cork();

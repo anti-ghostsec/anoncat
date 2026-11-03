@@ -221,6 +221,7 @@ fn is_eligible(&self, server: &ServerName) -> bool {
 			.server
 			.config
 			.is_forbidden_remote_server_name(server)
+		&& !self.services.moderation.server_blocked(server)
 }
 
 #[cfg(test)]

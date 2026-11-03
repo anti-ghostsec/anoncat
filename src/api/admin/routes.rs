@@ -1,6 +1,6 @@
 use axum::{
 	Router,
-	routing::{get, post, put},
+	routing::{delete, get, post, put},
 };
 use tuwunel_api::router::RouterExt;
 use tuwunel_core::Server;
@@ -34,6 +34,8 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/moderation/media/{server}/{media_id}", get(m::media_route))
 		.route("/_anoncat/admin/v1/moderation/assistant", post(m::assistant_route))
 		.route("/_anoncat/admin/v1/moderation/rooms/check", post(m::check_rooms_route))
+		.route("/_anoncat/admin/v1/moderation/blocklist", get(m::blocklist_route).merge(post(m::block_route)))
+		.route("/_anoncat/admin/v1/moderation/blocklist/{target}", delete(m::unblock_route))
 		.route("/_anoncat/admin/v1/plugins", get(a::plugins::list_route))
 		.route("/_anoncat/admin/v1/plugins/{name}", post(a::plugins::act_route))
 		.route("/_anoncat/admin/v1/cleanup", get(a::cleanup::get_route).merge(put(a::cleanup::put_route)))

@@ -249,6 +249,7 @@ function userActions(u, refresh) {
 	const id = enc(u.name);
 	return [
 		h("button", { class: "ghost small", onclick: () => userDetails(u.name) }, "Details"),
+		h("button", { class: "danger small", onclick: async () => { if (await blockTarget(u.name)) refresh(); } }, "Block"),
 		h("button", { class: "ghost small", onclick: async () => {
 			const suspend = !u.suspended;
 			if (await attempt(suspend ? "Suspended" : "Unsuspended", () => api("PUT", `/_synapse/admin/v1/suspend/${id}`, { suspend }))) refresh();
@@ -350,10 +351,7 @@ function roomActions(r, refresh) {
 			const ts = Date.now() - Number(v.days) * 86400000;
 			await attempt("History purge started", () => api("POST", `/_synapse/admin/v1/purge_history/${id}`, { purge_up_to_ts: ts, delete_local_events: true }));
 		} }, "Purge history"),
-		h("button", { class: "ghost small", onclick: async () => {
-			const block = !(await attempt(null, () => api("GET", `/_synapse/admin/v1/rooms/${id}/block`)))?.block;
-			if (await attempt(block ? "Blocked" : "Unblocked", () => api("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block }))) refresh();
-		} }, "Block/unblock"),
+		h("button", { class: "ghost small", onclick: async () => { if (await blockRoom(r.room_id, r.name)) setTimeout(refresh, 1000); } }, "Block…"),
 		h("button", { class: "danger small", onclick: async () => {
 			const v = await ask(`Delete ${r.name || r.room_id}?`, {
 				text: "Removes every local user from the room and deletes it from this server.",
@@ -494,6 +492,94 @@ pages.notices = async (main) => {
 
 const MOD = "/_anoncat/admin/v1/moderation";
 
+const serverOf = (userId) => userId.split(":").slice(1).join(":");
+const ourServer = () => serverOf(sessionStorage.getItem(USER_KEY) || "");
+
+// Blocks a user or a whole server. Returns true when it went through.
+async function blockTarget(target, { reason = "" } = {}) {
+	target = target.trim();
+	const isUser = target.startsWith("@");
+	const local = isUser && serverOf(target) === ourServer();
+	const fields = [{ name: "reason", label: "Reason (only admins see it)", value: reason, placeholder: "e.g. spam ads" }];
+	if (local) fields.push({ name: "lock", label: "Lock their account, so they can't sign in or post", type: "checkbox", value: true });
+	if (isUser) fields.push({ name: "redact", label: local
+		? "Remove all their messages everywhere"
+		: "Also remove their messages for everyone, in rooms where you're a moderator", type: "checkbox", value: true });
+	const v = await ask(`Block ${target}?`, {
+		text: isUser
+			? "Their messages, old and new, are hidden from everyone on this server, and they can't join rooms through it or invite anyone here. You can unblock them under Blocklist."
+			: "Nobody on that server can reach this one: no messages, joins, invites or media, and what they already sent is hidden here. Nothing is sent to them either. You can unblock it under Blocklist.",
+		fields, confirm: "Block", danger: true });
+	if (!v) return false;
+	const done = await attempt(`Blocked ${target}`, () => api("POST", `${MOD}/blocklist`, { target, reason: v.reason, lock: v.lock ?? false }));
+	if (done && v.redact) {
+		await attempt("Removing their messages in the background", () =>
+			api("POST", `/_synapse/admin/v1/user/${enc(target)}/redact`, { rooms: [], reason: v.reason || "Moderation" }));
+	}
+	return Boolean(done);
+}
+
+// Blocks a room: nobody here can join it; optionally everyone here leaves.
+async function blockRoom(roomId, name) {
+	const id = enc(roomId);
+	const state = await attempt(null, () => api("GET", `/_synapse/admin/v1/rooms/${id}/block`));
+	if (state?.block) {
+		if (!(await ask(`Unblock ${name || roomId}?`, { text: "People on this server can join it again.", confirm: "Unblock" }))) return false;
+		return Boolean(await attempt("Unblocked", () => api("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: false })));
+	}
+	const v = await ask(`Block ${name || roomId}?`, {
+		text: "Nobody on this server can join it, and invites to it are refused.",
+		fields: [{ name: "leave", label: "Also make everyone here leave it now", type: "checkbox", value: true }],
+		confirm: "Block room", danger: true });
+	if (!v) return false;
+	if (v.leave) return Boolean(await attempt("Blocked; everyone here is leaving it", () => api("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: true, purge: false })));
+	return Boolean(await attempt("Blocked", () => api("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: true })));
+}
+
+// Closes the open dialog first: there is only one, and the next action asks.
+// It waits for the close event, which would otherwise answer the next one.
+const thenAsk = (fn) => () => {
+	const dialog = $("#dialog");
+	dialog.addEventListener("close", () => setTimeout(fn), { once: true });
+	dialog.close();
+};
+
+pages.blocklist = async (main) => {
+	const [res, rooms] = await Promise.all([
+		api("GET", `${MOD}/blocklist`),
+		attempt(null, () => command("rooms moderation list-banned-rooms")),
+	]);
+	const refresh = () => render();
+	const target = h("input", { placeholder: "@user:server or server.name", spellcheck: "false" });
+	const add = async () => { if (target.value.trim() && await blockTarget(target.value)) refresh(); };
+	target.addEventListener("keydown", (e) => e.key === "Enter" && add());
+
+	const rows = res.blocked.map((b) => h("tr", {},
+		h("td", {}, h("div", { class: "mono" }, b.target), h("span", { class: "tag" }, b.kind), b.locked ? h("span", { class: "tag bad" }, "account locked") : null),
+		h("td", {}, b.reason || h("span", { class: "muted" }, "—")),
+		h("td", { class: "small muted" }, `${date(b.ts)}`, h("div", {}, `by ${b.by}`)),
+		h("td", { class: "actions" }, h("button", { class: "ghost small", onclick: async () => {
+			if (!(await ask(`Unblock ${b.target}?`, { text: b.locked ? "Their account is unlocked too. Messages removed while blocked stay removed." : "Their messages show again, and they can reach this server again.", confirm: "Unblock" }))) return;
+			if (await attempt("Unblocked", () => api("DELETE", `${MOD}/blocklist/${enc(b.target)}`))) refresh();
+		} }, "Unblock"))));
+
+	const roomIds = [...new Set((rooms?.output || "").match(/^!\S+/gm) || [])];
+	const roomRows = roomIds.map((roomId) => h("tr", {},
+		h("td", { class: "mono" }, roomId),
+		h("td", { class: "actions" },
+			h("button", { class: "ghost small", onclick: () => lookAt({ kind: "room", room_id: roomId }, "Blocked room") }, "Look"),
+			h("button", { class: "ghost small", onclick: async () => { if (await blockRoom(roomId)) refresh(); } }, "Unblock"))));
+
+	fill(main,
+		h("h1", {}, "Blocklist"),
+		h("p", { class: "muted" }, "Blocked users' messages are hidden from everyone here, old and new, and they can't join rooms through this server or invite anyone on it. A blocked server can't reach this one at all. Block from a report, a user, or the Look view, or here."),
+		h("div", { class: "toolbar" }, target, h("button", { onclick: add }, "Block…")),
+		table(["Blocked", "Reason", "When", ""], rows, "Nobody is blocked."),
+		h("h2", {}, "Blocked rooms"),
+		h("p", { class: "muted small" }, "Nobody here can join these. Block a room from Rooms, a room report, or its Look view."),
+		table(["Room", ""], roomRows, "No rooms are blocked."));
+};
+
 pages.reports = async (main, params) => {
 	const all = params.get("all") === "1";
 	const res = await api("GET", `${MOD}/reports${all ? "?all=true" : ""}`);
@@ -511,6 +597,18 @@ pages.reports = async (main, params) => {
 				const ok = await attempt("Removed", () => api("PUT", `/_matrix/client/v3/rooms/${enc(r.room_id)}/redact/${enc(r.event_id)}/${Date.now()}`, { reason: "Moderation" }));
 				if (ok) await act("resolve", null);
 			} }, "Remove message"));
+			if (r.kind === "room") {
+				buttons.push(h("button", { class: "danger small", onclick: async () => {
+					if (await blockRoom(r.room_id, r.room_name)) await act("resolve", null);
+				} }, "Block room"));
+			} else if (r.sender) {
+				buttons.push(h("button", { class: "danger small", onclick: async () => {
+					if (await blockTarget(r.sender, { reason: r.category || "" })) refresh();
+				} }, "Block user"));
+				if (serverOf(r.sender) !== ourServer()) buttons.push(h("button", { class: "ghost small", onclick: async () => {
+					if (await blockTarget(serverOf(r.sender), { reason: r.category || "" })) refresh();
+				} }, `Block ${serverOf(r.sender)}`));
+			}
 			buttons.push(h("button", { class: "ghost small", onclick: () => act("dismiss", "Dismissed") }, "Dismiss"));
 		} else {
 			buttons.push(h("button", { class: "ghost small", onclick: () => act("reopen", "Reopened") }, "Reopen"));
@@ -564,6 +662,8 @@ async function lookAt(r, title) {
 		const lines = timeline.events.filter((ev) => SHOWN_EVENTS.has(ev.type)).map((ev) => eventLine(ev, ev.event_id === r.event_id));
 		fill(content,
 			details ? roomFacts(details) : h("p", { class: "muted" }, r.room_id),
+			h("div", { class: "toolbar" },
+				h("button", { class: "danger small", type: "button", onclick: thenAsk(() => blockRoom(r.room_id, details?.name)) }, "Block room")),
 			details?.encryption ? h("p", { class: "muted small" }, "This room is encrypted: the server only sees that messages were sent, not what they say.") : null,
 			lines.length ? h("div", { class: "timeline" }, lines) : h("p", { class: "muted" }, r.kind === "room" ? "No messages this server holds, only joins and leaves. It has what was sent while someone here was in the room, not from before." : "No messages this server holds."));
 		content.querySelector(".line.reported")?.scrollIntoView({ block: "center" });
@@ -612,8 +712,10 @@ function eventLine(ev, reported) {
 	else if (ev.type === "m.room.name") body = h("span", { class: "muted" }, `named the room "${c.name || ""}"`);
 	else if (ev.type === "m.room.topic") body = h("span", { class: "muted" }, `set the topic "${c.topic || ""}"`);
 	else body = h("span", { class: "muted" }, ev.type);
+	const me = sessionStorage.getItem(USER_KEY);
 	return h("div", { class: `line${reported ? " reported" : ""}` },
-		h("div", { class: "small muted" }, `${ev.sender} · ${date(ev.origin_server_ts)}`),
+		h("div", { class: "small muted line-head" }, `${ev.sender} · ${date(ev.origin_server_ts)}`,
+			ev.sender !== me ? h("button", { class: "ghost tiny", type: "button", title: `Block ${ev.sender}`, onclick: thenAsk(() => blockTarget(ev.sender)) }, "Block") : null),
 		h("div", { class: "line-body" }, body),
 		preview);
 }

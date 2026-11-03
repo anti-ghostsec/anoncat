@@ -102,7 +102,16 @@ fn auth_server_checks(services: &Services, x_matrix: &XMatrix) -> Result {
 
 	services
 		.config
-		.require_remote_permitted(&x_matrix.origin)
+		.require_remote_permitted(&x_matrix.origin)?;
+
+	if services
+		.moderation
+		.server_blocked(&x_matrix.origin)
+	{
+		return Err!(Request(Forbidden("Federation denied with this server.")));
+	}
+
+	Ok(())
 }
 
 async fn parse_x_matrix(request: &mut Request) -> Result<XMatrix> {

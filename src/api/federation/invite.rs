@@ -282,6 +282,10 @@ async fn check_invite_permitted(
 		return Err!(Request(Forbidden("This server does not allow room invites.")));
 	}
 
+	if services.moderation.user_blocked(sender) {
+		return Err!(Request(Forbidden("You are blocked on this homeserver.")));
+	}
+
 	// The recipient's own policy is the only per-sender answer this route
 	// gives, so it waits for the origin check to bind the sender. Answering
 	// earlier would let any server read a local user's rules for user ids it

@@ -11,7 +11,7 @@ use ruma::Mxc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tuwunel_core::{Err, Result};
-use tuwunel_service::moderation::{Model, Report, Said, Settings, Turn};
+use tuwunel_service::moderation::{Blocked, Model, Report, Said, Settings, Turn};
 
 /// Most reports one request returns.
 const LIMIT: usize = 500;
@@ -202,4 +202,55 @@ pub(crate) async fn check_rooms_route(
 			 notice."
 		),
 	}))
+}
+
+#[derive(Serialize)]
+pub(crate) struct BlocklistResponse {
+	blocked: Vec<Blocked>,
+}
+
+pub(crate) async fn blocklist_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+) -> Result<Json<BlocklistResponse>> {
+	super::require_admin_token(&services, &headers).await?;
+	Ok(Json(BlocklistResponse { blocked: services.moderation.blocklist() }))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BlockRequest {
+	/// A user ID or a server name.
+	target: String,
+	#[serde(default)]
+	reason: String,
+	/// Lock a local user's account too.
+	#[serde(default = "yes")]
+	lock: bool,
+}
+
+const fn yes() -> bool { true }
+
+/// `POST .../moderation/blocklist`: blocks a user or a whole server.
+pub(crate) async fn block_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	Json(body): Json<BlockRequest>,
+) -> Result<Json<Blocked>> {
+	let admin = super::require_admin_token(&services, &headers).await?;
+	let blocked = services
+		.moderation
+		.block(&body.target, &body.reason, &admin, body.lock)
+		.await?;
+
+	Ok(Json(blocked))
+}
+
+/// `DELETE .../moderation/blocklist/{target}`
+pub(crate) async fn unblock_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	Path(target): Path<String>,
+) -> Result<Json<Blocked>> {
+	let admin = super::require_admin_token(&services, &headers).await?;
+	Ok(Json(services.moderation.unblock(&target, &admin).await?))
 }

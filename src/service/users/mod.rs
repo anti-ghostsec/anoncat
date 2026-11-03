@@ -165,8 +165,13 @@ impl crate::Service for Service {
 
 impl Service {
 	/// Returns true/false based on whether the recipient/receiving user has
-	/// blocked the sender
+	/// blocked the sender, or the admins blocked the sender (or their server)
+	/// for everyone here.
 	pub async fn user_is_ignored(&self, sender_user: &UserId, recipient_user: &UserId) -> bool {
+		if self.services.moderation.user_blocked(sender_user) {
+			return true;
+		}
+
 		self.ignored_users(recipient_user)
 			.await
 			.is_some_and(|ignored| {
