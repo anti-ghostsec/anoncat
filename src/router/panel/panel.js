@@ -411,7 +411,7 @@ async function remoteMedia(main, params) {
 	const res = await api("GET", `/_anoncat/admin/v1/media/cached${only ? `?server=${enc(only)}` : ""}`);
 	const reload = () => remoteMedia(main, params);
 
-	const serverRows = res.servers.map((s) => h("tr", {},
+	const serverRows = res.servers.map((s) => h("tr", { "data-server": s.server },
 		h("td", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); navigate("media", { view: "remote", server: s.server }); } }, s.server),
 			s.blocked ? h("span", { class: "tag warn" }, "blocked") : null),
 		h("td", {}, String(s.items)),
@@ -427,7 +427,7 @@ async function remoteMedia(main, params) {
 			s.blocked ? null : h("button", { class: "ghost small", onclick: thenAsk(async () => { if (await blockTarget(s.server)) reload(); }) }, "Block server")))));
 
 	const grid = res.media.length
-		? h("div", { class: "media-grid" }, res.media.map((m) => cachedItem(m, res.cat_stand_in)))
+		? h("div", { class: "media-grid" }, res.media.map((m) => cachedItem(m, res.servers.some((s) => s.server === m.server && s.blocked))))
 		: h("p", { class: "muted" }, only ? "Nothing cached from this server." : "Nothing cached from other servers.");
 
 	fill(main,
@@ -441,39 +441,26 @@ async function remoteMedia(main, params) {
 				: "Stand-in pictures are off in Settings, so hidden and blocked media shows as a broken image."),
 		only ? h("div", { class: "toolbar" }, h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote" }) }, "All servers")) : null,
 		only ? null : h("h2", {}, "By server"),
+		only || res.servers.length < 2 ? null : h("div", { class: "toolbar" }, h("input", { type: "search", placeholder: "Search servers, e.g. cloud", "aria-label": "Search servers",
+			oninput: (e) => {
+				const words = e.target.value.toLowerCase().split(/\s+/).filter(Boolean);
+				for (const row of serverRows) row.hidden = !words.every((w) => row.dataset.server.toLowerCase().includes(w));
+			} })),
 		only ? null : table(["Server", "Files", "Size", ""], serverRows, "Nothing cached."),
 		h("h2", {}, only ? "Files" : res.media.length < res.items ? `Biggest ${res.media.length} files` : "Files"),
 		grid);
 }
 
-function cachedItem(m, catOn) {
+function cachedItem(m, blocked) {
 	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
-	const path = `/_anoncat/admin/v1/media/cached/${enc(server)}/${enc(mediaId)}`;
 	const thumb = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, m.media_type || "media"));
 	thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
 	if (!m.media_type || RASTER.has(m.media_type)) loadPreview(thumb, server, mediaId);
-	const tag = h("span", {});
-	const swap = h("button", { class: "ghost small" });
-	const show = (hidden) => {
-		m.hidden = hidden;
-		fill(tag, hidden ? h("span", { class: "tag warn" }, catOn ? "swapped" : "hidden") : null);
-		swap.textContent = hidden ? "Show again" : catOn ? "Swap for stand-in" : "Hide";
-	};
-	swap.onclick = async () => {
-		const done = await attempt(m.hidden ? "Shown again" : "Hidden", () => api(m.hidden ? "DELETE" : "POST", `${path}/hide`));
-		if (done) show(done.hidden);
-	};
-	show(m.hidden);
 	const item = h("div", { class: "media-item" },
 		thumb,
-		h("div", { class: "mono muted" }, mediaId, " ", tag),
+		h("div", { class: "mono muted" }, mediaId),
 		h("div", { class: "small muted" }, [server, bytes(m.bytes), m.fetched_ts ? date(m.fetched_ts) : null].filter(Boolean).join(" · ")),
-		h("div", { class: "toolbar" },
-			swap,
-			h("button", { class: "danger small", onclick: async () => {
-				if (!(await ask("Delete this copy?", { text: `${m.mxc}\nIt's fetched again if someone here opens it, unless it's hidden or its server is blocked.`, confirm: "Delete", danger: true }))) return;
-				if (await attempt("Deleted", () => api("DELETE", path))) item.remove();
-			} }, "Delete")));
+		mediaActions(m.mxc, { info: { local: false, stored: true, hidden: m.hidden, server_blocked: blocked }, onDeleted: () => item.remove() }));
 	return item;
 }
 
@@ -498,10 +485,7 @@ function mediaItem(m) {
 		thumb,
 		h("div", { class: "mono muted" }, m.name || mediaId),
 		h("div", { class: "small muted" }, [m.size ? bytes(m.size) : null, m.created ? date(m.created) : null].filter(Boolean).join(" · ")),
-		h("button", { class: "danger small", onclick: async () => {
-			if (!(await ask("Delete this media?", { text: m.mxc, confirm: "Delete", danger: true }))) return;
-			if (await attempt("Deleted", () => api("DELETE", `/_synapse/admin/v1/media/${enc(server)}/${enc(mediaId)}`))) item.remove();
-		} }, "Delete"));
+		mediaActions(m.mxc, { onDeleted: () => item.remove() }));
 	return item;
 }
 
@@ -622,6 +606,7 @@ async function blockRoom(roomId, name) {
 // It waits for the close event, which would otherwise answer the next one.
 const thenAsk = (fn) => () => {
 	const dialog = $("#dialog");
+	if (!dialog.open) return fn();
 	dialog.addEventListener("close", () => setTimeout(fn), { once: true });
 	dialog.close();
 };
@@ -703,6 +688,7 @@ pages.reports = async (main, params) => {
 			preview.addEventListener("click", () => preview.classList.toggle("revealed"));
 			loadPreview(preview, server, mediaId);
 		}
+		if (r.mxc) preview = h("div", {}, preview, mediaActions(r.mxc, { onChanged: refresh }));
 		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}` },
 			h("div", { class: "report-head" },
 				sevTag(r.severity),
@@ -734,25 +720,123 @@ async function lookAt(r, title) {
 	const shown = ask(title || (r.kind === "room" ? "Reported room" : "Reported message"), { content, confirm: "Close", cancel: false });
 	try {
 		const room = enc(r.room_id);
+		const filter = enc(JSON.stringify({ types: SAID_EVENTS }));
+		const page = (dir, from) => api("GET", `/_synapse/admin/v1/rooms/${room}/messages?dir=${dir}&limit=40&filter=${filter}${from ? `&from=${enc(from)}` : ""}`);
 		const [details, timeline] = await Promise.all([
 			api("GET", `/_synapse/admin/v1/rooms/${room}`).catch(() => null),
 			r.kind === "room" || !r.event_id
-				? api("GET", `/_synapse/admin/v1/rooms/${room}/messages?dir=b&limit=40&filter=${enc(JSON.stringify({ types: SAID_EVENTS }))}`).then((m) => ({ events: (m.chunk || []).reverse() }))
-				: api("GET", `/_synapse/admin/v1/rooms/${room}/context/${enc(r.event_id)}?limit=20`).then((c) =>
-					({ events: [...(c.events_before || []).reverse(), c.event, ...(c.events_after || [])].filter(Boolean) })),
+				? page("b").then((m) => ({ events: (m.chunk || []).reverse(), older: m.chunk?.length ? m.end : null }))
+				: api("GET", `/_synapse/admin/v1/rooms/${room}/context/${enc(r.event_id)}?limit=20`).then((c) => ({
+					events: [...(c.events_before || []).reverse(), c.event, ...(c.events_after || [])].filter(Boolean),
+					older: c.start,
+					newer: c.end,
+				})),
 		]);
-		const lines = timeline.events.filter((ev) => SHOWN_EVENTS.has(ev.type)).map((ev) => eventLine(ev, ev.event_id === r.event_id));
+		const lineOf = (ev) => eventLine(ev, ev.event_id === r.event_id);
+		const box = h("div", { class: "timeline" }, timeline.events.filter((ev) => SHOWN_EVENTS.has(ev.type)).map(lineOf));
+
+		// Each click fetches 40 more of what was said; joins and leaves are
+		// skipped, so a page may add fewer lines.
+		const more = (dir, token) => {
+			let from = token;
+			const button = h("button", { class: "ghost small", type: "button" }, dir === "b" ? "Load older" : "Load newer");
+			const wrap = h("div", { class: "timeline-more" }, button);
+			button.onclick = async () => {
+				button.disabled = true;
+				button.textContent = "Loading…";
+				const m = await attempt(null, () => page(dir, from));
+				const events = (m?.chunk || []).filter((ev) => SHOWN_EVENTS.has(ev.type));
+				if (dir === "b") {
+					const before = box.scrollHeight;
+					wrap.after(...events.reverse().map(lineOf));
+					box.scrollTop += box.scrollHeight - before;
+				} else {
+					wrap.before(...events.map(lineOf));
+				}
+				from = m?.end;
+				if (!m || !m.chunk?.length || !from) return fill(wrap, h("span", { class: "muted small" }, dir === "b" ? "Nothing older on this server." : "Nothing newer."));
+				button.disabled = false;
+				button.textContent = dir === "b" ? "Load older" : "Load newer";
+			};
+			return wrap;
+		};
+		if (timeline.older) box.prepend(more("b", timeline.older));
+		if (timeline.newer) box.append(more("f", timeline.newer));
+		const said = box.querySelectorAll(".line").length;
+
 		fill(content,
 			details ? roomFacts(details) : h("p", { class: "muted" }, r.room_id),
 			h("div", { class: "toolbar" },
+				h("button", { class: "ghost small", type: "button", onclick: () => copyText(r.room_id) }, "Copy room ID"),
 				h("button", { class: "danger small", type: "button", onclick: thenAsk(() => blockRoom(r.room_id, details?.name)) }, "Block room")),
 			details?.encryption ? h("p", { class: "muted small" }, "This room is encrypted: the server only sees that messages were sent, not what they say.") : null,
-			lines.length ? h("div", { class: "timeline" }, lines) : h("p", { class: "muted" }, r.kind === "room" ? "No messages this server holds, only joins and leaves. It has what was sent while someone here was in the room, not from before." : "No messages this server holds."));
-		content.querySelector(".line.reported")?.scrollIntoView({ block: "center" });
+			said || timeline.older ? box : h("p", { class: "muted" }, r.kind === "room" ? "No messages this server holds, only joins and leaves. It has what was sent while someone here was in the room, not from before." : "No messages this server holds."));
+		box.querySelector(".line.reported")?.scrollIntoView({ block: "center" });
+		if (!box.querySelector(".line.reported")) box.scrollTop = box.scrollHeight;
 	} catch (e) {
 		fill(content, h("p", { class: "error" }, `Couldn't load it: ${e.message}`));
 	}
 	await shown;
+}
+
+// Puts text on the clipboard, or shows it to copy by hand where the browser
+// won't allow that (the panel opened over plain http from another machine).
+async function copyText(text) {
+	try {
+		await navigator.clipboard.writeText(text);
+		toast("Copied");
+	} catch {
+		const input = h("input", { value: text, readonly: true, onfocus: (e) => e.target.select() });
+		const dialog = $("#dialog");
+		if (dialog.open) {
+			const old = dialog.querySelector(".copy-fallback");
+			if (old) old.remove();
+			dialog.querySelector("#dialog-body").prepend(h("label", { class: "copy-fallback" }, "Copy this:", input));
+			input.focus();
+		} else {
+			setTimeout(() => input.focus());
+			await ask("Copy this", { content: input, confirm: "Done", cancel: false });
+		}
+	}
+}
+
+// What can be done to one media item, wherever it shows: copy its link,
+// swap it for the stand-in (hide), delete it, block its server or uploader.
+// `info` skips the lookup when the caller already knows it.
+function mediaActions(mxc, { info, compact = false, onDeleted, onChanged } = {}) {
+	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+	const path = `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`;
+	const cls = compact ? "ghost tiny" : "ghost small";
+	const bar = h("div", { class: "toolbar media-actions" });
+	const draw = (i) => {
+		const swap = h("button", { class: cls, type: "button", title: i.hidden ? "Serve the real file again" : "People here see the stand-in picture instead; nothing is deleted" },
+			i.hidden ? "Show again" : "Swap for stand-in");
+		swap.onclick = async () => {
+			const done = await attempt(i.hidden ? "Shown again" : "Swapped for the stand-in", () => api(i.hidden ? "DELETE" : "POST", `${path}/hide`));
+			if (!done) return;
+			i.hidden = done.hidden;
+			draw(i);
+			onChanged?.();
+		};
+		fill(bar,
+			i.hidden ? h("span", { class: "tag warn" }, "swapped") : null,
+			h("button", { class: cls, type: "button", title: mxc, onclick: () => copyText(mxc) }, "Copy link"),
+			swap,
+			i.stored ? h("button", { class: compact ? "danger tiny" : "danger small", type: "button", onclick: thenAsk(async () => {
+				const text = i.local
+					? `${mxc}\nUploaded here${i.uploader ? ` by ${i.uploader}` : ""}. It's gone for good, for everyone, including other servers that ask for it.`
+					: `${mxc}\nOnly this server's copy goes. It's fetched again if someone here opens it, unless it's swapped or its server is blocked.`;
+				if (!(await ask("Delete this media?", { text, confirm: "Delete", danger: true }))) return;
+				if (await attempt("Deleted", () => api("DELETE", path))) { i.stored = false; draw(i); onDeleted?.(); }
+			}) }, "Delete") : null,
+			!i.local && !i.server_blocked ? h("button", { class: cls, type: "button", onclick: thenAsk(async () => {
+				if (await blockTarget(server)) { i.server_blocked = true; draw(i); onChanged?.(); }
+			}) }, `Block ${server}`) : null,
+			i.local && i.uploader && i.uploader !== sessionStorage.getItem(USER_KEY) ? h("button", { class: cls, type: "button", onclick: thenAsk(() => blockTarget(i.uploader)) }, "Block uploader") : null);
+	};
+	if (info) draw({ ...info });
+	else api("GET", path).then(draw).catch(() => fill(bar, h("button", { class: cls, type: "button", onclick: () => copyText(mxc) }, "Copy link")));
+	return bar;
 }
 
 // What people said and did; room setup events would bury it.
@@ -782,13 +866,15 @@ function eventLine(ev, reported) {
 		if (!c.body && !c.url) body = h("span", { class: "muted" }, "[removed]");
 		else if (c.msgtype === "m.image" || ev.type === "m.sticker" || c.msgtype === "m.video" || c.msgtype === "m.file" || c.msgtype === "m.audio") {
 			body = `[${(c.msgtype || "m.sticker").slice(2)}] ${c.body || ""}`;
-			const mxc = c.msgtype === "m.image" || ev.type === "m.sticker" ? c.url : c.info?.thumbnail_url;
-			if (typeof mxc === "string" && mxc.startsWith("mxc://")) {
-				const [server, mediaId] = mxc.replace("mxc://", "").split("/");
-				preview = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, "image"));
-				preview.addEventListener("click", () => preview.classList.toggle("revealed"));
-				loadPreview(preview, server, mediaId);
+			const shown = c.msgtype === "m.image" || ev.type === "m.sticker" ? c.url : c.info?.thumbnail_url;
+			const thumb = typeof shown === "string" && shown.startsWith("mxc://") ? h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, "image")) : null;
+			if (thumb) {
+				const [server, mediaId] = shown.replace("mxc://", "").split("/");
+				thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
+				loadPreview(thumb, server, mediaId);
 			}
+			const file = typeof c.url === "string" && c.url.startsWith("mxc://") ? c.url : null;
+			preview = thumb || file ? h("div", {}, thumb, file ? mediaActions(file, { compact: true }) : null) : null;
 		} else body = c.body;
 	} else if (ev.type === "m.room.member") body = h("span", { class: "muted" }, `${c.membership}${ev.state_key !== ev.sender ? ` ${ev.state_key}` : ""}`);
 	else if (ev.type === "m.room.name") body = h("span", { class: "muted" }, `named the room "${c.name || ""}"`);
@@ -1303,6 +1389,132 @@ pages.logs = async (main, params) => {
 		lines.length ? h("pre", { class: "output logs" }, text) : h("p", { class: "muted" }, "Nothing logged at this level yet."));
 };
 
+// Links and IDs pasted from a client: mxc:// links, matrix.to and matrix:
+// links, media download URLs, and bare user, room, alias or server names.
+// Several can be pasted at once, one per line or separated by spaces.
+function parseLinks(text) {
+	const out = [];
+	for (let raw of text.split(/\s+/).filter(Boolean).slice(0, 25)) {
+		raw = raw.replace(/^[<("']+|[>)"',.]+$/g, "");
+		let id = raw;
+		let event = null;
+		try {
+			const url = new URL(raw);
+			if (url.protocol === "mxc:") id = raw;
+			else if (url.hostname === "matrix.to") {
+				const [first, second] = url.hash.replace(/^#\/?/, "").split("?")[0].split("/").map(decodeURIComponent);
+				id = first;
+				if (second?.startsWith("$")) event = second;
+			} else if (url.protocol === "matrix:") {
+				const parts = url.pathname.split("?")[0].split("/").map(decodeURIComponent);
+				const sigil = { u: "@", r: "#", roomid: "!" }[parts[0]];
+				if (sigil) id = sigil + parts[1];
+				if (parts[2] === "e" && parts[3]) event = `$${parts[3]}`;
+			} else {
+				const m = url.pathname.match(/\/_matrix\/(?:client\/v1|media\/v3|media\/r0)\/media?\/?(?:download|thumbnail)\/([^/]+)\/([^/?#]+)/)
+					|| url.pathname.match(/\/(?:download|thumbnail)\/([^/]+)\/([^/?#]+)/);
+				if (m) id = `mxc://${decodeURIComponent(m[1])}/${decodeURIComponent(m[2])}`;
+			}
+		} catch { /* not a URL: a bare ID */ }
+		let kind = null;
+		if (/^mxc:\/\/[^/\s]+\/[A-Za-z0-9_-]+$/.test(id)) kind = "media";
+		else if (/^@[^:\s]+:\S+$/.test(id)) kind = "user";
+		else if (/^![^\s]+$/.test(id)) kind = "room";
+		else if (/^#[^:\s]+:\S+$/.test(id)) kind = "alias";
+		else if (/^\$\S+$/.test(id)) kind = "event";
+		else if (/^[a-z0-9.-]+\.[a-z]{2,}(:\d+)?$/i.test(id)) kind = "server";
+		out.push({ raw, id, kind, event });
+	}
+	return out;
+}
+
+pages.lookup = async (main, params) => {
+	const q = params.get("q") || "";
+	const input = h("textarea", { class: "lookup-box", placeholder: "Paste links or IDs from your client: mxc://…, https://matrix.to/#/…, @user:server, !room, #alias:server, or a server name", spellcheck: "false" }, q);
+	const go = () => navigate("lookup", { q: input.value.trim() });
+	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); go(); } });
+	const items = parseLinks(q);
+	const blocked = items.some((i) => i.kind === "user" || i.kind === "server")
+		? new Set(((await api("GET", `${MOD}/blocklist`).catch(() => null))?.blocked || []).map((b) => b.target))
+		: new Set();
+	fill(main,
+		h("h1", {}, "Look up"),
+		h("p", { class: "muted" }, "Use your client's Copy link on a picture, message, person or room, paste it here and act on it. Several at once work too, one per line."),
+		input,
+		h("div", { class: "toolbar" }, h("button", { onclick: go }, "Look up")),
+		h("div", { class: "lookup-results" }, items.map((i) => lookupCard(i, blocked))));
+	if (!q) input.focus();
+};
+
+function lookupCard(item, blocked) {
+	const card = h("section", { class: "card" }, h("h2", { class: "mono" }, item.id), h("p", { class: "muted" }, "Loading…"));
+	const body = (...children) => { card.replaceChildren(h("h2", { class: "mono break" }, item.id), ...children); };
+	const blockedTag = (t) => blocked.has(t) ? h("span", { class: "tag bad" }, "blocked") : null;
+	(async () => {
+		try {
+			if (item.kind === "media") {
+				const [server, mediaId] = item.id.replace("mxc://", "").split("/");
+				const info = await api("GET", `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`);
+				const thumb = h("div", { class: "media-thumb", title: "Click to reveal" }, h("span", { class: "muted small" }, info.media_type || "media"));
+				thumb.addEventListener("click", () => thumb.classList.toggle("revealed"));
+				if (!info.media_type || RASTER.has(info.media_type)) loadPreview(thumb, server, mediaId);
+				body(
+					h("p", { class: "small muted" }, [
+						info.local ? `uploaded here${info.uploader ? ` by ${info.uploader}` : ""}` : `from ${server}${info.server_blocked ? " (blocked)" : ""}`,
+						info.stored ? null : info.local ? "not on this server" : "no copy here yet",
+						info.media_type, info.bytes ? bytes(info.bytes) : null, info.created_ts ? date(info.created_ts) : null,
+					].filter(Boolean).join(" · ")),
+					thumb,
+					mediaActions(item.id, { info }),
+					info.stored ? null : h("p", { class: "muted small" }, "Swapping it now means nobody here ever loads it, even before anyone has opened it."));
+			} else if (item.kind === "user") {
+				const local = serverOf(item.id) === ourServer();
+				const details = local ? await api("GET", `/_synapse/admin/v2/users/${enc(item.id)}`).catch(() => null) : null;
+				body(
+					h("p", {}, blockedTag(item.id), blocked.has(serverOf(item.id)) ? h("span", { class: "tag bad" }, "server blocked") : null,
+						local ? (details ? `${details.displayname || ""} · account here` : "No such account here.") : `On ${serverOf(item.id)}`),
+					h("div", { class: "toolbar" },
+						h("button", { class: "ghost small", onclick: () => copyText(item.id) }, "Copy"),
+						blocked.has(item.id) ? h("button", { class: "ghost small", onclick: () => navigate("blocklist") }, "In the blocklist") :
+							h("button", { class: "danger small", onclick: async () => { if (await blockTarget(item.id)) render(); } }, "Block"),
+						!local && !blocked.has(serverOf(item.id)) ? h("button", { class: "ghost small", onclick: async () => { if (await blockTarget(serverOf(item.id))) render(); } }, `Block ${serverOf(item.id)}`) : null,
+						local && details ? h("button", { class: "ghost small", onclick: () => navigate("media", { user: item.id }) }, "Their uploads") : null,
+						local && details ? h("button", { class: "ghost small", onclick: () => navigate("users", { q: item.id.slice(1).split(":")[0] }) }, "In Users") : null));
+			} else if (item.kind === "room" || item.kind === "alias") {
+				const roomId = item.kind === "alias"
+					? (await api("GET", `/_matrix/client/v3/directory/room/${enc(item.id)}`)).room_id
+					: item.id;
+				const details = await api("GET", `/_synapse/admin/v1/rooms/${enc(roomId)}`).catch(() => null);
+				body(
+					details ? h("div", { class: "evidence" }, roomFacts(details)) : h("p", { class: "muted" }, "This server isn't in that room, so it knows nothing about it."),
+					item.kind === "alias" ? h("p", { class: "small muted mono" }, roomId) : null,
+					h("div", { class: "toolbar" },
+						details ? h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: roomId }, details.name || roomId) }, "Look at room") : null,
+						details && item.event ? h("button", { class: "small", onclick: () => lookAt({ kind: "message", room_id: roomId, event_id: item.event }, "Linked message") }, "Look at message") : null,
+						details ? h("button", { class: "ghost small", onclick: () => navigate("media", { room: roomId }) }, "Media in it") : null,
+						h("button", { class: "ghost small", onclick: () => copyText(roomId) }, "Copy room ID"),
+						h("button", { class: "danger small", onclick: () => blockRoom(roomId, details?.name) }, "Block room")));
+			} else if (item.kind === "server") {
+				const cached = await api("GET", `/_anoncat/admin/v1/media/cached?server=${enc(item.id)}`).catch(() => null);
+				const mine = cached?.servers.find((s) => s.server === item.id);
+				body(
+					h("p", {}, blockedTag(item.id), mine ? `${mine.items} files cached here, ${bytes(mine.bytes)}` : "Nothing cached from it."),
+					h("div", { class: "toolbar" },
+						blocked.has(item.id) ? h("button", { class: "ghost small", onclick: () => navigate("blocklist") }, "In the blocklist") :
+							h("button", { class: "danger small", onclick: async () => { if (await blockTarget(item.id)) render(); } }, "Block server"),
+						mine ? h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote", server: item.id }) }, "Its media") : null));
+			} else if (item.kind === "event") {
+				body(h("p", { class: "muted" }, "A message ID alone doesn't say which room it's in. Copy the message's link in your client instead; that has both."));
+			} else {
+				body(h("p", { class: "muted" }, "Not something this recognises. Try an mxc:// link, a matrix.to link, @user:server, !room, #alias:server or a server name."));
+			}
+		} catch (e) {
+			body(h("p", { class: "error" }, `Couldn't look it up: ${e.message}`));
+		}
+	})();
+	return card;
+}
+
 // --- routing & session ---------------------------------------------------------
 
 function navigate(page, params = {}) {
@@ -1354,6 +1566,16 @@ async function signOut(callServer = true) {
 	sessionStorage.removeItem(DEVICE_KEY);
 	showLogin(callServer ? "" : "Session ended; sign in again.");
 }
+
+// The sidebar's paste box: whatever is pasted opens on the Look up page.
+$("#lookup-form").addEventListener("submit", (e) => {
+	e.preventDefault();
+	const input = $("#lookup-input");
+	if (!input.value.trim()) return navigate("lookup");
+	navigate("lookup", { q: input.value.trim() });
+	input.value = "";
+});
+$("#lookup-input").addEventListener("paste", () => setTimeout(() => $("#lookup-form").requestSubmit()));
 
 $("#login-form").addEventListener("submit", async (e) => {
 	e.preventDefault();

@@ -235,3 +235,13 @@ button.tiny { padding: 0 6px; font-size: 11px; line-height: 18px; margin-left: 8
 .stand-in-choice input:checked + .stand-in-pic { border-color: var(--accent); }
 .stand-in-choice input:focus-visible + .stand-in-pic { outline: 2px solid var(--accent); outline-offset: 2px; }
 .hidden-input { display: none; }
+
+.side-lookup { margin: 0 0 8px; }
+.side-lookup input { width: 100%; box-sizing: border-box; font-size: 13px; }
+.lookup-box { width: 100%; box-sizing: border-box; min-height: 70px; font-family: ui-monospace, monospace; }
+.lookup-results { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; }
+.lookup-results .media-thumb { max-width: 320px; }
+.break { overflow-wrap: anywhere; }
+.media-actions { flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.timeline-more { display: flex; justify-content: center; padding: 4px 0; }
+.copy-fallback { margin-bottom: 8px; }

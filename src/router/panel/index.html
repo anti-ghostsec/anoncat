@@ -23,7 +23,11 @@
 <div id="app" class="app" hidden>
 	<nav class="side">
 		<div class="brand">anoncat <span id="server-name" class="muted"></span></div>
+		<form id="lookup-form" class="side-lookup" role="search">
+			<input id="lookup-input" placeholder="Paste a link or ID…" aria-label="Look up a pasted link or ID" spellcheck="false">
+		</form>
 		<a href="#/dashboard" data-page="dashboard">Dashboard</a>
+		<a href="#/lookup" data-page="lookup">Look up</a>
 		<a href="#/users" data-page="users">Users</a>
 		<a href="#/tokens" data-page="tokens">Invites</a>
 		<a href="#/rooms" data-page="rooms">Rooms</a>

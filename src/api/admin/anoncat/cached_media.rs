@@ -1,4 +1,5 @@
-//! Media cached from other servers: what's kept, per server, and deleting it.
+//! Media cached from other servers: what's kept, per server, and deleting it;
+//! and any one item, local or not, looked up by its mxc:// link.
 
 use axum::{
 	Json,
@@ -104,16 +105,82 @@ pub(crate) struct DeletedResponse {
 	bytes: u64,
 }
 
-/// `DELETE /_anoncat/admin/v1/media/cached/{server}/{media_id}`
+#[derive(Serialize)]
+pub(crate) struct ItemInfo {
+	mxc: String,
+	/// Uploaded here, rather than a copy of another server's.
+	local: bool,
+	/// Whether this server holds the file at all.
+	stored: bool,
+	hidden: bool,
+	server_blocked: bool,
+	uploader: Option<String>,
+	media_type: Option<String>,
+	bytes: Option<u64>,
+	upload_name: Option<String>,
+	created_ts: Option<u64>,
+}
+
+/// Parses the path's server and ID as an mxc:// link.
+fn item_mxc(server: &str, media_id: &str) -> Result<String> {
+	let mxc = format!("mxc://{server}/{media_id}");
+	if Mxc::try_from(mxc.as_str()).is_err() {
+		return Err!(Request(InvalidParam("Not an mxc:// link.")));
+	}
+
+	Ok(mxc)
+}
+
+/// `GET /_anoncat/admin/v1/media/item/{server}/{media_id}`: what's known about
+/// one item, from here or anywhere.
+pub(crate) async fn item_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	Path((server, media_id)): Path<(String, String)>,
+) -> Result<Json<ItemInfo>> {
+	super::require_admin_token(&services, &headers).await?;
+	let mxc = item_mxc(&server, &media_id)?;
+	let parts: Mxc<'_> = mxc.as_str().try_into()?;
+	let entry = services.media.media_entry(&parts).await;
+	let local = services.globals.server_is_ours(parts.server_name);
+
+	Ok(Json(ItemInfo {
+		local,
+		stored: entry.is_some(),
+		hidden: services.media.is_hidden(&parts),
+		server_blocked: !local && services.moderation.server_blocked(parts.server_name),
+		uploader: entry
+			.as_ref()
+			.and_then(|e| e.user_id.as_ref())
+			.filter(|_| local)
+			.map(ToString::to_string),
+		media_type: entry.as_ref().and_then(|e| e.media_type.clone()),
+		bytes: entry.as_ref().and_then(|e| e.media_length),
+		upload_name: entry.as_ref().and_then(|e| e.upload_name.clone()),
+		created_ts: entry.as_ref().map(|e| e.created_ts),
+		mxc,
+	}))
+}
+
+/// `DELETE /_anoncat/admin/v1/media/item/{server}/{media_id}`: an upload from
+/// here is gone for good; another server's is only this server's copy.
 pub(crate) async fn delete_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
 	Path((server, media_id)): Path<(String, String)>,
 ) -> Result<Json<DeletedResponse>> {
 	super::require_admin_token(&services, &headers).await?;
-	let mxc = format!("mxc://{server}/{media_id}");
+	let mxc = item_mxc(&server, &media_id)?;
 	let mxc: Mxc<'_> = mxc.as_str().try_into()?;
-	services.media.delete_cached(&mxc).await?;
+	if services.media.media_entry(&mxc).await.is_none() {
+		return Err!(Request(NotFound("This server has no copy of it.")));
+	}
+	if services.globals.server_is_ours(mxc.server_name) {
+		services.media.delete(&mxc).await?;
+	} else {
+		services.media.delete_cached(&mxc).await?;
+	}
+
 	Ok(Json(DeletedResponse { items: 1, bytes: 0 }))
 }
 
@@ -122,8 +189,9 @@ pub(crate) struct HiddenResponse {
 	hidden: bool,
 }
 
-/// `POST /_anoncat/admin/v1/media/cached/{server}/{media_id}/hide`: kept
-/// stored for the panel, but served to nobody; people here see the cat.
+/// `POST /_anoncat/admin/v1/media/item/{server}/{media_id}/hide`: kept
+/// stored for the panel, but served to nobody; people here see the stand-in.
+/// Works before this server has a copy, so nobody here ever fetches it.
 pub(crate) async fn hide_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
@@ -132,12 +200,12 @@ pub(crate) async fn hide_route(
 	let admin = super::require_admin_token(&services, &headers).await?;
 	services
 		.media
-		.hide(&format!("mxc://{server}/{media_id}"), &format!("hidden by {admin}"))?;
+		.hide(&item_mxc(&server, &media_id)?, &format!("hidden by {admin}"))?;
 
 	Ok(Json(HiddenResponse { hidden: true }))
 }
 
-/// `DELETE /_anoncat/admin/v1/media/cached/{server}/{media_id}/hide`
+/// `DELETE /_anoncat/admin/v1/media/item/{server}/{media_id}/hide`
 pub(crate) async fn unhide_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
@@ -146,7 +214,7 @@ pub(crate) async fn unhide_route(
 	super::require_admin_token(&services, &headers).await?;
 	services
 		.media
-		.unhide(&format!("mxc://{server}/{media_id}"))?;
+		.unhide(&item_mxc(&server, &media_id)?)?;
 
 	Ok(Json(HiddenResponse { hidden: false }))
 }
