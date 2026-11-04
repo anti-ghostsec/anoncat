@@ -35,7 +35,7 @@ const PLAYABLE_TYPES: [&str; 9] = [
 	"audio/flac",
 ];
 /// Largest video or sound the panel plays; it's held in memory while sent.
-const PLAY_MAX_BYTES: usize = 100 << 20;
+const PLAY_MAX_BYTES: usize = 1 << 30;
 
 #[derive(Serialize)]
 pub(crate) struct SettingsResponse {

@@ -43,7 +43,11 @@ ip_source = "connect_info"
 log = "warn"
 
 # Biggest single upload. Uploads are held in memory while they arrive.
-max_request_size = "512 MiB"
+max_request_size = "1 GiB"
+
+# Longest a request may take, upload included (seconds). 30 minutes lets a
+# 1 GiB upload finish on a slow phone connection through the VPN.
+client_request_timeout = 1800
 
 # --- registration --------------------------------------------------------------
 # Apps signing up need a token: this one (from the installer) or invite tokens
