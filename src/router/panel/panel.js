@@ -788,6 +788,19 @@ pages.blocklist = async (main) => {
 		table(["Room", ""], roomRows, "No rooms are blocked."));
 };
 
+// Adds a line to the AI's guidance, from a report it got wrong.
+async function teachAi(r) {
+	const v = await ask("Note for the AI", {
+		text: `The AI said: "${r.reason}". Write how cases like this should be judged; it's added to the AI's notes in Settings, where you can change it later.`,
+		fields: [{ name: "note", label: "Note", required: true, placeholder: "e.g. Rooms that list what's banned aren't promoting it." }],
+		confirm: "Add note" });
+	const note = v?.note?.trim();
+	if (!note) return false;
+	const cur = await api("GET", `${MOD}/settings`);
+	const guidance = [cur.settings.guidance?.trim(), `- ${note.replace(/^[-\s]+/, "")}`].filter(Boolean).join("\n");
+	return Boolean(await attempt("Note added", () => api("PUT", `${MOD}/settings`, { guidance })));
+}
+
 pages.reports = async (main, params) => {
 	const all = params.get("all") === "1";
 	const res = await api("GET", `${MOD}/reports${all ? "?all=true" : ""}`);
@@ -817,7 +830,13 @@ pages.reports = async (main, params) => {
 					if (await blockTarget(serverOf(r.sender), { reason: r.category || "" })) refresh();
 				} }, `Block ${serverOf(r.sender)}`));
 			}
+			if (r.kind === "room") buttons.push(h("button", { class: "ghost small", title: "Dismiss, and don't check this room's name and topic again. Its messages are still checked.",
+				onclick: () => act("trust_room", "Dismissed; this room's description won't be checked again") }, "Fine, don't check again"));
 			buttons.push(h("button", { class: "ghost small", onclick: () => act("dismiss", "Dismissed") }, "Dismiss"));
+			buttons.push(h("button", { class: "ghost small", title: "Dismiss, and tell the AI how to judge cases like this from now on",
+				onclick: thenAsk(async () => {
+					if (await teachAi(r)) await act("dismiss", null);
+				}) }, "Dismiss + note for the AI"));
 		} else {
 			buttons.push(h("button", { class: "ghost small", onclick: () => act("reopen", "Reopened") }, "Reopen"));
 			if (r.hidden) buttons.push(h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide"));
@@ -1048,6 +1067,17 @@ pages.settings = async (main) => {
 
 	const extra = h("textarea", { name: "extra_rooms", placeholder: "#room:other.server or !roomid:server, one per line", spellcheck: "false" }, s.extra_rooms.join("\n"));
 	const rules = h("textarea", { name: "rules", class: "rules" }, s.rules);
+	const guidance = h("textarea", { name: "guidance", class: "rules" }, s.guidance || "");
+	let trusted = [...(s.trusted_rooms || [])];
+	const trustedCard = h("section", { class: "card" });
+	const drawTrusted = () => fill(trustedCard,
+		h("h2", {}, "Rooms whose description is fine"),
+		h("p", { class: "muted small" }, "Their name and topic aren't checked again; their messages still are. A room report's \"Fine, don't check again\" adds it here."),
+		trusted.length
+			? h("ul", { class: "room-refs" }, trusted.map((id) => h("li", {}, h("span", { class: "mono small" }, id), " ",
+				h("button", { type: "button", class: "ghost tiny", onclick: () => { trusted = trusted.filter((t) => t !== id); drawTrusted(); } }, "Remove"))))
+			: h("p", { class: "muted small" }, "None yet."));
+	drawTrusted();
 	const field = (label, input, help) => h("label", { class: "field" }, h("span", {}, label), input, help ? h("span", { class: "muted small" }, help) : null);
 	const batch = h("input", { type: "number", name: "batch_minutes", min: 1, max: 60, value: s.batch_minutes });
 	const large = h("input", { type: "number", name: "large_file_mb", min: 0, value: s.large_file_mb });
@@ -1094,7 +1124,9 @@ pages.settings = async (main) => {
 			h("h2", {}, "Models and rules"),
 			field("Text model", modelSelect("text_model", false)),
 			field("Image model", modelSelect("vision_model", true), "Venice runs the open models (Qwen, DeepSeek, GLM, Gemma, Llama, Venice) itself without keeping anything. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
-			field("Server rules, as the AI is told them", rules)),
+			field("Server rules, as the AI is told them", rules),
+			field("Notes on judging", guidance, "How to judge borderline cases, in your words. Added to every check, and the AI follows them over its own sense. \"Dismiss + note for the AI\" on a report adds a line here.")),
+		trustedCard,
 		h("div", { class: "toolbar" }, h("button", { type: "submit" }, "Save settings")));
 
 	form.addEventListener("submit", async (e) => {
@@ -1116,6 +1148,8 @@ pages.settings = async (main) => {
 			rules: f.get("rules"),
 			cat_stand_in: f.has("cat_stand_in"),
 			stand_in_image: f.get("stand_in_image") || "orange",
+			guidance: f.get("guidance") || "",
+			trusted_rooms: trusted,
 			upload_guard: f.has("upload_guard"),
 			upload_allowance: Number(f.get("upload_allowance") || 20),
 		};

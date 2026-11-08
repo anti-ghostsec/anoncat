@@ -88,6 +88,17 @@ pub(super) fn member_event(&self, pdu: &PduEvent) {
 
 #[implement(Service)]
 pub(super) fn queue_room(&self, room_id: &RoomId, pdu: Option<&PduEvent>, force: bool) {
+	if self
+		.settings
+		.read()
+		.expect("locked")
+		.trusted_rooms
+		.iter()
+		.any(|r| r == room_id)
+	{
+		return;
+	}
+
 	let mut pending = self.pending_rooms.lock().expect("locked");
 	if pending.len() >= ROOMS_PER_RUN && !pending.contains_key(room_id) {
 		return;
@@ -328,8 +339,9 @@ async fn check_room(
 		 hint at that and an admin should look. Otherwise \"ok\": rude, edgy or adult names \
 		 alone are fine, and so are quiet rooms. Reply with only JSON: \
 		 {{\"verdict\":\"ok|questionable|bad\",\"category\":\"csam|drugs|weapons|fraud|hacking|\
-		 extremism|spam|other\",\"reason\":\"<one short sentence>\"}}.",
-		rules = settings.rules
+		 extremism|spam|other\",\"reason\":\"<one short sentence>\"}}.{guidance}",
+		rules = settings.rules,
+		guidance = super::guidance_block(&settings),
 	);
 
 	let model = self.model(&settings.text_model, false).await?;

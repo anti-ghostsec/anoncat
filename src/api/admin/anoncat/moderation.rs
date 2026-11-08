@@ -65,7 +65,8 @@ fn settings_response(services: &crate::State, settings: Settings) -> SettingsRes
 	}
 }
 
-/// The settings as the page sends them; `extra_rooms` may hold aliases.
+/// The settings as the page sends them, all or some; `extra_rooms` may hold
+/// aliases.
 pub(crate) async fn put_settings_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
@@ -73,13 +74,19 @@ pub(crate) async fn put_settings_route(
 ) -> Result<Json<SettingsResponse>> {
 	super::require_admin_token(&services, &headers).await?;
 
+	// What isn't sent stays as it is.
+	let current = services.moderation.settings();
 	let extra: Vec<String> = body
 		.as_object_mut()
 		.and_then(|body| body.remove("extra_rooms"))
 		.and_then(|v| serde_json::from_value(v).ok())
-		.unwrap_or_default();
+		.unwrap_or_else(|| current.extra_rooms.iter().map(ToString::to_string).collect());
 
-	let Ok(settings) = serde_json::from_value::<Settings>(body) else {
+	let mut merged = serde_json::to_value(&current)?;
+	if let (Some(merged), Some(sent)) = (merged.as_object_mut(), body.as_object()) {
+		merged.extend(sent.clone());
+	}
+	let Ok(settings) = serde_json::from_value::<Settings>(merged) else {
 		return Err!(Request(BadJson("Settings didn't parse.")));
 	};
 

@@ -149,6 +149,12 @@ pub struct Settings {
 	pub vision_model: String,
 	/// The server's rules, as the AI is told them.
 	pub rules: String,
+	/// The admin's own notes on judging, added to every check: how to read
+	/// borderline cases the AI got wrong.
+	pub guidance: String,
+	/// Rooms whose name, topic and description the admin judged fine; they
+	/// aren't checked as a whole again. Their messages still are.
+	pub trusted_rooms: Vec<OwnedRoomId>,
 	/// How long new messages collect before they're checked together.
 	pub batch_minutes: u64,
 	/// People here see a picture in place of hidden media and media from
@@ -178,6 +184,8 @@ impl Default for Settings {
 			text_model: "auto".into(),
 			vision_model: "auto".into(),
 			rules: DEFAULT_RULES.into(),
+			guidance: DEFAULT_GUIDANCE.into(),
+			trusted_rooms: Vec::new(),
 			batch_minutes: 2,
 			cat_stand_in: true,
 			stand_in_image: "orange".into(),
@@ -194,6 +202,23 @@ const DEFAULT_RULES: &str = "\
 - No sexual content involving minors, ever.
 - No gore or sexual content in rooms not marked for it.
 - No selling illegal goods or services.";
+
+const DEFAULT_GUIDANCE: &str = "\
+- Read a room's rules and description as a whole. \"Anything goes, except X, Y and Z\" or \"follow the laws of <country>\" forbids X, Y and Z: naming what's banned is not promoting it.
+- Don't flag something only for mentioning a topic. Flag it for doing, offering, asking for or encouraging it.
+- When a case is borderline and nothing in it is clearly against the rules, say it's fine.";
+
+/// The admin's notes, as added to a check's instructions; empty when none.
+fn guidance_block(settings: &Settings) -> String {
+	let guidance = settings.guidance.trim();
+	if guidance.is_empty() {
+		return String::new();
+	}
+
+	format!(
+		"\n\nThe admin's own notes on judging. Follow them over your own sense of a case:\n{guidance}"
+	)
+}
 
 /// One thing the moderation wants an admin to look at.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -385,6 +410,10 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	settings.extra_rooms = rooms;
 	settings.batch_minutes = settings.batch_minutes.clamp(1, 60);
 	settings.rules.truncate(4000);
+	settings.guidance.truncate(4000);
+	settings.trusted_rooms.sort();
+	settings.trusted_rooms.dedup();
+	settings.trusted_rooms.truncate(1000);
 	settings.upload_allowance = settings.upload_allowance.clamp(1, 10_000);
 	if settings.stand_in_image != "custom"
 		&& !stand_in::BUILT_IN.contains(&settings.stand_in_image.as_str())
@@ -712,8 +741,9 @@ async fn check_messages(&self, settings: &Settings, key: &str, messages: Vec<Mes
 		 arguments are fine. Reply with only JSON: {{\"flags\":[{{\"n\":<message \
 		 number>,\"category\":\"spam|scam|harassment|threat|doxxing|csam|illegal|other\",\"\
 		 severity\":\"low|medium|high\",\"reason\":\"<one short sentence>\"}}]}}. Reply \
-		 {{\"flags\":[]}} when nothing breaks them.",
-		rules = settings.rules
+		 {{\"flags\":[]}} when nothing breaks them.{guidance}",
+		rules = settings.rules,
+		guidance = guidance_block(&settings),
 	);
 
 	let reply =
@@ -766,8 +796,9 @@ async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Re
 		"You check images posted in the public rooms of a chat server. Its rules:\n{rules}\n\n\
 		 Reply with only JSON: {{\"verdict\":\"ok|questionable|bad\",\"category\":\"<short \
 		 word>\",\"reason\":\"<one short sentence>\"}}. Say \"bad\" only when the image clearly \
-		 breaks the rules or the law; \"questionable\" when a person should look.",
-		rules = settings.rules
+		 breaks the rules or the law; \"questionable\" when a person should look.{guidance}",
+		rules = settings.rules,
+		guidance = guidance_block(&settings),
 	);
 
 	let parts = vec![
@@ -952,7 +983,10 @@ pub async fn act(&self, id: u64, action: &str) -> Result<Report> {
 	match action {
 		// Nothing wrong: the report is deleted, not kept as "dismissed", and a
 		// picture the AI hid comes back, since no list would show it anymore.
-		| "dismiss" => {
+		| "dismiss" | "trust_room" => {
+			if action == "trust_room" {
+				self.trust_room(&report.room_id)?;
+			}
 			if report.hidden
 				&& let Some(mxc) = &report.mxc
 			{
@@ -983,6 +1017,22 @@ pub async fn act(&self, id: u64, action: &str) -> Result<Report> {
 
 	self.save_report(&report);
 	Ok(report)
+}
+
+/// Stops checking a room's name and topic: the admin judged them fine.
+#[implement(Service)]
+fn trust_room(&self, room_id: &str) -> Result {
+	let room_id = RoomId::parse(room_id)
+		.map_err(|_| err!(Request(InvalidParam("This report has no room."))))?;
+	let mut settings = self.settings();
+	if !settings.trusted_rooms.contains(&room_id) {
+		settings.trusted_rooms.push(room_id);
+		self.settings_map
+			.insert(SETTINGS_KEY, serde_json::to_vec(&settings)?);
+		*self.settings.write().expect("locked") = settings;
+	}
+
+	Ok(())
 }
 
 /// Checks the key and model choice with a tiny request.
