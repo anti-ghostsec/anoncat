@@ -364,6 +364,7 @@ function roomActions(r, refresh) {
 
 pages.media = async (main, params) => {
 	if (params.get("view") === "remote") return remoteMedia(main, params);
+	if (params.get("view") === "storage") return storageCheck(main, params);
 	const room = params.get("room");
 	const user = params.get("user") || "";
 	const items = [];
@@ -402,7 +403,71 @@ function mediaTabs(current) {
 		onclick: () => navigate("media", params) }, label);
 	return h("div", { class: "toolbar" },
 		tab("here", "Uploaded here", {}),
-		tab("remote", "From other servers", { view: "remote" }));
+		tab("remote", "From other servers", { view: "remote" }),
+		tab("storage", "Storage check", { view: "storage" }));
+}
+
+// Accounts here using the server as file storage: uploading far more than
+// they post, or uploading pieces of split-up files.
+async function storageCheck(main, params) {
+	const res = await api("GET", "/_anoncat/admin/v1/media/storage");
+	const reload = () => storageCheck(main, params);
+	const all = params.get("all") === "1";
+	const flagged = res.uploaders.filter((u) => u.flagged);
+	const shown = all ? res.uploaders : flagged;
+	const idx = res.index;
+
+	const remove = async (u, onlyPieces) => {
+		const what = onlyPieces ? `${u.pieces} split-file pieces (${bytes(u.piece_bytes)})` : `all ${u.uploads} uploads (${bytes(u.bytes)})`;
+		if (!(await ask(`Delete ${what} from ${u.user_id}?`, {
+			text: onlyPieces
+				? "Only files named like pieces (chunk_0.enc and so on) go. They're gone for good, for everyone."
+				: "Every file they uploaded goes, for good, including pictures they posted in rooms. Files in encrypted rooms can't be told apart from stored ones, so this is the sure way.",
+			confirm: "Delete", danger: true }))) return;
+		const r = await attempt(null, () => api("POST", "/_anoncat/admin/v1/media/storage/delete", { user_id: u.user_id, only_pieces: onlyPieces }));
+		if (r) { toast(`Deleted ${r.items} files, ${bytes(r.bytes)}`); reload(); }
+	};
+
+	const rows = shown.map((u) => h("tr", {},
+		h("td", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); navigate("media", { user: u.user_id }); } }, u.user_id),
+			u.flagged ? h("span", { class: "tag bad" }, "suspicious") : null,
+			u.reasons.length ? h("div", { class: "small muted" }, u.reasons.join("; ")) : null),
+		h("td", {}, String(u.uploads)),
+		h("td", {}, bytes(u.bytes)),
+		h("td", {}, String(u.in_rooms)),
+		h("td", {}, String(u.posts)),
+		h("td", {}, u.pieces ? `${u.pieces} (${bytes(u.piece_bytes)})` : "0"),
+		h("td", {}, date(u.newest_ts)),
+		h("td", { class: "actions" }, h("span", {},
+			u.pieces ? h("button", { class: "danger small", onclick: () => remove(u, true) }, "Delete pieces") : null,
+			h("button", { class: "danger small", onclick: () => remove(u, false) }, "Delete all uploads"),
+			u.user_id !== sessionStorage.getItem(USER_KEY) ? h("button", { class: "ghost small", onclick: thenAsk(async () => { if (await blockTarget(u.user_id)) reload(); }) }, "Block") : null))));
+
+	fill(main,
+		h("h1", {}, "Storage check"),
+		mediaTabs("storage"),
+		h("p", { class: "muted small" },
+			"Some tools cut a file into encrypted pieces and upload them to any homeserver without ever posting them, so the server becomes free, invisible storage. ",
+			"Real attachments get posted: one message per file, even in encrypted rooms. Accounts that upload far more than they post are listed here."),
+		h("section", { class: "card" },
+			h("p", {},
+				res.upload_guard
+					? [h("span", { class: "tag ok" }, "upload limit on"), ` An account may upload ${res.upload_allowance} files a day more than it posts, and pieces of split-up files are refused. Admins aren't limited.`]
+					: [h("span", { class: "tag warn" }, "upload limit off"), " Anyone here can upload as much as they like. Turn the limit on in Settings."]),
+			h("p", { class: "small muted" },
+				idx.scanning ? `Reading past messages for where files were posted… ${idx.events_read.toLocaleString()} so far. The "In rooms" and "Posts" counts fill in as it goes.`
+					: idx.indexed ? "Where files were posted is known for every message this server holds. Files posted in encrypted rooms never count as in a room: the server can't read those messages."
+					: "Past messages haven't been read yet, so \"In rooms\" and \"Posts\" may be low."),
+			h("div", { class: "toolbar" },
+				idx.scanning ? h("button", { class: "ghost small", onclick: reload }, "Refresh")
+					: h("button", { class: "ghost small", onclick: async () => {
+						if (await attempt("Reading past messages", () => api("POST", "/_anoncat/admin/v1/media/storage/reindex"))) setTimeout(reload, 1500);
+					} }, "Read past messages again"))),
+		h("div", { class: "toolbar" },
+			h("button", { class: all ? "ghost small" : "small", onclick: () => navigate("media", { view: "storage" }) }, `Suspicious (${flagged.length})`),
+			h("button", { class: all ? "small" : "ghost small", onclick: () => navigate("media", { view: "storage", all: "1" }) }, `Everyone who uploaded (${res.uploaders.length})`)),
+		table(["Account", "Files", "Size", "In rooms", "Posts", "Pieces", "Newest", ""], rows,
+			all ? "Nobody here has uploaded anything." : "Nothing suspicious: everyone's uploads match what they post."));
 }
 
 // Copies of other servers' media, kept here because someone here viewed it.
@@ -458,6 +523,7 @@ function cachedItem(m, blocked) {
 		thumb,
 		h("div", { class: "mono muted" }, mediaId),
 		h("div", { class: "small muted" }, [server, bytes(m.bytes), m.fetched_ts ? date(m.fetched_ts) : null].filter(Boolean).join(" · ")),
+		m.in_room === false ? h("div", {}, h("span", { class: "tag warn", title: "Nobody posted it in a room here that isn't encrypted. Someone here asked for it directly, or it was posted in an encrypted room." }, "not seen in a room")) : null,
 		mediaActions(m.mxc, { info: { local: false, stored: true, hidden: m.hidden, server_blocked: blocked }, onDeleted: () => item.remove() }));
 	return item;
 }
@@ -890,6 +956,7 @@ function mediaActions(mxc, { info, compact = false, onDeleted, onChanged } = {})
 		fill(bar,
 			i.hidden ? h("span", { class: "tag warn" }, "swapped") : null,
 			h("button", { class: cls, type: "button", title: mxc, onclick: () => copyText(mxc) }, "Copy link"),
+			compact ? null : h("button", { class: cls, type: "button", title: "Rooms it was posted in, and who uploaded it", onclick: thenAsk(() => navigate("lookup", { q: mxc })) }, "Where from?"),
 			swap,
 			i.stored ? h("button", { class: compact ? "danger tiny" : "danger small", type: "button", onclick: thenAsk(async () => {
 				const text = i.local
@@ -1020,6 +1087,10 @@ pages.settings = async (main) => {
 			mode),
 		standInCard(s),
 		h("section", { class: "card" },
+			h("h2", {}, "Uploads"),
+			check("upload_guard", "Don't let this server be used as file storage", "Refuses pieces of split-up files (chunk_0.enc and so on), and uploads from an account that has uploaded more files today than it posted messages, plus the allowance below. Real attachments are always posted, encrypted rooms included. Admins aren't limited. See Media, Storage check."),
+			field("Extra uploads a day", h("input", { type: "number", name: "upload_allowance", min: 1, max: 10000, value: s.upload_allowance ?? 20 }), "Files an account may upload in a day beyond the messages it posted; room and profile pictures count here.")),
+		h("section", { class: "card" },
 			h("h2", {}, "Models and rules"),
 			field("Text model", modelSelect("text_model", false)),
 			field("Image model", modelSelect("vision_model", true), "Venice runs the open models (Qwen, DeepSeek, GLM, Gemma, Llama, Venice) itself without keeping anything. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
@@ -1045,6 +1116,8 @@ pages.settings = async (main) => {
 			rules: f.get("rules"),
 			cat_stand_in: f.has("cat_stand_in"),
 			stand_in_image: f.get("stand_in_image") || "orange",
+			upload_guard: f.has("upload_guard"),
+			upload_allowance: Number(f.get("upload_allowance") || 20),
 		};
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});
@@ -1499,7 +1572,7 @@ pages.lookup = async (main, params) => {
 
 function lookupCard(item, blocked) {
 	const card = h("section", { class: "card" }, h("h2", { class: "mono" }, item.id), h("p", { class: "muted" }, "Loading…"));
-	const body = (...children) => { card.replaceChildren(h("h2", { class: "mono break" }, item.id), ...children); };
+	const body = (...children) => fill(card, h("h2", { class: "mono break" }, item.id), ...children);
 	const blockedTag = (t) => blocked.has(t) ? h("span", { class: "tag bad" }, "blocked") : null;
 	(async () => {
 		try {
@@ -1515,6 +1588,14 @@ function lookupCard(item, blocked) {
 					].filter(Boolean).join(" · ")),
 					thumb,
 					mediaActions(item.id, { info }),
+					info.piece ? h("p", {}, h("span", { class: "tag bad" }, "split-file piece"), " Named like a piece of a split-up, encrypted file: someone is using a server as file storage.") : null,
+					h("h3", {}, "Posted in"),
+					info.rooms?.length
+						? h("ul", { class: "room-refs" }, info.rooms.map((r) => h("li", {},
+							h("span", {}, r.name || r.room_id), r.name ? h("span", { class: "small muted mono" }, ` ${r.room_id}`) : null, " ",
+							h("button", { class: "ghost tiny", onclick: () => lookAt({ kind: "room", room_id: r.room_id }, r.name || r.room_id) }, "Look at room"),
+							h("button", { class: "ghost tiny", onclick: () => navigate("lookup", { q: r.room_id }) }, "Room actions"))))
+						: h("p", { class: "muted small" }, "No room here that isn't encrypted has posted it. Someone here asked for it directly, or it was posted in an encrypted room, where the server can't read which file a message carries."),
 					info.stored ? null : h("p", { class: "muted small" }, "Swapping it now means nobody here ever loads it, even before anyone has opened it."));
 			} else if (item.kind === "user") {
 				const local = serverOf(item.id) === ourServer();

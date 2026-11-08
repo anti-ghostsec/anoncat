@@ -12,6 +12,7 @@ pub(crate) mod moderation;
 pub(crate) mod notices;
 pub(crate) mod plugins;
 pub(crate) mod status;
+pub(crate) mod storage;
 
 use axum::http::{HeaderMap, header::AUTHORIZATION};
 use ruma::OwnedUserId;

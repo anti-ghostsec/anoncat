@@ -113,3 +113,17 @@ pub async fn delete_cached_from(&self, server: &str) -> Result<(usize, u64)> {
 
 	Ok((items, bytes))
 }
+
+/// Every local upload, grouped by who uploaded it.
+#[implement(super::Service)]
+pub async fn uploads_by_user(&self) -> BTreeMap<ruma::OwnedUserId, Vec<super::UserMediaEntry>> {
+	let uploads: Vec<_> = self.db.all_uploads().collect().await;
+	let mut by_user: BTreeMap<ruma::OwnedUserId, Vec<super::UserMediaEntry>> = BTreeMap::new();
+	for (mxc, user) in uploads {
+		if let Some(entry) = self.user_media_entry(Some(&user), mxc).await {
+			by_user.entry(user).or_default().push(entry);
+		}
+	}
+
+	by_user
+}

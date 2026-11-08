@@ -24,6 +24,9 @@ pub(crate) struct Item {
 	fetched_ts: u64,
 	/// Hidden: people here see the cat, or nothing, in its place.
 	hidden: bool,
+	/// Seen in a room here. Media nobody here posted got fetched by someone
+	/// asking for it directly, or was posted in an encrypted room.
+	in_room: bool,
 }
 
 #[derive(Default, Serialize)]
@@ -76,19 +79,22 @@ pub(crate) async fn list_route(
 	}
 	servers.sort_by(|a, b| b.bytes.cmp(&a.bytes));
 
-	let media = cached
+	let mut media = Vec::new();
+	for item in cached
 		.iter()
 		.filter(|item| only.as_deref().is_none_or(|s| item.server.as_str() == s))
 		.take(LIMIT)
-		.map(|item| Item {
+	{
+		media.push(Item {
 			mxc: item.mxc.to_string(),
 			server: item.server.to_string(),
 			media_type: item.media_type.clone(),
 			bytes: item.bytes,
 			fetched_ts: item.fetched_ts,
 			hidden: services.media.is_hidden(&item.mxc.parts().expect("listed items are valid")),
-		})
-		.collect();
+			in_room: services.moderation.in_any_room(item.mxc.as_str()).await,
+		});
+	}
 
 	Ok(Json(ListResponse {
 		cat_stand_in: services.moderation.cat_stand_in(),
@@ -119,6 +125,16 @@ pub(crate) struct ItemInfo {
 	bytes: Option<u64>,
 	upload_name: Option<String>,
 	created_ts: Option<u64>,
+	/// Rooms it was seen in, as far as this server can tell.
+	rooms: Vec<RoomRef>,
+	/// Named like a piece of a split-up file.
+	piece: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RoomRef {
+	room_id: String,
+	name: Option<String>,
 }
 
 /// Parses the path's server and ID as an mxc:// link.
@@ -143,8 +159,20 @@ pub(crate) async fn item_route(
 	let parts: Mxc<'_> = mxc.as_str().try_into()?;
 	let entry = services.media.media_entry(&parts).await;
 	let local = services.globals.server_is_ours(parts.server_name);
+	let mut rooms = Vec::new();
+	for room_id in services.moderation.rooms_of(&mxc).await {
+		rooms.push(RoomRef {
+			name: services.state_accessor.get_name(&room_id).await.ok(),
+			room_id: room_id.to_string(),
+		});
+	}
 
 	Ok(Json(ItemInfo {
+		rooms,
+		piece: entry
+			.as_ref()
+			.and_then(|e| e.upload_name.as_deref())
+			.is_some_and(tuwunel_service::moderation::piece_name),
 		local,
 		stored: entry.is_some(),
 		hidden: services.media.is_hidden(&parts),

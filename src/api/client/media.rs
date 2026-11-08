@@ -75,6 +75,11 @@ pub(crate) async fn create_content_route(
 	services.media.check_upload_space().await?;
 
 	let filename = body.filename.as_deref();
+	services
+		.moderation
+		.check_upload(user, filename)
+		.await?;
+
 	let content_type = body.content_type.as_deref();
 	let content_disposition = make_content_disposition(None, content_type, filename);
 	let ref mxc = Mxc {
@@ -106,6 +111,11 @@ pub(crate) async fn create_mxc_uri_route(
 	body: Ruma<create_mxc_uri::v1::Request>,
 ) -> Result<create_mxc_uri::v1::Response> {
 	let user = body.sender_user();
+	services
+		.moderation
+		.check_upload(user, None)
+		.await?;
+
 	let mxc = Mxc {
 		server_name: services.globals.server_name(),
 		media_id: &utils::random_string(MXC_LENGTH),
@@ -153,6 +163,11 @@ pub(crate) async fn create_content_async_route(
 	};
 
 	let filename = body.filename.as_deref();
+	services
+		.moderation
+		.check_upload_name(user, filename)
+		.await?;
+
 	let content_type = body.content_type.as_deref();
 	let content_disposition = make_content_disposition(None, content_type, filename);
 

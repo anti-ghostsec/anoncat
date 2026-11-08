@@ -21,6 +21,7 @@ mod assistant;
 mod blocklist;
 mod stand_in;
 mod room_check;
+mod storage;
 mod venice;
 
 use std::{
@@ -54,6 +55,7 @@ pub use self::{
 	assistant::Said,
 	blocklist::Blocked,
 	stand_in::{BUILT_IN as STAND_IN_BUILT_IN, StandIn},
+	storage::{IndexStatus, Uploader, piece_name},
 	venice::{Model, Turn},
 };
 use self::venice::{Part, json_in};
@@ -101,6 +103,14 @@ pub struct Service {
 	blocked: RwLock<blocklist::Blocklist>,
 	/// The admin's own stand-in picture, when uploaded.
 	custom_stand_in: RwLock<Option<Arc<StandIn>>>,
+	/// `mxc\xFFroom_id`: rooms each mxc:// link was seen in.
+	mxc_rooms: Arc<Map>,
+	/// Messages each local account has posted.
+	sender_posts: Arc<Map>,
+	posts_lock: Mutex<()>,
+	/// Uploads and posts over the last day, per account.
+	recent: Mutex<HashMap<OwnedUserId, storage::Recent>>,
+	scan: storage::Scan,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -146,6 +156,11 @@ pub struct Settings {
 	pub cat_stand_in: bool,
 	/// Which: one of [`STAND_IN_BUILT_IN`] or "custom", the uploaded one.
 	pub stand_in_image: String,
+	/// Refuse uploads that would make this server someone's file storage:
+	/// split-file pieces, and more uploads than posts (see `storage`).
+	pub upload_guard: bool,
+	/// Uploads an account may make over a day beyond the messages it posted.
+	pub upload_allowance: u64,
 }
 
 impl Default for Settings {
@@ -166,6 +181,8 @@ impl Default for Settings {
 			batch_minutes: 2,
 			cat_stand_in: true,
 			stand_in_image: "orange".into(),
+			upload_guard: true,
+			upload_allowance: 20,
 		}
 	}
 }
@@ -233,12 +250,18 @@ impl crate::Service for Service {
 			rooms_now: AtomicBool::new(false),
 			blocked: RwLock::default(),
 			custom_stand_in: RwLock::default(),
+			mxc_rooms: args.db["anoncat_mxc_rooms"].clone(),
+			sender_posts: args.db["anoncat_sender_posts"].clone(),
+			posts_lock: Mutex::new(()),
+			recent: Mutex::default(),
+			scan: storage::Scan::default(),
 		}))
 	}
 
 	async fn worker(self: Arc<Self>) -> Result {
 		self.load_blocklist().await;
 		self.load_stand_in().await;
+		self.index_if_new().await;
 
 		if let Ok(stored) = self.settings_map.get(SETTINGS_KEY).await {
 			match serde_json::from_slice::<Settings>(&stored) {
@@ -362,6 +385,7 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	settings.extra_rooms = rooms;
 	settings.batch_minutes = settings.batch_minutes.clamp(1, 60);
 	settings.rules.truncate(4000);
+	settings.upload_allowance = settings.upload_allowance.clamp(1, 10_000);
 	if settings.stand_in_image != "custom"
 		&& !stand_in::BUILT_IN.contains(&settings.stand_in_image.as_str())
 	{

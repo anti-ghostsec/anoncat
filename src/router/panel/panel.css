@@ -439,3 +439,9 @@ dialog::backdrop { background: rgba(4, 6, 10, 0.6); backdrop-filter: blur(4px); 
 @media (prefers-reduced-motion: reduce) {
 	*, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Rooms a piece of media was posted in, on the Look up page. */
+.card h3 { margin: 14px 0 6px; font-size: 14px; font-weight: 600; }
+.room-refs { margin: 0; padding-left: 18px; }
+.room-refs li { margin: 4px 0; }
+.room-refs button { margin-left: 4px; }
