@@ -1,0 +1,27 @@
+# Starts anoncat again after the VPN reconnects. anoncat.socket is bound to
+# wg0, so systemd stops the socket and the server when the tunnel goes away.
+# Their own WantedBy= on the wg0 device starts them again, but only when the
+# tunnel comes back after they've stopped. A quick reconnect brings wg0 back
+# while they're still stopping, and systemd drops those starts. This waits
+# for the stop to finish, then starts them. ($$ is a $ for bash: systemd
+# would expand a single one itself.)
+[Unit]
+Description=Start anoncat again after the VPN reconnects
+BindsTo=sys-subsystem-net-devices-wg0.device
+After=sys-subsystem-net-devices-wg0.device
+ConditionPathIsMountPoint=/Drives/server/data
+
+[Service]
+Type=oneshot
+TimeoutStartSec=150
+ExecStart=/bin/bash -c '\
+	for _ in $$(seq 120); do \
+		state=$$(systemctl show -P ActiveState anoncat.service); \
+		jobs=$$(systemctl list-jobs --no-legend anoncat.service anoncat.socket anoncat-netd.service); \
+		[[ -z $$jobs && $$state != deactivating ]] && break; \
+		sleep 1; \
+	done; \
+	exec systemctl start --no-block anoncat.socket anoncat.service'
+
+[Install]
+WantedBy=sys-subsystem-net-devices-wg0.device

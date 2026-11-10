@@ -19,7 +19,7 @@ LIB=/usr/local/lib/anoncat
 SBIN=/usr/local/sbin
 UNITS=(anoncat.socket anoncat.service anoncat-netd.service anoncat-tls-renew.service anoncat-tls-renew.timer
 	anoncat-backup.service anoncat-backup.timer anoncat-vault-helper.socket anoncat-vault-helper@.service
-	anoncat-unlock.service anoncat-start.service)
+	anoncat-unlock.service anoncat-start.service anoncat-reconnect.service)
 INPUT_RULE='iifname "wg0" tcp dport 8448 accept'
 
 die() { echo "anoncat-install: $*" >&2; exit 1; }
@@ -167,7 +167,7 @@ swapon --show
 step "Start"
 # reenable: picks up changed [Install] sections too.
 systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer anoncat-backup.timer \
-	anoncat-vault-helper.socket anoncat-unlock.service
+	anoncat-vault-helper.socket anoncat-unlock.service anoncat-reconnect.service
 # The unlock page only runs while the vault is locked; it's for after a boot.
 systemctl stop anoncat-unlock.service 2>/dev/null || true
 systemctl start anoncat.socket anoncat.service
