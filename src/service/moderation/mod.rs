@@ -166,6 +166,8 @@ pub struct Settings {
 	/// split-file pieces, and more uploads than posts (see `storage`).
 	pub upload_guard: bool,
 	/// Uploads an account may make over a day beyond the messages it posted.
+	/// Apps upload every file of a message before posting any, so this must
+	/// cover the biggest album someone sends at once.
 	pub upload_allowance: u64,
 }
 
@@ -190,7 +192,7 @@ impl Default for Settings {
 			cat_stand_in: true,
 			stand_in_image: "orange".into(),
 			upload_guard: true,
-			upload_allowance: 20,
+			upload_allowance: UPLOAD_ALLOWANCE,
 		}
 	}
 }
@@ -202,6 +204,11 @@ const DEFAULT_RULES: &str = "\
 - No sexual content involving minors, ever.
 - No gore or sexual content in rooms not marked for it.
 - No selling illegal goods or services.";
+
+/// Extra uploads a day by default; [`OLD_UPLOAD_ALLOWANCE`] was too few for
+/// one message of many pictures.
+const UPLOAD_ALLOWANCE: u64 = 100;
+const OLD_UPLOAD_ALLOWANCE: u64 = 20;
 
 const DEFAULT_GUIDANCE: &str = "\
 - Read a room's rules and description as a whole. \"Anything goes, except X, Y and Z\" or \"follow the laws of <country>\" forbids X, Y and Z: naming what's banned is not promoting it.
@@ -290,7 +297,12 @@ impl crate::Service for Service {
 
 		if let Ok(stored) = self.settings_map.get(SETTINGS_KEY).await {
 			match serde_json::from_slice::<Settings>(&stored) {
-				| Ok(stored) => *self.settings.write().expect("locked") = stored,
+				| Ok(mut stored) => {
+					if stored.upload_allowance == OLD_UPLOAD_ALLOWANCE {
+						stored.upload_allowance = UPLOAD_ALLOWANCE;
+					}
+					*self.settings.write().expect("locked") = stored;
+				},
 				| Err(e) => warn!("Moderation settings unreadable, using defaults: {e}"),
 			}
 		}

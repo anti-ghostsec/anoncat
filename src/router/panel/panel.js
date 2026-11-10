@@ -1119,7 +1119,7 @@ pages.settings = async (main) => {
 		h("section", { class: "card" },
 			h("h2", {}, "Uploads"),
 			check("upload_guard", "Don't let this server be used as file storage", "Refuses pieces of split-up files (chunk_0.enc and so on), and uploads from an account that has uploaded more files today than it posted messages, plus the allowance below. Real attachments are always posted, encrypted rooms included. Admins aren't limited. See Media, Storage check."),
-			field("Extra uploads a day", h("input", { type: "number", name: "upload_allowance", min: 1, max: 10000, value: s.upload_allowance ?? 20 }), "Files an account may upload in a day beyond the messages it posted; room and profile pictures count here.")),
+			field("Extra uploads a day", h("input", { type: "number", name: "upload_allowance", min: 1, max: 10000, value: s.upload_allowance ?? 100 }), "Files an account may upload in a day beyond the messages it posted. Apps upload every file of a message before posting it, so this must cover the biggest batch of pictures someone sends at once. Room and profile pictures count here.")),
 		h("section", { class: "card" },
 			h("h2", {}, "Models and rules"),
 			field("Text model", modelSelect("text_model", false)),
@@ -1151,7 +1151,7 @@ pages.settings = async (main) => {
 			guidance: f.get("guidance") || "",
 			trusted_rooms: trusted,
 			upload_guard: f.has("upload_guard"),
-			upload_allowance: Number(f.get("upload_allowance") || 20),
+			upload_allowance: Number(f.get("upload_allowance") || 100),
 		};
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});
