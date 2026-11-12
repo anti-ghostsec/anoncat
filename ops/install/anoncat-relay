@@ -137,6 +137,14 @@ chown anoncat:anoncat "$CONF"
 step "Start"
 systemctl enable "wg-quick@$IFACE.service" >/dev/null 2>&1
 systemctl restart "wg-quick@$IFACE.service"
+# FerroOS's kill switch lets traffic out only through wg0; the relay tunnel
+# runs inside it, so its answers may leave too. anoncat-netd keeps this in
+# place when the VPN tool rebuilds its table.
+if nft list chain inet ferro_vpn filter_out &>/dev/null &&
+	! nft list chain inet ferro_vpn filter_out | grep -qF "oifname \"$IFACE\" accept"; then
+	nft insert rule inet ferro_vpn filter_out oifname "\"$IFACE\"" accept
+	echo "kill switch: $IFACE let through"
+fi
 systemctl restart anoncat.service
 systemctl restart anoncat-netd.service
 for _ in $(seq 120); do

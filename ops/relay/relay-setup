@@ -87,13 +87,14 @@ systemctl restart nftables.service
 
 # The tunnel to the home server. It connects from behind its VPN, so it has
 # no endpoint here; relay-peer adds its key.
-cat > /etc/wireguard/relay.conf <<'C'
+cat > /etc/wireguard/relay.conf <<C
 [Interface]
 Address = 10.77.0.1/32
 ListenPort = 39214
 MTU = 1340
-PostUp = wg set %i private-key /etc/wireguard/relay.key
+PrivateKey = $(cat /etc/wireguard/relay.key)
 C
+chmod 0600 /etc/wireguard/relay.conf
 [ -f /etc/wireguard/relay.peer ] && cat /etc/wireguard/relay.peer >> /etc/wireguard/relay.conf
 cat > /usr/local/sbin/relay-peer <<'R'
 #!/bin/bash

@@ -538,6 +538,30 @@ def step(dry_run=False, background=False):
     publish(ip, port, dry_run)
 
 
+RELAY_IFACE = "anoncat-relay"
+
+
+def allow_relay_out():
+    """FerroOS's VPN kill switch (`inet ferro_vpn`) lets traffic leave only
+    through wg0, so anoncat's answers into the relay tunnel would be refused.
+    That tunnel is itself carried inside wg0 (and its own packets may only
+    leave there), so it's let through too. The VPN tool rebuilds its table on
+    every reconnect, so this is checked on every round."""
+    out = subprocess.run([NFT, "-j", "list", "chain", "inet", "ferro_vpn", "filter_out"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return  # no kill switch right now
+    rule = f'oifname "{RELAY_IFACE}" accept'
+    for item in json.loads(out.stdout)["nftables"]:
+        expr = item.get("rule", {}).get("expr", [])
+        if any(e.get("match", {}).get("right") == RELAY_IFACE for e in expr) and \
+                any("accept" in e for e in expr):
+            return
+    subprocess.run([NFT, "insert", "rule", "inet", "ferro_vpn", "filter_out", *rule.split()],
+                   check=True)
+    log(f"kill switch: let {RELAY_IFACE} through (it runs inside wg0)")
+
+
 def step_relay(dry_run=False):
     """Relay mode: DNS points at the VPS; only a change of VPS (or of this
     layout) sends anything to Dynu."""
@@ -545,6 +569,7 @@ def step_relay(dry_run=False):
         raise RuntimeError(f"ANONCAT_RELAY_IP {RELAY_IP} isn't a public address")
     if REDIRECT and not dry_run:
         redirect_relay()
+        allow_relay_out()
     state = load_state()
     if (state.get("relay"), state.get("layout")) == (RELAY_IP, DNS_LAYOUT):
         return
