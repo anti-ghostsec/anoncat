@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axum::extract::State;
 use futures::{StreamExt, TryStreamExt};
@@ -19,7 +19,7 @@ use tuwunel_core::{
 	Err, Result,
 	utils::{
 		BoolExt,
-		stream::{BroadbandExt, TryReadyExt},
+		stream::TryReadyExt,
 	},
 };
 use tuwunel_matrix::{
@@ -34,10 +34,23 @@ const LIMIT_DEFAULT: usize = 1000;
 
 type FailedRedactions = BTreeMap<OwnedEventId, String>;
 
+/// Kinds of event removed along with messages: what a person says or posts.
+const SAID: &[&str] = &[
+	"m.room.message",
+	"m.room.encrypted",
+	"m.sticker",
+	"m.reaction",
+	"m.poll.start",
+	"org.matrix.msc3381.poll.start",
+];
+
 struct RedactArgs {
 	user_id: OwnedUserId,
 	rooms: Vec<OwnedRoomId>,
 	redact_as: OwnedUserId,
+	/// Tried when `redact_as` can't redact in a room, such as a local user
+	/// who already left it.
+	admin: OwnedUserId,
 	reason: Option<String>,
 	limit: usize,
 	before_ts: Option<MilliSecondsSinceUnixEpoch>,
@@ -68,12 +81,13 @@ pub(crate) async fn admin_redact_user_route(
 	let rooms = body
 		.rooms
 		.is_empty()
-		.then_async(async || joined_and_banned_rooms(&services, user_id).await)
+		.then_async(async || rooms_ever_in(&services, user_id).await)
 		.await;
 
 	let redact_as = (body.use_admin || !services.globals.user_is_local(user_id))
 		.then(|| body.sender_user().to_owned());
 
+	let admin = body.sender_user().to_owned();
 	let Request {
 		user_id,
 		rooms: requested_rooms,
@@ -92,6 +106,7 @@ pub(crate) async fn admin_redact_user_route(
 		user_id,
 		rooms,
 		redact_as,
+		admin,
 		reason,
 		limit: resolve_limit(limit),
 		before_ts,
@@ -106,26 +121,20 @@ pub(crate) async fn admin_redact_user_route(
 	Ok(Response { redact_id })
 }
 
-async fn joined_and_banned_rooms(services: &crate::State, user_id: &UserId) -> Vec<OwnedRoomId> {
+/// Every room the user is in or has left, kicked and banned included: what
+/// they said stays in a room after they leave it.
+async fn rooms_ever_in(services: &crate::State, user_id: &UserId) -> Vec<OwnedRoomId> {
 	let joined = services
 		.state_cache
 		.rooms_joined(user_id)
 		.map(ToOwned::to_owned);
 
-	let banned = services
+	let left = services
 		.state_cache
 		.rooms_left(user_id)
-		.map(ToOwned::to_owned)
-		.broad_filter_map(async |room_id| {
-			services
-				.state_accessor
-				.get_member(&room_id, user_id)
-				.await
-				.is_ok_and(|member| member.membership == MembershipState::Ban)
-				.then_some(room_id)
-		});
+		.map(ToOwned::to_owned);
 
-	joined.chain(banned).collect().await
+	joined.chain(left).collect().await
 }
 
 fn resolve_limit(limit: Option<UInt>) -> usize {
@@ -136,28 +145,60 @@ fn resolve_limit(limit: Option<UInt>) -> usize {
 }
 
 // The detached task needs its own static services handle.
+/// Redacts the events, and swaps any media they posted for the stand-in: the
+/// file is deleted here, and anyone asking for it later gets the stand-in.
+/// That covers files from other servers too, which aren't recorded as anyone's
+/// uploads here.
 async fn redact_events(services: crate::State, args: RedactArgs) -> Result<JsonValue> {
 	let mut failed = FailedRedactions::new();
+	let mut media = BTreeSet::new();
 
 	for room_id in &args.rooms {
-		let event_ids: Vec<OwnedEventId> = services
+		// A room deleted here has nothing left to remove; one bad room
+		// mustn't stop the rest.
+		let Ok(pdus) = services
 			.timeline
 			.pdus_rev(None, room_id, None)
 			.ready_try_filter(|(_, pdu)| is_candidate(pdu, &args))
 			.take(args.limit)
 			.ready_try_filter(|(_, pdu)| is_eligible(pdu))
-			.map_ok(|(_, pdu)| pdu.event_id)
-			.try_collect()
-			.await?;
+			.map_ok(|(_, pdu)| pdu)
+			.try_collect::<Vec<PduEvent>>()
+			.await
+		else {
+			continue;
+		};
 
-		for event_id in event_ids {
-			if let Err(e) = redact_one(&services, room_id, &event_id, &args).await {
-				failed.insert(event_id, e.to_string());
+		for pdu in pdus {
+			if let Ok(content) = pdu.get_content::<JsonValue>() {
+				media_links(&content, &mut media);
+			}
+
+			if let Err(e) = redact_one(&services, room_id, &pdu.event_id, &args).await {
+				failed.insert(pdu.event_id, e.to_string());
 			}
 		}
 	}
 
+	let note = format!("posted by {}", args.user_id);
+	for mxc in &media {
+		services.media.swap(mxc, &note).await.ok();
+	}
+
 	Ok(task_result(&failed))
+}
+
+/// Every `mxc://` link in an event's content: the file, its thumbnail, and
+/// links nested anywhere else.
+fn media_links(value: &JsonValue, out: &mut BTreeSet<String>) {
+	match value {
+		| JsonValue::String(s) if s.starts_with("mxc://") => {
+			out.insert(s.clone());
+		},
+		| JsonValue::Array(items) => items.iter().for_each(|v| media_links(v, out)),
+		| JsonValue::Object(map) => map.values().for_each(|v| media_links(v, out)),
+		| _ => {},
+	}
 }
 
 fn is_candidate(pdu: &PduEvent, args: &RedactArgs) -> bool {
@@ -168,12 +209,8 @@ fn is_candidate(pdu: &PduEvent, args: &RedactArgs) -> bool {
 		&& args
 			.after_ts
 			.is_none_or(|ts| pdu.origin_server_ts() >= ts)
-		&& matches!(
-			pdu.kind,
-			TimelineEventType::RoomMember
-				| TimelineEventType::RoomMessage
-				| TimelineEventType::RoomEncrypted
-		)
+		&& (pdu.kind == TimelineEventType::RoomMember
+			|| SAID.contains(&pdu.kind.to_string().as_str()))
 }
 
 fn is_eligible(pdu: &PduEvent) -> bool {
@@ -192,15 +229,31 @@ async fn redact_one(
 	event_id: &EventId,
 	args: &RedactArgs,
 ) -> Result<()> {
-	if !services
-		.state_accessor
-		.user_can_redact(event_id, &args.redact_as, room_id, false)
-		.await?
-	{
-		return Err!(Request(Forbidden(
-			"The redactor lacks the redaction power level in this room."
-		)));
+	// Their own account first, so it reads as theirs; once they've left the
+	// room that can't work, and the admin does it if they're a moderator there.
+	let mut redact_as = None;
+	for who in [&args.redact_as, &args.admin] {
+		if services
+			.state_cache
+			.is_joined(who, room_id)
+			.await
+			&& services
+				.state_accessor
+				.user_can_redact(event_id, who, room_id, false)
+				.await
+				.unwrap_or(false)
+		{
+			redact_as = Some(who);
+			break;
+		}
 	}
+
+	let Some(redact_as) = redact_as else {
+		return Err!(Request(Forbidden(
+			"Neither they nor you can remove messages in this room; you'd need to be a moderator \
+			 there."
+		)));
+	};
 
 	let state_lock = services.state.mutex.lock(room_id).await;
 
@@ -214,7 +267,7 @@ async fn redact_one(
 					reason: args.reason.clone(),
 				})
 			},
-			&args.redact_as,
+			redact_as,
 			room_id,
 			&state_lock,
 		)
@@ -241,6 +294,7 @@ mod tests {
 			user_id: user_id!("@alice:example.com").to_owned(),
 			rooms: Vec::new(),
 			redact_as: user_id!("@alice:example.com").to_owned(),
+			admin: user_id!("@admin:example.com").to_owned(),
 			reason: None,
 			limit: super::LIMIT_DEFAULT,
 			before_ts: before_ts.map(MilliSecondsSinceUnixEpoch),
@@ -344,6 +398,31 @@ mod tests {
 			&pdu("m.room.message", "@alice:example.com", 499, &json!({})),
 			&args
 		));
+	}
+
+	#[test]
+	fn stickers_and_reactions_go_with_messages() {
+		let args = args(None, None);
+		for kind in ["m.sticker", "m.reaction", "m.poll.start", "m.room.encrypted"] {
+			assert!(is_candidate(&pdu(kind, "@alice:example.com", 1000, &json!({})), &args), "{kind}");
+		}
+		assert!(!is_candidate(&pdu("m.room.redaction", "@alice:example.com", 1000, &json!({})), &args));
+	}
+
+	#[test]
+	fn media_links_are_found_anywhere_in_content() {
+		let mut found = std::collections::BTreeSet::new();
+		super::media_links(
+			&json!({
+				"url": "mxc://a/1",
+				"info": { "thumbnail_url": "mxc://a/2" },
+				"file": { "url": "mxc://b/3" },
+				"body": "not a link mxc://x/y",
+				"list": ["mxc://c/4", 5],
+			}),
+			&mut found,
+		);
+		assert_eq!(found.into_iter().collect::<Vec<_>>(), ["mxc://a/1", "mxc://a/2", "mxc://b/3", "mxc://c/4"]);
 	}
 
 	#[test]

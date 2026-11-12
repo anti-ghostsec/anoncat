@@ -273,6 +273,11 @@ function userActions(u, refresh) {
 			const r = await attempt(null, () => api("DELETE", `/_synapse/admin/v1/users/${id}/media`));
 			if (r) toast(`Deleted ${r.total} file${r.total === 1 ? "" : "s"}`);
 		} }, "Delete uploads"),
+		h("button", { class: "danger small", title: "Removes everything they said, in every room they were ever in, and the files they posted", onclick: async () => {
+			if (!(await ask(`Remove ${u.name}'s messages?`, { text: "Everything they said and posted, in every room they were ever in, is removed for everyone, including people on other servers. Files they posted are deleted and show as the stand-in. Their account stays.",
+				confirm: "Remove messages", danger: true }))) return;
+			removeMessages(u.name);
+		} }, "Remove messages"),
 		h("button", { class: "danger small", onclick: async () => {
 			const v = await ask(`Deactivate ${u.name}?`, { text: "They can't sign in again and the user ID can't be reused. This can't be undone.",
 				fields: [{ name: "erase", label: "Also erase their profile and hide their messages from new members", type: "checkbox", value: true },
@@ -744,10 +749,31 @@ async function blockTarget(target, { reason = "" } = {}) {
 	if (!v) return false;
 	const done = await attempt(`Blocked ${target}`, () => api("POST", `${MOD}/blocklist`, { target, reason: v.reason, lock: v.lock ?? false }));
 	if (done && v.redact) {
-		await attempt("Removing their messages in the background", () =>
-			api("POST", `/_synapse/admin/v1/user/${enc(target)}/redact`, { rooms: [], reason: v.reason || "Moderation" }));
+		removeMessages(target, v.reason, { blocked: true });
 	}
 	return Boolean(done);
+}
+
+// Removes everything a user said, in every room they were ever in, and swaps
+// the files they posted for the stand-in. Runs in the background; says how it
+// went when it's done.
+async function removeMessages(userId, reason, { blocked = false } = {}) {
+	const started = await attempt(null, () => api("POST", `/_synapse/admin/v1/user/${enc(userId)}/redact`,
+		{ rooms: [], reason: reason || "Moderation", limit: 100000 }));
+	if (!started) return;
+	toast("Removing their messages…");
+	for (let i = 0; i < 600; i++) {
+		await new Promise((done) => setTimeout(done, 2000));
+		const s = await api("GET", `/_synapse/admin/v1/user/redact_status/${enc(started.redact_id)}`).catch(() => null);
+		if (s?.status === "complete") {
+			const left = Object.keys(s.failed_redactions || {}).length;
+			return toast(left
+				? `Removed ${userId}'s messages, except ${left} in rooms where you aren't a moderator.${blocked ? " Those stay hidden from everyone here." : ""}`
+				: `Removed ${userId}'s messages`, 10000);
+		}
+		if (s?.status === "failed") return toast(`Removing ${userId}'s messages failed${s.error ? `: ${s.error}` : ""}`, 10000);
+	}
+	toast(`Still removing ${userId}'s messages in the background`);
 }
 
 // Blocks a room: nobody here can join it; optionally everyone here leaves.
@@ -1101,7 +1127,22 @@ pages.settings = async (main) => {
 		h("label", { class: "check" }, h("input", { type: "radio", name: "media_mode", value: "hide", checked: s.media_mode === "hide" }),
 			h("span", {}, "Hide clearly bad images until I review them", h("span", { class: "muted small block" }, "Hidden images stay stored and come back with one click. Nothing is ever deleted by the AI."))));
 
-	const extra = h("textarea", { name: "extra_rooms", placeholder: "#room:other.server or !roomid:server, one per line", spellcheck: "false" }, s.extra_rooms.join("\n"));
+	// A listed room by name, with what's known of it here.
+	const roomInfo = res.rooms || {};
+	const roomRef = (id) => {
+		const info = roomInfo[id] || {};
+		return h("span", {}, info.name ? h("span", {}, info.name, " ") : null, h("span", { class: "mono small muted" }, id),
+			info.here === false ? h("span", { class: "tag warn", title: "Deleted here, or nobody here has joined it yet" }, "not on this server") : null);
+	};
+	let watched = [...s.extra_rooms];
+	const watchedList = h("div");
+	const drawWatched = () => fill(watchedList,
+		watched.length
+			? h("ul", { class: "room-refs" }, watched.map((id) => h("li", {}, roomRef(id), " ",
+				h("button", { type: "button", class: "ghost tiny", onclick: () => { watched = watched.filter((w) => w !== id); drawWatched(); } }, "Remove"))))
+			: h("p", { class: "muted small" }, "None."));
+	drawWatched();
+	const extra = h("textarea", { name: "extra_rooms_add", rows: 2, placeholder: "#room:other.server or !roomid:server, one per line", spellcheck: "false" });
 	const rules = h("textarea", { name: "rules", class: "rules" }, s.rules);
 	const guidance = h("textarea", { name: "guidance", class: "rules" }, s.guidance || "");
 	let trusted = [...(s.trusted_rooms || [])];
@@ -1110,7 +1151,7 @@ pages.settings = async (main) => {
 		h("h2", {}, "Rooms whose description is fine"),
 		h("p", { class: "muted small" }, "Their name and topic aren't checked again; their messages still are. A room report's \"Fine, don't check again\" adds it here."),
 		trusted.length
-			? h("ul", { class: "room-refs" }, trusted.map((id) => h("li", {}, h("span", { class: "mono small" }, id), " ",
+			? h("ul", { class: "room-refs" }, trusted.map((id) => h("li", {}, roomRef(id), " ",
 				h("button", { type: "button", class: "ghost tiny", onclick: () => { trusted = trusted.filter((t) => t !== id); drawTrusted(); } }, "Remove"))))
 			: h("p", { class: "muted small" }, "None yet."));
 	drawTrusted();
@@ -1136,7 +1177,10 @@ pages.settings = async (main) => {
 			h("h2", {}, "Which rooms"),
 			check("watch_directory", "Rooms in this server's public room list"),
 			check("watch_public_joined", "Any room anyone can join that someone here is in", "Includes public rooms on other servers that people here joined."),
-			field("Extra rooms", extra, "Rooms from anywhere in the public room space. The server only sees a room once someone here is in it, so join it with your account first."),
+			h("h3", {}, "Extra rooms"),
+			h("p", { class: "muted small" }, "Their messages are checked too. A room the AI flags is added here, so its new messages get checked; it leaves the list when you dismiss its report or delete the room."),
+			watchedList,
+			field("Add rooms", extra, "Rooms from anywhere in the public room space. The server only sees a room once someone here is in it, so join it with your account first."),
 			check("check_rooms", "Check rooms people here join", "When someone here joins a room, public or not, or a room changes its name or topic, the AI looks at its name, topic and latest messages. A room that looks wrong becomes a report and a notice, and is watched from then on."),
 			h("div", { class: "toolbar" }, h("button", { type: "button", class: "ghost small", onclick: async () => {
 				const r = await attempt(null, () => api("POST", `${MOD}/rooms/check`, {}));
@@ -1176,7 +1220,7 @@ pages.settings = async (main) => {
 			check_images: f.has("check_images"),
 			check_rooms: f.has("check_rooms"),
 			media_mode: f.get("media_mode") || "suggest",
-			extra_rooms: String(f.get("extra_rooms") || "").split(/\s+/).filter(Boolean),
+			extra_rooms: [...watched, ...String(f.get("extra_rooms_add") || "").split(/\s+/).filter(Boolean)],
 			large_file_mb: Number(f.get("large_file_mb") || 0),
 			batch_minutes: Number(f.get("batch_minutes") || 2),
 			text_model: f.get("text_model"),

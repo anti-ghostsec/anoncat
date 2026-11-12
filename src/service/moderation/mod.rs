@@ -306,6 +306,7 @@ impl crate::Service for Service {
 				| Err(e) => warn!("Moderation settings unreadable, using defaults: {e}"),
 			}
 		}
+		self.forget_blocked_rooms().await;
 
 		let mut rx = self
 			.rx
@@ -999,6 +1000,12 @@ pub async fn act(&self, id: u64, action: &str) -> Result<Report> {
 			if action == "trust_room" {
 				self.trust_room(&report.room_id)?;
 			}
+			// A flagged room was watched because of this report; it's fine.
+			if report.kind == "room"
+				&& let Ok(room_id) = RoomId::parse(&report.room_id)
+			{
+				self.unwatch_room(&room_id);
+			}
 			if report.hidden
 				&& let Some(mxc) = &report.mxc
 			{
@@ -1045,6 +1052,58 @@ fn trust_room(&self, room_id: &str) -> Result {
 	}
 
 	Ok(())
+}
+
+/// Changes the settings in place and saves them, when `change` says it changed
+/// anything.
+#[implement(Service)]
+fn edit_settings(&self, change: impl FnOnce(&mut Settings) -> bool) {
+	let mut settings = self.settings.write().expect("locked");
+	if change(&mut settings)
+		&& let Ok(value) = serde_json::to_vec(&*settings)
+	{
+		self.settings_map.insert(SETTINGS_KEY, value);
+	}
+}
+
+/// Stops checking a room's messages.
+#[implement(Service)]
+pub fn unwatch_room(&self, room_id: &RoomId) {
+	self.edit_settings(|s| {
+		let before = s.extra_rooms.len();
+		s.extra_rooms.retain(|r| r != room_id);
+		s.extra_rooms.len() != before
+	});
+}
+
+/// Drops a deleted room from every list in the settings.
+#[implement(Service)]
+pub fn forget_room(&self, room_id: &RoomId) {
+	self.edit_settings(|s| {
+		let before = s.extra_rooms.len() + s.trusted_rooms.len();
+		s.extra_rooms.retain(|r| r != room_id);
+		s.trusted_rooms.retain(|r| r != room_id);
+		s.extra_rooms.len() + s.trusted_rooms.len() != before
+	});
+}
+
+/// Rooms deleted and blocked before deleting a room forgot it. A blocked room
+/// that's still here keeps being checked: people may still be in it.
+#[implement(Service)]
+async fn forget_blocked_rooms(&self) {
+	let rooms = self.settings().extra_rooms;
+	for room_id in rooms {
+		if self.services.metadata.is_banned(&room_id).await
+			&& self
+				.services
+				.state
+				.get_room_shortstatehash(&room_id)
+				.await
+				.is_err()
+		{
+			self.forget_room(&room_id);
+		}
+	}
 }
 
 /// Checks the key and model choice with a tiny request.

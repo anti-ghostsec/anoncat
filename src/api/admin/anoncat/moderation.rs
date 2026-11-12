@@ -1,6 +1,8 @@
 //! The AI moderation's panel endpoints: settings, the Reports queue, a
 //! preview of reported media (hidden or not) and the assistant chat.
 
+use std::collections::BTreeMap;
+
 use axum::{
 	Json,
 	extract::{Path, State},
@@ -43,6 +45,16 @@ pub(crate) struct SettingsResponse {
 	/// Whether a Venice key is saved (never the key itself).
 	key_saved: bool,
 	key_file: Option<String>,
+	/// The listed rooms by ID: their name, and whether this server has them.
+	rooms: BTreeMap<String, RoomInfo>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct RoomInfo {
+	name: Option<String>,
+	/// False for a room deleted here, or one nobody here has joined yet, so
+	/// there's nothing to check.
+	here: bool,
 }
 
 pub(crate) async fn get_settings_route(
@@ -50,11 +62,24 @@ pub(crate) async fn get_settings_route(
 	headers: HeaderMap,
 ) -> Result<Json<SettingsResponse>> {
 	super::require_admin_token(&services, &headers).await?;
-	Ok(Json(settings_response(&services, services.moderation.settings())))
+	Ok(Json(settings_response(&services, services.moderation.settings()).await))
 }
 
-fn settings_response(services: &crate::State, settings: Settings) -> SettingsResponse {
+async fn settings_response(services: &crate::State, settings: Settings) -> SettingsResponse {
+	let mut rooms = BTreeMap::new();
+	for room_id in settings.extra_rooms.iter().chain(&settings.trusted_rooms) {
+		rooms.insert(room_id.to_string(), RoomInfo {
+			name: services.state_accessor.get_name(room_id).await.ok(),
+			here: services
+				.state
+				.get_room_shortstatehash(room_id)
+				.await
+				.is_ok(),
+		});
+	}
+
 	SettingsResponse {
+		rooms,
 		settings,
 		key_saved: services.moderation.key().is_some(),
 		key_file: services
@@ -95,7 +120,7 @@ pub(crate) async fn put_settings_route(
 		.set_settings(settings, &extra)
 		.await?;
 
-	Ok(Json(settings_response(&services, settings)))
+	Ok(Json(settings_response(&services, settings).await))
 }
 
 #[derive(Serialize)]

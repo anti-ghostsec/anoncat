@@ -235,6 +235,8 @@ impl Service {
 			.log_err()
 			.ok();
 
+		self.services.moderation.forget_room(room_id);
+
 		debug!("Deleting internal room ID from our database");
 		self.services
 			.short
