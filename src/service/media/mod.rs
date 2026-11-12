@@ -135,6 +135,9 @@ pub const CORP_CROSS_ORIGIN: &str = "cross-origin";
 /// Validity window for a presigned media download redirect (MSC3860).
 const REDIRECT_TTL: Duration = Duration::from_mins(5);
 
+/// Starts the note on hidden media that was swapped for good.
+const SWAPPED: &str = "swapped: ";
+
 #[async_trait]
 impl crate::Service for Service {
 	fn build(args: &crate::Args<'_>) -> Result<Arc<Self>> {
@@ -187,10 +190,42 @@ impl Service {
 		Ok(())
 	}
 
-	/// Serves hidden media again.
+	/// Serves hidden media again. Swapped media stays swapped: its file is
+	/// gone, so there's nothing to serve.
 	pub fn unhide(&self, mxc: &str) -> Result {
-		self.hidden.remove(Self::hidden_key(mxc)?.as_bytes());
+		let key = Self::hidden_key(mxc)?;
+		if !self.is_swapped_key(&key) {
+			self.hidden.remove(key.as_bytes());
+		}
+
 		Ok(())
+	}
+
+	/// Swaps media for the stand-in for good: the file is deleted, and
+	/// everyone, here and on other servers, gets the stand-in picture in its
+	/// place from then on. Works before this server has a copy, so nobody here
+	/// ever fetches it.
+	pub async fn swap(&self, mxc: &str, note: &str) -> Result {
+		let key = Self::hidden_key(mxc)?;
+		self.hidden
+			.insert(key.as_bytes(), format!("{SWAPPED}{note}").as_bytes());
+
+		let parts: Mxc<'_> = key.as_str().try_into()?;
+		if self.db.search_mxc_metadata_prefix(&parts).await.is_ok() {
+			self.delete(&parts).await?;
+		}
+
+		Ok(())
+	}
+
+	/// Whether this media was swapped for the stand-in for good.
+	#[must_use]
+	pub fn is_swapped(&self, mxc: &Mxc<'_>) -> bool { self.is_swapped_key(&mxc.to_string()) }
+
+	fn is_swapped_key(&self, key: &str) -> bool {
+		self.hidden
+			.get_blocking(key.as_bytes())
+			.is_ok_and(|note| note.starts_with(SWAPPED.as_bytes()))
 	}
 
 	/// The form `is_hidden` looks up, whatever spelling the event used.

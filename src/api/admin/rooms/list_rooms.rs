@@ -36,6 +36,7 @@ pub(crate) async fn admin_list_rooms_route(
 		.metadata
 		.iter_ids()
 		.map(ToOwned::to_owned)
+		.broad_filter_map(async |room_id| has_state(&services, &room_id).await.then_some(room_id))
 		.broad_then(async |room_id| room_row(&services, &room_id).await)
 		.ready_filter(|room| {
 			matches_search(room, search_term.as_deref())
@@ -75,6 +76,17 @@ pub(crate) async fn admin_list_rooms_route(
 		next_batch,
 		prev_batch,
 	})
+}
+
+/// A deleted room can come back as a bare ID with no state, from a space that
+/// still lists it or a stray event from another server. There's nothing of it
+/// here to show or act on, so it's left out.
+async fn has_state(services: &crate::State, room_id: &ruma::RoomId) -> bool {
+	services
+		.state
+		.get_room_shortstatehash(room_id)
+		.await
+		.is_ok()
 }
 
 /// Matches a room against the search term: the name and canonical alias by

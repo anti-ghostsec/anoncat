@@ -12,7 +12,8 @@ use crate::{ClientIp, Ruma};
 
 /// # `GET /_matrix/federation/v1/media/download/{mediaId}`
 ///
-/// Load media from our server.
+/// Load media from our server. Media swapped for the stand-in answers with
+/// the stand-in picture.
 #[tracing::instrument(
 	name = "media_get",
 	level = "debug",
@@ -33,7 +34,10 @@ pub(crate) async fn get_content_route(
 		content,
 		content_type,
 		content_disposition,
-	} = services.media.get(&mxc, None).await?;
+	} = match services.media.swapped_for_federation(&mxc) {
+		| Some(stand_in) => stand_in,
+		| None => services.media.get(&mxc, None).await?,
+	};
 
 	let content_disposition =
 		make_content_disposition(content_disposition.as_ref(), content_type.as_deref(), None);
@@ -75,10 +79,14 @@ pub(crate) async fn get_content_thumbnail_route(
 		content,
 		content_type,
 		content_disposition,
-	} = services
-		.media
-		.get_thumbnail(&mxc, &dim, animate, None)
-		.await?;
+	} = match services.media.swapped_for_federation(&mxc) {
+		| Some(stand_in) => stand_in,
+		| None =>
+			services
+				.media
+				.get_thumbnail(&mxc, &dim, animate, None)
+				.await?,
+	};
 
 	let content_disposition =
 		make_content_disposition(content_disposition.as_ref(), content_type.as_deref(), None);

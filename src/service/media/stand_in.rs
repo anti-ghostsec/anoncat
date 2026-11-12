@@ -42,6 +42,18 @@ pub fn stand_in(&self, mxc: &Mxc<'_>) -> Option<Media> {
 	refused.then(|| self.stand_in_picture(&choice))
 }
 
+/// What other servers get for media from here that was swapped for good: the
+/// same picture people here see. Without stand-ins on, they get "not found",
+/// as for any hidden media.
+#[implement(super::Service)]
+#[must_use]
+pub fn swapped_for_federation(&self, mxc: &Mxc<'_>) -> Option<Media> {
+	let choice = self.services.moderation.stand_in_image()?;
+
+	self.is_swapped(mxc)
+		.then(|| self.stand_in_picture(&choice))
+}
+
 /// The named picture; the orange cat when it's unknown or none was uploaded.
 #[implement(super::Service)]
 #[must_use]

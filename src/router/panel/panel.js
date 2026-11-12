@@ -264,6 +264,15 @@ function userActions(u, refresh) {
 				{ name: "logout", label: "Sign out all their devices", type: "checkbox", value: true }] , confirm: "Reset" });
 			if (v) await attempt("Password reset", () => api("POST", `/_synapse/admin/v1/reset_password/${id}`, { new_password: v.password, logout_devices: v.logout }));
 		} }, "Password"),
+		h("button", { class: "danger small", title: "Deletes every file they uploaded; their account stays", onclick: async () => {
+			const media = await attempt(null, () => api("GET", `/_synapse/admin/v1/users/${id}/media?limit=1`));
+			if (!media) return;
+			if (!media.total) return toast("They haven't uploaded anything");
+			if (!(await ask(`Delete ${u.name}'s uploads?`, { text: `All ${media.total} files they uploaded are deleted for good, for everyone. Their account stays.`,
+				confirm: "Delete uploads", danger: true }))) return;
+			const r = await attempt(null, () => api("DELETE", `/_synapse/admin/v1/users/${id}/media`));
+			if (r) toast(`Deleted ${r.total} file${r.total === 1 ? "" : "s"}`);
+		} }, "Delete uploads"),
 		h("button", { class: "danger small", onclick: async () => {
 			const v = await ask(`Deactivate ${u.name}?`, { text: "They can't sign in again and the user ID can't be reused. This can't be undone.",
 				fields: [{ name: "erase", label: "Also erase their profile and hide their messages from new members", type: "checkbox", value: true },
@@ -357,9 +366,24 @@ function roomActions(r, refresh) {
 				text: "Removes every local user from the room and deletes it from this server.",
 				fields: [{ name: "block", label: "Block it so nobody here can rejoin", type: "checkbox", value: true }], confirm: "Delete room", danger: true });
 			if (!v) return;
-			if (await attempt("Room deletion started", () => api("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: v.block, purge: true }))) setTimeout(refresh, 1500);
+			const started = await attempt(null, () => api("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: v.block, purge: true }));
+			if (!started) return;
+			toast("Deleting the room…");
+			await roomDeleted(started.delete_id);
+			refresh();
 		} }, "Delete"),
 	];
+}
+
+// Waits up to two minutes for a room delete to finish, and says how it went.
+async function roomDeleted(deleteId) {
+	for (let i = 0; i < 120; i++) {
+		await new Promise((done) => setTimeout(done, 1000));
+		const s = await api("GET", `/_synapse/admin/v2/rooms/delete_status/${enc(deleteId)}`).catch(() => null);
+		if (s?.status === "complete") return toast("Room deleted");
+		if (s?.status === "failed") return toast(`Room delete failed${s.error ? `: ${s.error}` : ""}`);
+	}
+	toast("Still deleting; it'll leave the list when it's done");
 }
 
 pages.media = async (main, params) => {
@@ -963,24 +987,36 @@ function mediaActions(mxc, { info, compact = false, onDeleted, onChanged } = {})
 	const cls = compact ? "ghost tiny" : "ghost small";
 	const bar = h("div", { class: "toolbar media-actions" });
 	const draw = (i) => {
-		const swap = h("button", { class: cls, type: "button", title: i.hidden ? "Serve the real file again" : "People here see the stand-in picture instead; nothing is deleted" },
-			i.hidden ? "Show again" : "Swap for stand-in");
-		swap.onclick = async () => {
-			const done = await attempt(i.hidden ? "Shown again" : "Swapped for the stand-in", () => api(i.hidden ? "DELETE" : "POST", `${path}/hide`));
+		// Swapping deletes the file for good. Media the AI hid while it waits
+		// for review can still be shown again, or swapped to finish it.
+		const swap = i.swapped ? null : h("button", { class: cls, type: "button", title: "Deletes the file; everyone, here and on other servers, gets the stand-in picture instead" },
+			"Swap for stand-in");
+		if (swap) swap.onclick = thenAsk(async () => {
+			const text = `${mxc}\nThe file is deleted for good and can't be swapped back. People here, and other servers that ask for it, get the stand-in picture instead.`;
+			if (!(await ask("Swap it for the stand-in?", { text, confirm: "Swap and delete", danger: true }))) return;
+			const done = await attempt("Swapped; the file is deleted", () => api("POST", `${path}/hide`));
 			if (!done) return;
-			i.hidden = done.hidden;
+			Object.assign(i, { hidden: true, swapped: true, stored: false });
 			draw(i);
 			onChanged?.();
-		};
+		});
+		const show = i.hidden && !i.swapped ? h("button", { class: cls, type: "button", title: "Serve the real file again", onclick: async () => {
+			if (!(await attempt("Shown again", () => api("DELETE", `${path}/hide`)))) return;
+			i.hidden = false;
+			draw(i);
+			onChanged?.();
+		} }, "Show again") : null;
 		fill(bar,
-			i.hidden ? h("span", { class: "tag warn" }, "swapped") : null,
+			i.swapped ? h("span", { class: "tag warn", title: "The file is deleted; everyone gets the stand-in" }, "swapped")
+				: i.hidden ? h("span", { class: "tag warn" }, "hidden") : null,
 			h("button", { class: cls, type: "button", title: mxc, onclick: () => copyText(mxc) }, "Copy link"),
 			compact ? null : h("button", { class: cls, type: "button", title: "Rooms it was posted in, and who uploaded it", onclick: thenAsk(() => navigate("lookup", { q: mxc })) }, "Where from?"),
+			show,
 			swap,
 			i.stored ? h("button", { class: compact ? "danger tiny" : "danger small", type: "button", onclick: thenAsk(async () => {
 				const text = i.local
 					? `${mxc}\nUploaded here${i.uploader ? ` by ${i.uploader}` : ""}. It's gone for good, for everyone, including other servers that ask for it.`
-					: `${mxc}\nOnly this server's copy goes. It's fetched again if someone here opens it, unless it's swapped or its server is blocked.`;
+					: `${mxc}\nOnly this server's copy goes. It's fetched again if someone here opens it, unless it's swapped or its server is blocked. To get rid of it for good, swap it instead.`;
 				if (!(await ask("Delete this media?", { text, confirm: "Delete", danger: true }))) return;
 				if (await attempt("Deleted", () => api("DELETE", path))) { i.stored = false; draw(i); onDeleted?.(); }
 			}) }, "Delete") : null,

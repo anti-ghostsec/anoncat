@@ -24,6 +24,8 @@ pub(crate) struct Item {
 	fetched_ts: u64,
 	/// Hidden: people here see the cat, or nothing, in its place.
 	hidden: bool,
+	/// Swapped for the stand-in for good; the file is gone.
+	swapped: bool,
 	/// Seen in a room here. Media nobody here posted got fetched by someone
 	/// asking for it directly, or was posted in an encrypted room.
 	in_room: bool,
@@ -92,6 +94,7 @@ pub(crate) async fn list_route(
 			bytes: item.bytes,
 			fetched_ts: item.fetched_ts,
 			hidden: services.media.is_hidden(&item.mxc.parts().expect("listed items are valid")),
+			swapped: services.media.is_swapped(&item.mxc.parts().expect("listed items are valid")),
 			in_room: services.moderation.in_any_room(item.mxc.as_str()).await,
 		});
 	}
@@ -119,6 +122,8 @@ pub(crate) struct ItemInfo {
 	/// Whether this server holds the file at all.
 	stored: bool,
 	hidden: bool,
+	/// Swapped for the stand-in for good; the file is gone.
+	swapped: bool,
 	server_blocked: bool,
 	uploader: Option<String>,
 	media_type: Option<String>,
@@ -176,6 +181,7 @@ pub(crate) async fn item_route(
 		local,
 		stored: entry.is_some(),
 		hidden: services.media.is_hidden(&parts),
+		swapped: services.media.is_swapped(&parts),
 		server_blocked: !local && services.moderation.server_blocked(parts.server_name),
 		uploader: entry
 			.as_ref()
@@ -217,9 +223,10 @@ pub(crate) struct HiddenResponse {
 	hidden: bool,
 }
 
-/// `POST /_anoncat/admin/v1/media/item/{server}/{media_id}/hide`: kept
-/// stored for the panel, but served to nobody; people here see the stand-in.
-/// Works before this server has a copy, so nobody here ever fetches it.
+/// `POST /_anoncat/admin/v1/media/item/{server}/{media_id}/hide`: swapped
+/// for the stand-in for good. The file is deleted, and everyone, here and on
+/// other servers, gets the stand-in picture instead. Works before this server
+/// has a copy, so nobody here ever fetches it.
 pub(crate) async fn hide_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
@@ -228,7 +235,8 @@ pub(crate) async fn hide_route(
 	let admin = super::require_admin_token(&services, &headers).await?;
 	services
 		.media
-		.hide(&item_mxc(&server, &media_id)?, &format!("hidden by {admin}"))?;
+		.swap(&item_mxc(&server, &media_id)?, &format!("by {admin}"))
+		.await?;
 
 	Ok(Json(HiddenResponse { hidden: true }))
 }
@@ -240,9 +248,11 @@ pub(crate) async fn unhide_route(
 	Path((server, media_id)): Path<(String, String)>,
 ) -> Result<Json<HiddenResponse>> {
 	super::require_admin_token(&services, &headers).await?;
-	services
-		.media
-		.unhide(&item_mxc(&server, &media_id)?)?;
+	let mxc = item_mxc(&server, &media_id)?;
+	if services.media.is_swapped(&mxc.as_str().try_into()?) {
+		return Err!(Request(Forbidden("It was swapped for good; the file is deleted.")));
+	}
+	services.media.unhide(&mxc)?;
 
 	Ok(Json(HiddenResponse { hidden: false }))
 }
