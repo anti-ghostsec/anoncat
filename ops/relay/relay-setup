@@ -81,6 +81,12 @@ table inet relay {
 	}
 }
 N
+# Once the home server has its peer, SSH only comes through the tunnel
+# (ssh -b 10.77.0.2 root@10.77.0.1 from home); 1984's web console if it's
+# ever down. Before that, the first setup needs it public.
+if [ -f /etc/wireguard/relay.peer ]; then
+	sed -i 's|^\t\ttcp dport 22 accept$|\t\t# SSH only through the tunnel.\n\t\tiifname $tunnel tcp dport 22 accept|' /etc/nftables.conf
+fi
 nft -c -f /etc/nftables.conf
 systemctl enable nftables.service >/dev/null 2>&1
 systemctl restart nftables.service
