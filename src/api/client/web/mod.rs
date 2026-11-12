@@ -4,6 +4,7 @@
 //! work in Tor Browser on its safest setting.
 
 mod account;
+mod home;
 mod register;
 
 use axum::{
@@ -36,6 +37,8 @@ static STYLE: &str = include_str!("web.css");
 
 pub(crate) fn routes(router: Router<State>) -> Router<State> {
 	router
+		.route("/", get(home::index_route))
+		.route("/rules", get(home::rules_route))
 		.route("/register", get(register::get_route).post(register::post_route))
 		.route("/login", get(account::login_get_route).post(account::login_post_route))
 		.route("/account", get(account::get_route))

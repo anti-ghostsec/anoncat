@@ -52,9 +52,9 @@ install -m 0755 "$OPS/anoncat-netd.py" "$OPS/acme-dynu-hook.py" "$OPS/anoncat-tl
 install -m 0755 "$OPS/vault/anoncat-vault-helper" "$OPS/vault/anoncat-unlock-page" "$LIB/"
 install -d -m 0755 "$LIB/unlock"
 install -m 0644 "$OPS/vault/unlock/unlock.html" "$OPS/vault/unlock/unlock.js" "$OPS/../src/router/panel/panel.css" "$LIB/unlock/"
-install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$OPS/backup/anoncat-backup" "$SBIN/"
+install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$OPS/backup/anoncat-backup" "$OPS/install/anoncat-relay" "$SBIN/"
 echo "$LIB: anoncat-netd.py, acme-dynu-hook.py, anoncat-tls, anoncat-vault-helper, anoncat-unlock-page, unlock/"
-echo "$SBIN: anoncat-vault, anoncat-update, anoncat-backup"
+echo "$SBIN: anoncat-vault, anoncat-update, anoncat-backup, anoncat-relay"
 
 step "System config"
 install -d -m 0755 /etc/anoncat

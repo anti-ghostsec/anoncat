@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{Router, response::IntoResponse, routing::get};
+use axum::{Router, response::IntoResponse};
 use http::{StatusCode, Uri};
 use ruma::api::error::ErrorKind;
 use tuwunel_api::router::{state, state::Guard};
@@ -29,7 +29,6 @@ pub(crate) fn build(services: &Arc<Services>) -> (Router, Guard) {
 
 	let router = router
 		.merge(server_routes(&services.server))
-		.route("/", get(it_works))
 		.fallback(not_found)
 		.method_not_allowed_fallback(method_not_allowed)
 		.with_state(state);
@@ -44,4 +43,3 @@ async fn not_found(_uri: Uri) -> impl IntoResponse {
 // Bare 405; request::handle_result formats the M_UNRECOGNIZED body.
 async fn method_not_allowed() -> StatusCode { StatusCode::METHOD_NOT_ALLOWED }
 
-async fn it_works() -> &'static str { "hewwo from tuwunel woof!" }

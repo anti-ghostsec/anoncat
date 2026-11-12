@@ -21,6 +21,12 @@ Every RENEW seconds it:
      connections to the public address at the local listener, since the
      tunnel doesn't carry them back here.
 
+Relay mode (ANONCAT_RELAY_IP, set in /etc/anoncat/relay.env by
+anoncat-relay) replaces all of that: a VPS with a fixed address passes
+ports 443, 8448 and 53383 down a WireGuard tunnel to this machine, and
+anoncat answers there itself, .well-known included. DNS then points both
+names at the VPS for good: no port forward, no Pages, nothing that changes.
+
 Pages mode needs a Codeberg account (CODEBERG_FILE: username, then token)
 and a certificate that covers hs.anoncat.gleeze.com; until both are there,
 anoncat.gleeze.com itself keeps pointing at Proton.
@@ -57,6 +63,11 @@ KEY_FILE = os.environ.get("ANONCAT_DYNU_KEY_FILE", os.path.expanduser("~/.config
 STATE_FILE = os.environ.get("ANONCAT_STATE_FILE", os.path.expanduser("~/.config/anoncat/address.json"))
 API = "https://api.dynu.com/v2"
 TTL = 60
+# The relay VPS's public address; empty without a relay.
+RELAY_IP = os.environ.get("ANONCAT_RELAY_IP", "").strip()
+# What the relay passes down the tunnel: apps and the front page, Matrix's
+# server port, and the old forwarded port apps signed in before still use.
+RELAY_PORTS = (443, 8448, 53383)
 # The second name is the pre-v1.8 one, still the only one some older servers look up.
 SRV_NAMES = ("_matrix-fed._tcp", "_matrix._tcp")
 RENEW = 45
@@ -451,6 +462,18 @@ def tunnel_address():
 
 
 def redirect(port, ip, public):
+    """Proton mode; see redirect_rules."""
+    redirect_rules(port, (public,), (port, ip, public))
+
+
+def redirect_relay():
+    """Relay mode: nothing arrives on wg0 any more, but this machine's own
+    apps still reach the server through its tunnel address (/etc/hosts), on
+    any of the ports the relay serves."""
+    redirect_rules(None, RELAY_PORTS, ("relay",))
+
+
+def redirect_rules(port, public_ports, key):
     """Make `inet anoncat` redirect exactly this local port on wg0, and this
     machine's own connections to the public port on its tunnel address to the
     local listener there. This machine resolves hs.anoncat.gleeze.com to its
@@ -465,27 +488,31 @@ def redirect(port, ip, public):
                          capture_output=True, text=True)
     if out.returncode == 0:
         sets = [x["set"] for x in json.loads(out.stdout)["nftables"] if "set" in x]
-        if sets and sets[0].get("elem") == [port] and _applied == (port, ip, public, local_ip):
+        want = [port] if port is not None else None
+        if sets and sets[0].get("elem") == want and _applied == (*key, local_ip):
             return
+    forwarded = f"elements = {{ {port} }}; " if port is not None else ""
+    public = ", ".join(str(p) for p in public_ports)
     # Declared first so the delete can't fail, then rebuilt whole: one
     # transaction, so there's never a moment with a half-made table.
     script = f"""table inet anoncat
 delete table inet anoncat
 table inet anoncat {{
-    set forwarded {{ type inet_service; elements = {{ {port} }} }}
+    set forwarded {{ type inet_service; {forwarded}}}
     chain prerouting {{
         type nat hook prerouting priority dstnat; policy accept;
         iifname "wg0" tcp dport @forwarded counter redirect to :{LOCAL_PORT}
     }}
     chain output {{
         type nat hook output priority dstnat; policy accept;
-        ip daddr {local_ip} tcp dport {public} counter dnat ip to {local_ip}:{LOOPBACK_PORT}
+        ip daddr {local_ip} tcp dport {{ {public} }} counter dnat ip to {local_ip}:{LOOPBACK_PORT}
     }}
 }}
 """
     subprocess.run([NFT, "-f", "-"], input=script, text=True, check=True)
-    _applied = (port, ip, public, local_ip)
-    log(f"redirect: wg0 tcp {port} -> {LOCAL_PORT}; local {local_ip}:{public} -> {LOOPBACK_PORT}")
+    _applied = (*key, local_ip)
+    inbound = f"wg0 tcp {port} -> {LOCAL_PORT}; " if port is not None else ""
+    log(f"redirect: {inbound}local {local_ip}:{public} -> {LOOPBACK_PORT}")
 
 
 # The DNS and Pages work runs here, apart from the lease renewal: it can take
@@ -496,6 +523,9 @@ _publisher = None
 
 def step(dry_run=False, background=False):
     global _publisher
+    if RELAY_IP:
+        step_relay(dry_run)
+        return
     ip, port, local = forward()
     if REDIRECT and not dry_run:
         redirect(local, ip, port)
@@ -506,6 +536,25 @@ def step(dry_run=False, background=False):
         _publisher.start()
         return
     publish(ip, port, dry_run)
+
+
+def step_relay(dry_run=False):
+    """Relay mode: DNS points at the VPS; only a change of VPS (or of this
+    layout) sends anything to Dynu."""
+    if not ipaddress.ip_address(RELAY_IP).is_global:
+        raise RuntimeError(f"ANONCAT_RELAY_IP {RELAY_IP} isn't a public address")
+    if REDIRECT and not dry_run:
+        redirect_relay()
+    state = load_state()
+    if (state.get("relay"), state.get("layout")) == (RELAY_IP, DNS_LAYOUT):
+        return
+    if dry_run:
+        log(f"would set DNS: A {DOMAIN} and {HS} {RELAY_IP}, SRV {', '.join(SRV_NAMES)} -> {HS}:8448")
+        return
+    set_dns(RELAY_IP, 8448, pages=False)
+    save_state({"relay": RELAY_IP, "ip": RELAY_IP, "port": 8448, "pages": False,
+                "layout": DNS_LAYOUT, "since": int(time.time())})
+    log(f"DNS now {DOMAIN} and {HS} -> relay {RELAY_IP} (was {state.get('ip')}:{state.get('port')})")
 
 
 def publish_logged(ip, port):
@@ -563,11 +612,12 @@ def main():
         try:
             step(background=True)
             if failing_since is not None:
-                log(f"port forward renewed again after {int(time.time() - failing_since)}s of failures")
+                log(f"working again after {int(time.time() - failing_since)}s of failures")
                 failing_since = None
         except Exception as e:  # keep renewing; a missed lease only costs the port
             failing_since = failing_since or time.time()
-            log(f"error renewing the port forward: {e}")
+            what = "keeping DNS on the relay" if RELAY_IP else "renewing the port forward"
+            log(f"error {what}: {e}")
         time.sleep(RENEW)
 
 

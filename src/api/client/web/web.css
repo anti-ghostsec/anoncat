@@ -125,3 +125,6 @@ th, td { padding: 0.5rem 0.4rem; text-align: left; vertical-align: top; border-b
 th { color: var(--muted); font-weight: 600; }
 td:last-child { text-align: right; }
 code { font-size: 0.8rem; color: var(--muted); word-break: break-all; }
+
+ol, ul { margin: 0.5rem 0 0; padding-left: 1.3rem; }
+li { margin: 0.35rem 0; }

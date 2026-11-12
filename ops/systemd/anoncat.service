@@ -17,8 +17,9 @@ ConditionPathIsMountPoint=/Drives/server/data
 [Service]
 # The killswitch for the server's own traffic: the kernel lets it use only
 # loopback and the VPN, so if wg0 goes down it goes offline instead of
-# reaching anything from the home IP.
-RestrictNetworkInterfaces=lo wg0
+# reaching anything from the home IP. anoncat-relay is the tunnel to the
+# relay VPS, itself carried inside wg0 (ops/install/anoncat-relay).
+RestrictNetworkInterfaces=lo wg0 anoncat-relay
 # DNS straight to Proton's resolver inside the tunnel, never the home router.
 BindReadOnlyPaths=/etc/anoncat/resolv.conf:/etc/resolv.conf
 # Logs kept in RAM only (journalctl --namespace=anoncat); see

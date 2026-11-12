@@ -1,0 +1,150 @@
+#!/bin/bash
+# anoncat-relay: put anoncat behind a relay VPS with a fixed address. Run as
+# root, with the vault unlocked, the VPN (wg0) up and anoncat installed:
+#
+#   sudo anoncat-relay <vps-address> <vps-wireguard-port> <vps-public-key>
+#
+# The VPS (set up apart, see ops/relay/README.md) passes ports 443, 8448 and
+# 53383 down a WireGuard tunnel to this machine, untouched: TLS ends here, so
+# the VPS only ever carries encrypted traffic. This machine reaches the VPS
+# only through Proton (wg0), so the VPS never learns the home address; if wg0
+# is down, the tunnel's packets are dropped rather than sent the other way.
+#
+# Safe to run again; prints this machine's tunnel public key at the end,
+# which goes into the VPS's peer section.
+set -euo pipefail
+
+DATA=/Drives/server/data
+CONF=$DATA/anoncat.toml
+IFACE=anoncat-relay
+HOME_ADDR=10.77.0.2
+VPS_ADDR=10.77.0.1
+TABLE=51877
+MTU=1340  # wg0's 1420, less this tunnel's own 80 bytes
+INPUT_RULE="iifname \"$IFACE\" ip daddr $HOME_ADDR tcp dport 8449 accept"
+
+die() { echo "anoncat-relay: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ $# -eq 3 ]] || die "usage: $0 <vps-address> <vps-wireguard-port> <vps-public-key>"
+vps=$1 port=$2 vps_key=$3
+[[ $vps =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "$vps isn't an IPv4 address"
+[[ $port =~ ^[0-9]{1,5}$ ]] || die "$port isn't a port"
+[[ $vps_key =~ ^[A-Za-z0-9+/]{43}=$ ]] || die "$vps_key isn't a WireGuard public key"
+mountpoint -q "$DATA" || die "$DATA isn't mounted; run: anoncat-vault unlock"
+ip link show wg0 &>/dev/null || die "wg0 is down; bring the VPN up first"
+[[ -f $CONF ]] || die "no $CONF; run anoncat-install first"
+[[ $(ip route get "$vps" 2>/dev/null) == *"dev wg0"* ]] || die "$vps isn't routed through wg0; refusing, it would see the home address"
+
+step "Tunnel"
+install -d -m 0700 /etc/wireguard
+umask 077
+[[ -f /etc/wireguard/$IFACE.key ]] || wg genkey > "/etc/wireguard/$IFACE.key"
+umask 022
+wg pubkey < "/etc/wireguard/$IFACE.key" > "/etc/anoncat/relay.pub"
+cat > "/etc/wireguard/$IFACE.conf" <<CONF
+# Written by anoncat-relay. The tunnel to the relay VPS.
+[Interface]
+PrivateKey = $(cat "/etc/wireguard/$IFACE.key")
+Address = $HOME_ADDR/32
+MTU = $MTU
+# Not this machine's way out: only anoncat's answers to connections that
+# came through the relay go back through it.
+Table = off
+PostUp = ip route replace default dev %i table $TABLE
+PostUp = ip rule add from $HOME_ADDR lookup $TABLE priority 90
+# Proton or nothing: the tunnel's own packets to the VPS may only leave on wg0.
+PostUp = nft -f /etc/anoncat/relay-guard.nft
+PreDown = ip rule del from $HOME_ADDR lookup $TABLE priority 90 || true
+PreDown = nft delete table inet anoncat-relay-guard || true
+
+[Peer]
+PublicKey = $vps_key
+Endpoint = $vps:$port
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+CONF
+chmod 0600 "/etc/wireguard/$IFACE.conf"
+cat > /etc/anoncat/relay-guard.nft <<NFT
+table inet anoncat-relay-guard
+delete table inet anoncat-relay-guard
+table inet anoncat-relay-guard {
+	chain output {
+		type filter hook output priority filter; policy accept;
+		ip daddr $vps udp dport $port oifname != "wg0" counter drop
+	}
+}
+NFT
+install -d -m 0755 "/etc/systemd/system/wg-quick@$IFACE.service.d"
+cat > "/etc/systemd/system/wg-quick@$IFACE.service.d/anoncat.conf" <<UNIT
+[Unit]
+# Inside Proton's tunnel, so after it.
+After=sys-subsystem-net-devices-wg0.device
+UNIT
+echo "ANONCAT_RELAY_IP=$vps" > /etc/anoncat/relay.env
+echo "/etc/wireguard/$IFACE.conf, /etc/anoncat/relay.env"
+
+step "anoncat waits for the tunnel"
+install -d -m 0755 /etc/systemd/system/anoncat.service.d
+cat > /etc/systemd/system/anoncat.service.d/relay.conf <<UNIT
+[Unit]
+# It listens on the tunnel's address, which must exist first.
+Wants=wg-quick@$IFACE.service
+After=wg-quick@$IFACE.service
+UNIT
+install -d -m 0755 /etc/systemd/system/anoncat-netd.service.d
+cat > /etc/systemd/system/anoncat-netd.service.d/relay.conf <<UNIT
+[Service]
+EnvironmentFile=/etc/anoncat/relay.env
+UNIT
+systemctl daemon-reload
+
+step "Firewall"
+if ! grep -qF "$INPUT_RULE" /etc/nftables.conf; then
+	cp -p /etc/nftables.conf /etc/nftables.conf.before-relay
+	sed -i "s|^\(\s*\)iif \"lo\" accept$|&\n\1# anoncat: connections the relay VPS passes down its tunnel\n\1$INPUT_RULE|" /etc/nftables.conf
+	grep -qF "$INPUT_RULE" /etc/nftables.conf || die "couldn't add the input rule to /etc/nftables.conf"
+	nft -c -f /etc/nftables.conf || die "/etc/nftables.conf no longer parses; the original is /etc/nftables.conf.before-relay"
+	echo "added to /etc/nftables.conf (backup: /etc/nftables.conf.before-relay)"
+fi
+if ! nft list chain inet filter input | grep -qF "$INPUT_RULE"; then
+	nft add rule inet filter input "$INPUT_RULE"
+	echo "added to the running firewall"
+fi
+
+step "Config"
+if ! grep -qE "^address = .*\"$HOME_ADDR\"" "$CONF"; then
+	cp -p "$CONF" "$CONF.before-relay"
+	sed -i -E "s|^(address = \[.*)\]$|\1, \"$HOME_ADDR\"]|" "$CONF"
+	grep -qE "^address = .*\"$HOME_ADDR\"" "$CONF" || die "couldn't add $HOME_ADDR to address in $CONF"
+	echo "config: anoncat also listens on the tunnel ($HOME_ADDR:8449)"
+fi
+if ! grep -q '^\[global.well_known\]' "$CONF"; then
+	server=$(sed -nE 's/^server_name = "(.*)"$/\1/p' "$CONF")
+	cat >> "$CONF" <<TOML
+
+# Served by anoncat itself through the relay: apps and other servers find it
+# on the standard port of the server name.
+[global.well_known]
+client = "https://$server"
+server = "$server:443"
+TOML
+	echo "config: anoncat answers .well-known itself"
+fi
+chown anoncat:anoncat "$CONF"
+
+step "Start"
+systemctl enable "wg-quick@$IFACE.service" >/dev/null 2>&1
+systemctl restart "wg-quick@$IFACE.service"
+systemctl restart anoncat.service
+systemctl restart anoncat-netd.service
+for _ in $(seq 120); do
+	state=$(systemctl show -P ActiveState anoncat.service)
+	[[ $state == active || $state == failed ]] && break
+	sleep 1
+done
+systemctl --no-pager status "wg-quick@$IFACE.service" anoncat.service anoncat-netd.service | grep -E "●|Active:" || true
+echo
+echo "This machine's tunnel key (for the VPS's [Peer] section):"
+cat /etc/anoncat/relay.pub

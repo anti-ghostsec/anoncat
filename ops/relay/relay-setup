@@ -1,0 +1,112 @@
+#!/bin/bash
+# relay-setup: turn a fresh Debian VPS into anoncat's relay. Run on the VPS as
+# root, over SSH reached through the VPN:
+#
+#   ssh root@<vps> bash -s < ops/relay/relay-setup
+#
+# Safe to run again. Then, on the home server:
+#   sudo anoncat-relay <vps-address> 39214 <the PUB= key this prints>
+# and add the home key it prints here:
+#   ssh root@<vps> relay-peer <home-public-key>
+set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get -qq update
+apt-get -qq -y -o Dpkg::Options::=--force-confold full-upgrade >/dev/null
+apt-get -qq -y install wireguard-tools nftables unattended-upgrades >/dev/null
+# No logs on disk: journald in RAM only, rsyslog gone.
+systemctl disable --now rsyslog.service rsyslog.socket syslog.socket 2>/dev/null || true
+apt-get -qq -y purge rsyslog >/dev/null || true
+mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=32M\nMaxRetentionSec=1day\n' > /etc/systemd/journald.conf.d/ram.conf
+systemctl restart systemd-journald
+rm -rf /var/log/journal /var/log/*.log /var/log/*.gz /var/log/syslog* /var/log/auth.log* /var/log/messages* 2>/dev/null || true
+: > /var/log/wtmp; : > /var/log/btmp; : > /var/log/lastlog 2>/dev/null || true
+# SSH: keys only, quiet logging.
+cat > /etc/ssh/sshd_config.d/10-relay.conf <<'S'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+LogLevel QUIET
+S
+sshd -t && systemctl reload ssh
+# Security updates on their own.
+printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /etc/apt/apt.conf.d/20auto-upgrades
+systemctl enable --now unattended-upgrades >/dev/null 2>&1
+# Forwarding for the relay.
+printf 'net.ipv4.ip_forward=1\nnet.ipv4.conf.all.rp_filter=0\nnet.ipv4.conf.default.rp_filter=0\n' > /etc/sysctl.d/90-relay.conf
+sysctl -q --system
+# WireGuard key, made here; only the public half leaves.
+umask 077; mkdir -p /etc/wireguard
+[ -f /etc/wireguard/relay.key ] || wg genkey > /etc/wireguard/relay.key
+wg pubkey < /etc/wireguard/relay.key > /etc/wireguard/relay.pub
+cat > /etc/nftables.conf <<'N'
+#!/usr/sbin/nft -f
+# anoncat relay: the Matrix ports go down the WireGuard tunnel to the home
+# server (10.77.0.2), untouched; it holds the TLS keys, so this machine only
+# ever sees encrypted traffic. Everything else is dropped.
+flush ruleset
+
+define public = "ens3"
+define tunnel = "relay"
+define home = 10.77.0.2
+define wg_port = 39214
+
+table inet relay {
+	chain prerouting {
+		type nat hook prerouting priority dstnat; policy accept;
+		# 443: apps and the front page. 8448: Matrix's own server port.
+		# 53383: the port apps signed in before the relay remember.
+		iifname $public tcp dport { 443, 8448, 53383 } dnat ip to $home:8449
+	}
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif lo accept
+		ct state invalid drop
+		ct state established,related accept
+		meta l4proto { icmp, ipv6-icmp } accept
+		udp dport $wg_port accept
+		tcp dport 22 accept
+	}
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		oifname $tunnel tcp flags syn tcp option maxseg size set rt mtu
+		ct state established,related accept
+		iifname $public oifname $tunnel ip daddr $home tcp dport 8449 ct status dnat accept
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+N
+nft -c -f /etc/nftables.conf
+systemctl enable nftables.service >/dev/null 2>&1
+systemctl restart nftables.service
+
+# The tunnel to the home server. It connects from behind its VPN, so it has
+# no endpoint here; relay-peer adds its key.
+cat > /etc/wireguard/relay.conf <<'C'
+[Interface]
+Address = 10.77.0.1/32
+ListenPort = 39214
+MTU = 1340
+PostUp = wg set %i private-key /etc/wireguard/relay.key
+C
+[ -f /etc/wireguard/relay.peer ] && cat /etc/wireguard/relay.peer >> /etc/wireguard/relay.conf
+cat > /usr/local/sbin/relay-peer <<'R'
+#!/bin/bash
+# relay-peer <home-public-key>: the one machine allowed through the tunnel.
+set -euo pipefail
+[[ $1 =~ ^[A-Za-z0-9+/]{43}=$ ]] || { echo "not a WireGuard key: $1" >&2; exit 1; }
+printf '\n[Peer]\nPublicKey = %s\nAllowedIPs = 10.77.0.2/32\n' "$1" > /etc/wireguard/relay.peer
+sed -i '/^\[Peer\]/,$d' /etc/wireguard/relay.conf
+cat /etc/wireguard/relay.peer >> /etc/wireguard/relay.conf
+wg syncconf relay <(wg-quick strip relay)
+wg show relay
+R
+chmod 0755 /usr/local/sbin/relay-peer
+systemctl enable wg-quick@relay.service >/dev/null 2>&1
+systemctl restart wg-quick@relay.service
+echo PUB=$(cat /etc/wireguard/relay.pub)
