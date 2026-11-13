@@ -209,7 +209,14 @@ systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer anonca
 	anoncat-video.socket
 # The unlock page only runs while the vault is locked; it's for after a boot.
 systemctl stop anoncat-unlock.service 2>/dev/null || true
-systemctl start anoncat-video.socket anoncat.socket anoncat.service
+systemctl start anoncat-video.socket anoncat.socket
+# A server already running keeps its old binary, config and sandbox until it
+# restarts; the socket stays open meanwhile, so clients wait, not fail.
+if systemctl is-active -q anoncat.service; then
+	systemctl restart anoncat.service
+else
+	systemctl start anoncat.service
+fi
 systemctl start anoncat-tls-renew.timer anoncat-backup.timer anoncat-vault-helper.socket
 # netd is a script: a running copy keeps the old code until restarted.
 systemctl try-restart anoncat-netd.service
