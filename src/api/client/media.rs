@@ -80,6 +80,11 @@ pub(crate) async fn create_content_route(
 		.check_upload(user, filename)
 		.await?;
 
+	if let Some(why) = services.moderation.known_bad(&body.file).await {
+		services.moderation.bad_upload_refused(user, &why).await;
+		return Err!(Request(Forbidden("This file isn't allowed here.")));
+	}
+
 	let content_type = body.content_type.as_deref();
 	let content_disposition = make_content_disposition(None, content_type, filename);
 	let ref mxc = Mxc {
@@ -171,6 +176,11 @@ pub(crate) async fn create_content_async_route(
 		.moderation
 		.check_upload_name(user, filename)
 		.await?;
+
+	if let Some(why) = services.moderation.known_bad(&body.file).await {
+		services.moderation.bad_upload_refused(user, &why).await;
+		return Err!(Request(Forbidden("This file isn't allowed here.")));
+	}
 
 	let content_type = body.content_type.as_deref();
 	let content_disposition = make_content_disposition(None, content_type, filename);

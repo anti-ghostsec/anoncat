@@ -216,3 +216,50 @@ pub async fn ai_views_owned(self: &Arc<Self>, bytes: Vec<u8>) -> Result<Inspecte
 		.await
 		.map_err(|e| tuwunel_core::err!("check failed: {e}"))?
 }
+
+/// What a known-bad file is recognised by. The SHA-256 matches only the very
+/// same file; the PDQ hash (Meta's open perceptual hash, the kind shared
+/// between services) matches the same picture resized, re-encoded or lightly
+/// edited. Neither can be turned back into the picture.
+#[derive(Clone, Copy, Debug)]
+pub struct Fingerprint {
+	pub sha256: [u8; 32],
+	/// With its quality, 0 to 100; none when it isn't a picture.
+	pub pdq: Option<([u8; 32], u8)>,
+}
+
+#[implement(super::super::Service)]
+#[must_use]
+pub fn fingerprint(&self, bytes: &[u8]) -> Fingerprint {
+	use sha2::{Digest, Sha256};
+
+	#[cfg(feature = "media_thumbnail")]
+	let pdq = self.decode(bytes).ok().map(|image| {
+		let hashed = super::pdq::pdq(&image);
+		(hashed.hash, hashed.quality)
+	});
+	#[cfg(not(feature = "media_thumbnail"))]
+	let pdq = None;
+
+	Fingerprint { sha256: Sha256::digest(bytes).into(), pdq }
+}
+
+/// [`fingerprint`](super::super::Service::fingerprint), off the async threads.
+#[implement(super::super::Service)]
+pub async fn fingerprint_owned(self: &Arc<Self>, bytes: Vec<u8>) -> Result<Fingerprint> {
+	let this = Arc::clone(self);
+	tokio::task::spawn_blocking(move || this.fingerprint(&bytes))
+		.await
+		.map_err(|e| tuwunel_core::err!("hashing failed: {e}"))
+}
+
+/// PDQ helpers for the known-bad list, which lives outside this module.
+#[cfg(feature = "media_thumbnail")]
+#[must_use]
+pub fn pdq_distance(a: &[u8; 32], b: &[u8; 32]) -> u32 { super::pdq::distance(a, b) }
+
+#[cfg(not(feature = "media_thumbnail"))]
+#[must_use]
+pub fn pdq_distance(a: &[u8; 32], b: &[u8; 32]) -> u32 {
+	a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
+}

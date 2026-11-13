@@ -113,6 +113,21 @@ if ! nft list chain inet filter input | grep -qF "$INPUT_RULE"; then
 	echo "added to the running firewall"
 fi
 
+# The direct path through Proton's port forward is retired: nothing should
+# reach anoncat on wg0 any more. (The socket stays bound there, for restarts;
+# with the rule gone, the firewall drops anything that arrives for it.)
+OLD_RULE='iifname "wg0" tcp dport 8448 accept'
+if grep -qF "$OLD_RULE" /etc/nftables.conf; then
+	grep -vF -e "$OLD_RULE" -e "# anoncat: the forwarded port, redirected to 8448 by anoncat-netd" /etc/nftables.conf > /etc/nftables.conf.new
+	cat /etc/nftables.conf.new > /etc/nftables.conf && rm -f /etc/nftables.conf.new
+	nft -c -f /etc/nftables.conf || die "/etc/nftables.conf no longer parses; the original is /etc/nftables.conf.before-relay"
+	echo "removed the old port-forward rule from /etc/nftables.conf"
+fi
+while handle=$(nft -a list chain inet filter input | grep -F "$OLD_RULE" | grep -oE 'handle [0-9]+$' | head -1) && [[ -n $handle ]]; do
+	nft delete rule inet filter input ${handle}
+	echo "removed the old port-forward rule from the running firewall"
+done
+
 step "Config"
 if ! grep -qE "^address = .*\"$HOME_ADDR\"" "$CONF"; then
 	cp -p "$CONF" "$CONF.before-relay"

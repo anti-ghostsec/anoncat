@@ -1,6 +1,7 @@
 use axum::extract::State;
 use ruma::api::client::reporting::report_user;
 use tuwunel_core::{Err, Result, info};
+use tuwunel_service::moderation::Reported;
 
 use super::REASON_MAX_LEN;
 use crate::Ruma;
@@ -26,13 +27,14 @@ pub(crate) async fn report_user_route(
 	info!("Received user report by {sender_user} for {target_user} with reason: \"{reason}\"");
 
 	// Succeed regardless of user existence to deter enumeration (MSC4277).
-	if services.users.is_active_local(target_user).await {
+	// Someone from another server can be reported too: they may be the one
+	// messaging people here.
+	let known = services.users.is_active_local(target_user).await
+		|| !services.globals.user_is_local(target_user);
+	if known {
 		services
-			.admin
-			.send_report(&format!(
-				"@room User report received from {sender_user}\nReport Reason: \
-				 {reason}\n\nReported User ID: {target_user}",
-			))
+			.moderation
+			.user_report(sender_user, Reported::User { user_id: target_user.clone() }, reason)
 			.await;
 	}
 

@@ -2,7 +2,7 @@ use axum::extract::State;
 use ruma::{EventId, RoomId, UserId, api::client::room::report_content};
 use tuwunel_core::{Err, Result, debug_info, info, utils::ReadyExt};
 use tuwunel_matrix::pdu::PduEvent;
-use tuwunel_service::Services;
+use tuwunel_service::{Services, moderation::Reported};
 
 use super::REASON_MAX_LEN;
 use crate::Ruma;
@@ -40,12 +40,15 @@ pub(crate) async fn report_event_route(
 	.await?;
 
 	services
-		.admin
-		.send_report(&format!(
-			"@room Event report received from {}\nReport Reason: {}\n\nEvent ID: {}\nRoom ID: \
-			 {}\nSent By: {}",
-			sender_user, reason, pdu.event_id, pdu.room_id, pdu.sender,
-		))
+		.moderation
+		.user_report(
+			sender_user,
+			Reported::Event {
+				room_id: pdu.room_id.clone(),
+				event_id: pdu.event_id.clone(),
+			},
+			reason,
+		)
 		.await;
 
 	Ok(report_content::v3::Response {})

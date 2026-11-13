@@ -18,10 +18,13 @@
 //! watched from then on.
 
 mod assistant;
+mod badfiles;
 mod blocklist;
 mod stand_in;
 mod room_check;
+mod reachable;
 mod storage;
+mod user_reports;
 mod venice;
 
 use std::{
@@ -53,9 +56,12 @@ use tuwunel_matrix::{Event, PduEvent, pdu::MAX_PDU_BYTES};
 
 pub use self::{
 	assistant::Said,
+	badfiles::{BadFile, BadScan},
 	blocklist::Blocked,
 	stand_in::{BUILT_IN as STAND_IN_BUILT_IN, StandIn},
 	storage::{IndexStatus, Uploader, piece_name},
+	reachable::Reachability,
+	user_reports::Reported,
 	venice::{Model, Turn},
 };
 use self::venice::{Part, json_in};
@@ -124,6 +130,11 @@ pub struct Service {
 	checked_uploads: Mutex<VecDeque<String>>,
 	/// Arrivals queued or being checked.
 	arrivals_waiting: AtomicUsize,
+	/// Whether the server's public address answers.
+	reachable: reachable::State,
+	/// Fingerprints of known bad files.
+	bad_files: badfiles::State,
+	bad_scan: badfiles::ScanState,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -272,8 +283,19 @@ pub struct Report {
 	pub hidden: bool,
 	/// "open", "dismissed" or "resolved".
 	pub status: String,
-	/// "ai", "size" or "room".
+	/// "ai", "size", "room" or "user".
 	pub source: String,
+	/// Who here reported it, and why, for reports people made.
+	#[serde(default)]
+	pub reported_by: Vec<UserReport>,
+}
+
+/// One person's report of something, from their app's Report button.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UserReport {
+	pub by: String,
+	pub reason: String,
+	pub ts: u64,
 }
 
 /// A watched event, as queued for a batch.
@@ -312,11 +334,15 @@ impl crate::Service for Service {
 			upload_checks: Arc::new(tokio::sync::Semaphore::new(UPLOAD_CHECKS_AT_ONCE)),
 			checked_uploads: Mutex::default(),
 			arrivals_waiting: AtomicUsize::new(0),
+			reachable: reachable::State::default(),
+			bad_files: badfiles::State::default(),
+			bad_scan: badfiles::ScanState::default(),
 		}))
 	}
 
 	async fn worker(self: Arc<Self>) -> Result {
 		self.load_blocklist().await;
+		self.load_bad_files().await;
 		self.load_stand_in().await;
 		self.index_if_new().await;
 
@@ -332,6 +358,10 @@ impl crate::Service for Service {
 			}
 		}
 		self.forget_blocked_rooms().await;
+		self.services
+			.server
+			.runtime()
+			.spawn(Arc::clone(&self).watch_reachability());
 
 		let mut rx = self
 			.rx
@@ -965,15 +995,26 @@ fn upload_report(&self, from: &str, origin: &str) -> Report {
 		hidden: false,
 		status: "open".into(),
 		source: "ai".into(),
+		reported_by: Vec::new(),
 	}
 }
 
+/// The AI's verdict on a picture: JSON with verdict, category and reason;
+/// none when it wasn't looked at (too big, or not a picture and `fallback`
+/// is off, so its bytes aren't sent as they are).
 #[implement(Service)]
-async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Result {
-	let mxc: Mxc<'_> = image.mxc.as_str().try_into()?;
+async fn image_verdict(
+	&self,
+	settings: &Settings,
+	key: &str,
+	mxc_str: &str,
+	mime: &str,
+	fallback: bool,
+) -> Result<Option<Value>> {
+	let mxc: Mxc<'_> = mxc_str.try_into()?;
 	let media = self.services.media.get_stored(&mxc).await?;
 	if u64::try_from(media.content.len()).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES {
-		return Ok(());
+		return Ok(None);
 	}
 
 	// The whole picture, and a long one in parts, an animated one as frames:
@@ -1014,8 +1055,8 @@ async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Re
 				.collect(),
 			"Check this image.".into(),
 		),
-		| None if image.item.is_none() => return Ok(()),
-		| None => (vec![Part::Image { mime: image.mime.clone(), data: content }], "Check this image.".into()),
+		| None if !fallback => return Ok(None),
+		| None => (vec![Part::Image { mime: mime.to_owned(), data: content }], "Check this image.".into()),
 	};
 
 	let model = self.model(&settings.vision_model, true).await?;
@@ -1033,6 +1074,19 @@ async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Re
 	let reply = venice::chat(self.client(), key, &model, &system, &[], parts).await?;
 	let Some(answer) = json_in(&reply) else {
 		return Err!("the AI's answer wasn't the expected JSON");
+	};
+
+	Ok(Some(answer))
+
+}
+
+#[implement(Service)]
+async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Result {
+	let Some(answer) = self
+		.image_verdict(settings, key, &image.mxc, &image.mime, image.item.is_some())
+		.await?
+	else {
+		return Ok(());
 	};
 
 	let verdict = answer["verdict"].as_str().unwrap_or("ok");
@@ -1153,6 +1207,7 @@ async fn new_report_in(
 		hidden: false,
 		status: "open".into(),
 		source: source.into(),
+		reported_by: Vec::new(),
 	}
 }
 

@@ -189,7 +189,8 @@ pages.dashboard = async (main) => {
 		h("div", { class: "grid" },
 			stat("Disk (vault)", diskUsed !== null ? `${((diskUsed / s.disk_total) * 100).toFixed(0)}%` : "—", `${bytes(diskUsed)} of ${bytes(s.disk_total)}`, s.disk_total ? meter(diskUsed / s.disk_total) : null),
 			stat("System memory", ramUsed !== null ? `${((ramUsed / s.ram_total) * 100).toFixed(0)}%` : "—", `${bytes(s.ram_available)} available`, s.ram_total ? meter(ramUsed / s.ram_total) : null),
-			stat("Server memory", bytes(s.rss), "resident"),
+			serverMemory(s),
+			reachableStat(s.reachable),
 			stat("Uptime", duration(s.uptime_secs), s.version)),
 		h("h2", {}, "Cleanup"),
 		table(["Rule", "Setting"], [
@@ -208,6 +209,30 @@ pages.dashboard = async (main) => {
 			run("Memory details", "server memory-usage")),
 		output);
 };
+
+// Whether the public address answered, checked every 5 minutes through the
+// VPN and the relay, as anyone outside would.
+function reachableStat(r) {
+	if (!r || r.ok === null || r.ok === undefined) return stat("Reachable from outside", "\u2014", "first check runs soon after start");
+	const card = stat("Reachable from outside", r.ok ? "Yes" : "No",
+		r.ok ? `since ${date(r.since_ts)}` : `${r.error || "failed"} \u00B7 since ${date(r.since_ts)}`);
+	if (!r.ok) card.classList.add("warn");
+	card.title = `Last checked ${date(r.checked_ts)}`;
+	return card;
+}
+
+// The server's memory against its limits: past the soft cap it's slowed
+// while the kernel takes memory back, so sitting near it costs speed.
+function serverMemory(s) {
+	if (!s.memory_current || !s.memory_high) return stat("Server memory", bytes(s.rss), "resident");
+	const share = s.memory_current / s.memory_high;
+	const held = s.memory_high_events ? `, held back ${s.memory_high_events}\u00D7` : "";
+	const note = `${bytes(s.memory_current)} of ${bytes(s.memory_high)} soft cap${s.memory_max ? `, ${bytes(s.memory_max)} hard` : ""}${held}`;
+	const card = stat("Server memory", `${(share * 100).toFixed(0)}%`, note, meter(Math.min(share, 1)));
+	if (share >= 0.9 || s.memory_high_events) card.classList.add("warn");
+	card.title = "Includes the server's caches. Near the soft cap the kernel squeezes it and it gets slower; lower the cache sizes in the config if it lives there.";
+	return card;
+}
 
 pages.users = async (main, params) => {
 	const from = Number(params.get("from") || 0);
@@ -412,8 +437,9 @@ pages.media = async (main, params) => {
 	const lookup = h("input", { placeholder: "@user:server — show their uploads", value: user, onkeydown: (e) => e.key === "Enter" && navigate("media", { user: e.target.value }) });
 	let list;
 	if (room || user) {
+		const grid = h("div", { class: "media-grid" }, items.map((m) => mediaItem(m)));
 		list = items.length
-			? h("div", { class: "media-grid" }, items.map((m) => mediaItem(m)))
+			? h("div", {}, bulkBar(grid, { remote: false, onDone: () => render() }), grid)
 			: h("p", { class: "muted" }, room
 				? "No media found. Encrypted rooms don't count: the server can't see which files their messages point to."
 				: "No uploads.");
@@ -425,6 +451,63 @@ pages.media = async (main, params) => {
 		mediaTabs("here"),
 		h("div", { class: "toolbar" }, lookup, h("span", { class: "muted small" }, "or open a room's media from Rooms. Previews are blurred; click to reveal.")),
 		list);
+}
+
+// Ticking several files and acting on them at once, and filters for the
+// grid. Swapping deletes each file for good and serves the stand-in; deleting
+// a copy from another server only frees the space here.
+function bulkBar(grid, { remote, onDone }) {
+	const items = () => [...grid.querySelectorAll(".media-item[data-mxc]")];
+	const picked = () => items().filter((el) => !el.hidden && el.querySelector(".pick")?.checked);
+	const count = h("span", { class: "muted small" });
+	const update = () => {
+		const n = picked().length;
+		count.textContent = n ? `${n} selected` : "None selected";
+		for (const b of buttons) b.disabled = !n;
+	};
+	for (const el of items()) {
+		const box = h("input", { type: "checkbox", class: "pick", "aria-label": "Select", onchange: () => { el.classList.toggle("picked", box.checked); update(); } });
+		box.addEventListener("click", (e) => e.stopPropagation());
+		el.prepend(h("label", { class: "pick-wrap", title: "Select" }, box));
+	}
+	const run = async (label, verb, fn) => {
+		const chosen = picked();
+		if (!chosen.length) return;
+		if (!(await ask(`${label} ${chosen.length} files?`, { text: verb, confirm: label, danger: true }))) return;
+		let done = 0, failed = 0;
+		const queue = [...chosen];
+		const worker = async () => {
+			for (let el = queue.shift(); el; el = queue.shift()) {
+				const [server, mediaId] = el.dataset.mxc.replace("mxc://", "").split("/");
+				const path = `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`;
+				try { await fn(path); done++; } catch { failed++; }
+				count.textContent = `${done + failed} of ${chosen.length}\u2026`;
+			}
+		};
+		await Promise.all([worker(), worker(), worker()]);
+		toast(failed ? `${done} done, ${failed} failed` : `${done} done`);
+		onDone?.();
+	};
+	const buttons = [
+		h("button", { type: "button", class: "danger small", onclick: thenAsk(() => run("Swap", "Each file is deleted for good; everyone, here and on other servers, gets the stand-in picture instead.", (p) => api("POST", `${p}/hide`))) }, "Swap for stand-in"),
+		h("button", { type: "button", class: "ghost small", onclick: thenAsk(() => run("Delete", remote
+			? "Only this server's copies go. Anything someone here opens again is fetched again, unless it's swapped or its server is blocked."
+			: "These uploads are deleted for good, for everyone.", (p) => api("DELETE", p))) }, remote ? "Delete copies" : "Delete"),
+	];
+	const FILTERS = [["", "All"], ["image", "Pictures"], ["video", "Videos"], ["notinroom", "Not seen in a room"], ["hidden", "Hidden"], ["swapped", "Swapped"]];
+	const filter = h("select", { "aria-label": "Show", onchange: () => {
+		const want = filter.value;
+		for (const el of items()) el.hidden = Boolean(want) && !(el.dataset.flags || "").split(" ").includes(want);
+		update();
+	} }, FILTERS.filter(([key]) => remote || !["notinroom", "hidden", "swapped"].includes(key)).map(([key, label]) => h("option", { value: key }, label)));
+	const all = h("button", { type: "button", class: "ghost small", onclick: () => {
+		const shown = items().filter((el) => !el.hidden);
+		const on = !shown.every((el) => el.querySelector(".pick").checked);
+		for (const el of shown) { el.querySelector(".pick").checked = on; el.classList.toggle("picked", on); }
+		update();
+	} }, "Select all shown");
+	update();
+	return h("div", { class: "toolbar bulk" }, filter, all, count, ...buttons);
 }
 
 function mediaTabs(current) {
@@ -523,6 +606,7 @@ async function remoteMedia(main, params) {
 	const grid = res.media.length
 		? h("div", { class: "media-grid" }, res.media.map((m) => cachedItem(m, res.servers.some((s) => s.server === m.server && s.blocked))))
 		: h("p", { class: "muted" }, only ? "Nothing cached from this server." : "Nothing cached from other servers.");
+	const bulk = res.media.length ? bulkBar(grid, { remote: true, onDone: reload }) : null;
 
 	fill(main,
 		h("h1", {}, only ? `Media from ${only}` : "Media from other servers"),
@@ -542,13 +626,16 @@ async function remoteMedia(main, params) {
 			} })),
 		only ? null : table(["Server", "Files", "Size", ""], serverRows, "Nothing cached."),
 		h("h2", {}, only ? "Files" : res.media.length < res.items ? `Biggest ${res.media.length} files` : "Files"),
+		bulk,
 		grid);
 }
 
 function cachedItem(m, blocked) {
 	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
 	const thumb = mediaThumb(m.mxc, m.media_type);
-	const item = h("div", { class: "media-item" },
+	const kindOf = (t) => !t ? "" : t.startsWith("image/") ? "image" : t.startsWith("video/") ? "video" : "other";
+	const flags = [m.swapped ? "swapped" : "", m.hidden ? "hidden" : "", m.in_room === false ? "notinroom" : "", kindOf(m.media_type)].filter(Boolean).join(" ");
+	const item = h("div", { class: "media-item", "data-mxc": m.mxc, "data-flags": flags, "data-remote": "1" },
 		thumb,
 		h("div", { class: "mono muted" }, mediaId),
 		h("div", { class: "small muted" }, [server, bytes(m.bytes), m.fetched_ts ? date(m.fetched_ts) : null].filter(Boolean).join(" · ")),
@@ -572,7 +659,8 @@ async function uploaders() {
 function mediaItem(m) {
 	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
 	const thumb = mediaThumb(m.mxc, m.type);
-	const item = h("div", { class: "media-item" },
+	const kind = !m.type ? "" : m.type.startsWith("image/") ? "image" : m.type.startsWith("video/") ? "video" : "other";
+	const item = h("div", { class: "media-item", "data-mxc": m.mxc, "data-flags": kind },
 		thumb,
 		h("div", { class: "mono muted" }, m.name || mediaId),
 		h("div", { class: "small muted" }, [m.size ? bytes(m.size) : null, m.created ? date(m.created) : null].filter(Boolean).join(" · ")),
@@ -883,6 +971,86 @@ async function teachAi(r) {
 	return Boolean(await attempt("Note added", () => api("PUT", `${MOD}/settings`, { guidance })));
 }
 
+// Fingerprints of files that must never come in again. Swapping media adds
+// its own; lists can be shared between servers' admins, since a hash can't
+// be turned back into a picture.
+pages.badfiles = async (main) => {
+	const BASE = "/_anoncat/admin/v1/badfiles";
+	const res = await api("GET", BASE);
+	const reload = () => pages.badfiles(main);
+
+	const download = async () => {
+		const r = await fetch(`${BASE}/export`, authed()).catch(() => null);
+		if (!r?.ok) return toast("Couldn't export the list.");
+		const url = URL.createObjectURL(await r.blob());
+		const a = h("a", { href: url, download: `anoncat-bad-files-${new Date().toISOString().slice(0, 10)}.csv` });
+		document.body.append(a);
+		a.click();
+		a.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+	};
+
+	const text = h("textarea", { rows: 6, placeholder: "pdq,<64 hex digits>,note\nsha256,<64 hex digits>,note\n<64 hex digits>   (taken as PDQ)", spellcheck: "false" });
+	const note = h("input", { placeholder: "Where the list came from (optional)" });
+	const file = h("input", { type: "file", accept: ".csv,.txt,text/plain", onchange: async () => {
+		const f = file.files?.[0];
+		if (f) text.value = await f.text();
+	} });
+	const doImport = async () => {
+		if (!text.value.trim()) return toast("Paste a list or choose a file first.");
+		const r = await attempt(null, () => api("POST", `${BASE}/import`, { text: text.value, note: note.value }));
+		if (!r) return;
+		toast(`${r.added} added${r.skipped ? `, ${r.skipped} already there or not valid` : ""}`);
+		if (r.added && (await ask("Check stored media against the list now?", {
+			text: "Every file stored here, uploaded or fetched from other servers, is hashed and compared, one at a time in the background. Matches are swapped for the stand-in and reported.",
+			confirm: "Scan now" }))) await scan();
+		reload();
+	};
+	const scan = async () => {
+		const r = await attempt("Scan started", () => api("POST", `${BASE}/scan`, {}));
+		if (r) setTimeout(reload, 2000);
+	};
+
+	const sc = res.scan;
+	const scanLine = sc.running
+		? `Scanning: ${sc.checked} of ${sc.total} checked, ${sc.found} found.`
+		: sc.finished_ts ? `Last scan ${date(sc.finished_ts)}: ${sc.checked} checked, ${sc.found} found.` : "No scan run since the server started.";
+	if (sc.running) setTimeout(() => { if (location.hash.startsWith("#/badfiles")) reload(); }, 5000);
+
+	const rows = res.entries.map((e) => h("tr", {},
+		h("td", {}, h("span", { class: "tag" }, e.kind)),
+		h("td", { class: "mono small", title: e.hash }, `${e.hash.slice(0, 16)}…`),
+		h("td", { class: "small" }, e.note || h("span", { class: "muted" }, "—")),
+		h("td", { class: "small muted" }, `${{ swap: "swapped", import: "imported", admin: "added" }[e.source] || e.source} · ${date(e.added_ts)}`),
+		h("td", { class: "actions" }, h("button", { class: "ghost small", onclick: async () => {
+			if (!(await ask("Take this off the list?", { text: "Files matching it are let in again. Anything already swapped stays swapped.", confirm: "Remove", danger: true }))) return;
+			if (await attempt("Removed", () => api("POST", `${BASE}/remove`, { kind: e.kind, hash: e.hash }))) reload();
+		} }, "Remove"))));
+
+	fill(main,
+		h("h1", {}, "Known bad files"),
+		h("p", { class: "muted" },
+			"Fingerprints of files that must never come in again. A matching upload from someone here is refused; a matching file from another server is swapped for the stand-in before anyone sees it, and reported. ",
+			"Swapping media adds its fingerprints here by itself."),
+		h("p", { class: "muted small" },
+			"Two kinds: SHA-256 matches only the very same file; PDQ (Meta's open perceptual hash, the usual format for shared lists) matches the same picture resized, re-encoded or lightly edited. ",
+			"A fingerprint is 32 bytes that countless pictures share; no picture can be rebuilt from it, which is why hash lists are what services share instead of files. ",
+			"The list is in the encrypted database and its backups; export it too, to keep a copy or give to another server's admin."),
+		h("section", { class: "card" },
+			h("h2", {}, `${res.count} fingerprints`),
+			h("div", { class: "toolbar" },
+				h("button", { class: "small", onclick: download, disabled: !res.count }, "Export list"),
+				h("button", { class: "ghost small", onclick: scan, disabled: sc.running || !res.count }, "Scan stored media"),
+				h("span", { class: "muted small" }, scanLine))),
+		h("section", { class: "card" },
+			h("h2", {}, "Import"),
+			h("p", { class: "muted small" }, "One per line: kind,hash,note. A line with only a hash is taken as PDQ. Lines starting with # are skipped. Entries already on the list are skipped."),
+			text,
+			h("div", { class: "toolbar" }, file, note, h("button", { class: "small", onclick: doImport }, "Import"))),
+		h("h2", {}, res.count > res.entries.length ? `Newest ${res.entries.length}` : "On the list"),
+		table(["Kind", "Hash", "Note", "Added", ""], rows, "Nothing yet. Swap a picture, or import a list."));
+};
+
 pages.reports = async (main, params) => {
 	const all = params.get("all") === "1";
 	const res = await api("GET", `${MOD}/reports${all ? "?all=true" : ""}`);
@@ -933,14 +1101,17 @@ pages.reports = async (main, params) => {
 		}
 		let preview = null;
 		if (r.mxc) preview = h("div", {}, mediaThumb(r.mxc, null, { cls: "report-thumb" }), mediaActions(r.mxc, { onChanged: refresh }));
-		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}` },
+		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}`, tabindex: "-1",
+			"data-group-sender": r.sender || "", "data-group-server": r.sender ? serverOf(r.sender) || r.sender : "", "data-group-room": r.room_name || r.room_id || "" },
 			h("div", { class: "report-head" },
 				sevTag(r.severity),
 				h("span", { class: "tag" }, r.category || r.kind),
 				r.hidden ? h("span", { class: "tag warn" }, "hidden") : null,
 				r.status !== "open" ? h("span", { class: "tag" }, r.status) : null,
-				h("span", { class: "small muted" }, `${date(r.ts)} · ${{ ai: "AI", room: "room check" }[r.source] || "size rule"} · suggests ${r.suggested}`)),
+				h("span", { class: "small muted" }, `${date(r.ts)} · ${{ ai: "AI", room: "room check", user: `reported by ${(r.reported_by || []).length || 1}` }[r.source] || "size rule"} · suggests ${r.suggested}`)),
 			h("div", {}, r.reason),
+			r.reported_by?.length ? h("ul", { class: "reporters small" }, r.reported_by.map((u) =>
+				h("li", {}, h("span", { class: "mono" }, u.by), ` · ${date(u.ts)}`, u.reason ? h("span", { class: "muted" }, ` \u2014 ${u.reason}`) : null))) : null,
 			preview,
 			r.excerpt ? h("pre", { class: "notice-body excerpt" }, r.excerpt) : null,
 			h("div", { class: "small muted" }, r.kind === "room"
@@ -949,13 +1120,64 @@ pages.reports = async (main, params) => {
 				: `${r.sender} in ${r.room_name || r.room_id}`),
 			h("div", { class: "toolbar" }, buttons));
 	});
+	// Grouping: reports from one sender, server or room together, under a
+	// heading with their count, biggest group first.
+	const groupBy = (() => { try { return sessionStorage.getItem("anoncat-report-group") || ""; } catch { return ""; } })();
+	const list = h("div", { class: "notices" });
+	const draw = (by) => {
+		if (!by) return fill(list, ...items);
+		const groups = new Map();
+		for (const el of items) {
+			const key = el.dataset[`group${by[0].toUpperCase()}${by.slice(1)}`] || "(none)";
+			if (!groups.has(key)) groups.set(key, []);
+			groups.get(key).push(el);
+		}
+		const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
+		fill(list, ...sorted.flatMap(([key, els]) => [h("h3", { class: "group-head" }, `${key} \u00B7 ${els.length}`), ...els]));
+	};
+	draw(groupBy);
+	const groupSelect = h("select", { "aria-label": "Group reports", onchange: () => {
+		try { sessionStorage.setItem("anoncat-report-group", groupSelect.value); } catch {}
+		draw(groupSelect.value);
+	} }, [["", "No grouping"], ["sender", "By sender"], ["server", "By server"], ["room", "By room"]].map(([v, l]) => h("option", { value: v, selected: v === groupBy }, l)));
+
+	// Keys: j and k move between reports; then h hides its media, u unhides,
+	// r removes the message, b blocks the sender, o looks at it, d dismisses.
+	const KEYS = { h: /^Hide media$/, u: /^Unhide$/, r: /^Remove message$/, b: /^Block (user|room|\S+\.\S+)/, o: /^Look at/, d: /^Dismiss$/ };
+	const cards = () => [...list.querySelectorAll(".report")];
+	const focused = () => document.activeElement?.closest?.(".report");
+	document.removeEventListener("keydown", reportKeys.handler);
+	reportKeys.handler = (e) => {
+		if (!location.hash.startsWith("#/reports") || e.ctrlKey || e.metaKey || e.altKey) return;
+		if (e.target.closest?.("input, textarea, select, dialog")) return;
+		const all = cards();
+		const at = all.indexOf(focused());
+		if (e.key === "j" || e.key === "k") {
+			const next = all[Math.max(0, Math.min(all.length - 1, at + (e.key === "j" ? 1 : -1)))] || all[0];
+			next?.focus();
+			next?.scrollIntoView({ block: "nearest" });
+			e.preventDefault();
+			return;
+		}
+		const pattern = KEYS[e.key];
+		const card = focused();
+		if (!pattern || !card) return;
+		const button = [...card.querySelectorAll(".toolbar button")].find((b) => pattern.test(b.textContent.trim()));
+		if (button) { e.preventDefault(); button.click(); }
+	};
+	document.addEventListener("keydown", reportKeys.handler);
+
 	fill(main, 
 		h("h1", {}, "Reports"),
 		h("p", { class: "muted" }, "What the AI moderation and the size rule flagged. Nothing is removed until you choose to; the AI may only hide images, and only if Settings allow it."),
 		h("div", { class: "toolbar" },
-			h("button", { class: "ghost small", onclick: () => navigate("reports", all ? {} : { all: "1" }) }, all ? "Show open only" : "Show closed too")),
-		items.length ? h("div", { class: "notices" }, items) : h("p", { class: "muted" }, all ? "No reports yet." : "Nothing open."));
+			h("button", { class: "ghost small", onclick: () => navigate("reports", all ? {} : { all: "1" }) }, all ? "Show open only" : "Show closed too"),
+			items.length > 1 ? groupSelect : null),
+		items.length ? h("p", { class: "muted small" }, "Keys: j / k to move, h hide media, u unhide, r remove message, b block, o look, d dismiss.") : null,
+		items.length ? list : h("p", { class: "muted" }, all ? "No reports yet." : "Nothing open."));
+	items[0]?.focus?.({ preventScroll: true });
 };
+const reportKeys = {};
 
 // The evidence behind a report: the message with what was said around it, or
 // for a room its details and latest messages. Rooms opens it too; nobody has
@@ -1283,7 +1505,32 @@ pages.settings = async (main) => {
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});
 
-	fill(main, h("h1", {}, "Settings"), form);
+	// One form, shown a tab at a time; every field stays in it, so saving
+	// sends them all.
+	const TABS = [
+		["general", "General", ["AI moderation", "Which rooms"]],
+		["checks", "What to check", ["What to check", "Images the AI judges clearly bad", "Uploads"]],
+		["standin", "Stand-in picture", ["Hidden and blocked media"]],
+		["ai", "Models and rules", ["Models and rules"]],
+		["trusted", "Trusted rooms", []],
+	];
+	const tabOf = (section) => {
+		if (section === trustedCard) return "trusted";
+		const title = section.querySelector("h2")?.textContent || "";
+		return (TABS.find(([, , titles]) => titles.includes(title)) || TABS[0])[0];
+	};
+	const sections = [...form.children].filter((el) => el.tagName === "SECTION");
+	let current = (() => { try { return sessionStorage.getItem("anoncat-settings-tab"); } catch { return null; } })() || "general";
+	const bar = h("div", { class: "tabs", role: "tablist" });
+	const show = (tab) => {
+		current = tab;
+		try { sessionStorage.setItem("anoncat-settings-tab", tab); } catch {}
+		for (const section of sections) section.hidden = tabOf(section) !== tab;
+		for (const b of bar.children) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+	};
+	for (const [id, label] of TABS) bar.append(h("button", { type: "button", role: "tab", "data-tab": id, class: "tab", onclick: () => show(id) }, label));
+	show(TABS.some(([id]) => id === current) ? current : "general");
+	fill(main, h("h1", {}, "Settings"), bar, form);
 };
 
 // What people here see in place of hidden media and media from blocked
@@ -1821,6 +2068,7 @@ async function render() {
 	fill(main, h("p", { class: "muted" }, "Loading…"));
 	try {
 		await pages[page](main, new URLSearchParams(query || ""));
+		if (page === "reports") refreshBadges();
 	} catch (e) {
 		fill(main, h("h1", {}, "Couldn't load this page"), h("p", { class: "error" }, e.message));
 	}
@@ -1831,6 +2079,21 @@ function showApp() {
 	$("#app").hidden = false;
 	$("#whoami").textContent = sessionStorage.getItem(USER_KEY) || "";
 	render();
+	refreshBadges();
+}
+
+// The menu's counts: open reports, and a mark on the dashboard when the
+// server can't be reached from outside. Every minute, and after each page.
+async function refreshBadges() {
+	clearTimeout(refreshBadges.timer);
+	refreshBadges.timer = setTimeout(refreshBadges, 60_000);
+	if ($("#app").hidden) return;
+	const s = await api("GET", "/_anoncat/admin/v1/status").catch(() => null);
+	if (!s) return;
+	const reports = $("#badge-reports");
+	reports.hidden = !s.open_reports;
+	reports.textContent = s.open_reports > 99 ? "99+" : String(s.open_reports || "");
+	$("#badge-dashboard").hidden = s.reachable?.ok !== false;
 }
 
 function showLogin(message = "") {

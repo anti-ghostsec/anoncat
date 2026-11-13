@@ -226,6 +226,10 @@ async fn handle_thumbnail_file(
 	dim: &Dim,
 	content: Content,
 ) -> Result<Fetched> {
+	if let Some(fetched) = self.refuse_known_bad(mxc, &content.file).await {
+		return Ok(fetched);
+	}
+
 	let content_disposition = make_content_disposition(
 		content.content_disposition.as_ref(),
 		content.content_type.as_deref(),
@@ -246,6 +250,10 @@ async fn handle_thumbnail_file(
 
 #[implement(super::Service)]
 async fn handle_content_file(&self, mxc: &Mxc<'_>, content: Content) -> Result<Fetched> {
+	if let Some(fetched) = self.refuse_known_bad(mxc, &content.file).await {
+		return Ok(fetched);
+	}
+
 	let content_disposition = make_content_disposition(
 		content.content_disposition.as_ref(),
 		content.content_type.as_deref(),
@@ -495,6 +503,14 @@ pub async fn fetch_remote_content_legacy(
 		None,
 	);
 
+	if let Some(why) = self.services.moderation.known_bad(&response.file).await {
+		self.services
+			.moderation
+			.bad_file_found(&mxc.to_string(), &why, "Fetched from another server")
+			.await;
+		return Err!(Request(NotFound("Media not found.")));
+	}
+
 	self.create(
 		mxc,
 		None,
@@ -550,4 +566,24 @@ fn check_legacy_freeze(&self) -> Result {
 		.freeze_legacy_media
 		.then_some(())
 		.ok_or(err!(Request(NotFound("Remote media is frozen."))))
+}
+
+/// A file from another server on the known bad files list is never kept:
+/// it's swapped for the stand-in, reported, and the stand-in answers in its
+/// place.
+#[implement(super::Service)]
+async fn refuse_known_bad(&self, mxc: &Mxc<'_>, file: &[u8]) -> Option<Fetched> {
+	let why = self.services.moderation.known_bad(file).await?;
+	self.services
+		.moderation
+		.bad_file_found(&mxc.to_string(), &why, "Fetched from another server")
+		.await;
+
+	let choice = self
+		.services
+		.moderation
+		.stand_in_image()
+		.unwrap_or_else(|| "orange".into());
+
+	Some(Fetched { media: self.stand_in_picture(&choice), animates: Some(false) })
 }

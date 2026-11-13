@@ -1,6 +1,7 @@
 use axum::extract::State;
 use ruma::api::client::room::report_room;
 use tuwunel_core::{Err, Result, info};
+use tuwunel_service::moderation::Reported;
 
 use super::REASON_MAX_LEN;
 use crate::Ruma;
@@ -37,11 +38,8 @@ pub(crate) async fn report_room_route(
 	}
 
 	services
-		.admin
-		.send_report(&format!(
-			"@room Room report received from {}\nReport Reason: {}\n\nRoom ID: {}",
-			sender_user, body.reason, body.room_id,
-		))
+		.moderation
+		.user_report(sender_user, Reported::Room { room_id: body.room_id.clone() }, &body.reason)
 		.await;
 
 	Ok(report_room::v3::Response {})

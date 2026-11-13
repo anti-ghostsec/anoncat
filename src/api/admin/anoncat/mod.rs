@@ -4,6 +4,7 @@
 //! manifest, so authentication is checked here directly.
 
 pub(crate) mod backups;
+pub(crate) mod badfiles;
 pub(crate) mod cached_media;
 pub(crate) mod cleanup;
 pub(crate) mod command;

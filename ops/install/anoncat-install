@@ -139,14 +139,18 @@ chown -R "$USER_:$USER_" "$DATA"
 step "Firewall"
 # Persisted in FerroOS's file and added live; the file isn't reloaded, since
 # its `flush ruleset` would also drop wg-quick's rules.
-if ! grep -qF "$INPUT_RULE" /etc/nftables.conf; then
+# Behind the relay (anoncat-relay), nothing comes in on wg0 any more, so the
+# port-forward rule isn't added back.
+if [[ -f /etc/anoncat/relay.env ]]; then
+	echo "relay in use: no port-forward rule"
+elif ! grep -qF "$INPUT_RULE" /etc/nftables.conf; then
 	cp -p /etc/nftables.conf "/etc/nftables.conf.before-anoncat"
 	sed -i "s|^\(\s*\)iif \"lo\" accept$|&\n\1# anoncat: the forwarded port, redirected to 8448 by anoncat-netd\n\1$INPUT_RULE|" /etc/nftables.conf
 	grep -qF "$INPUT_RULE" /etc/nftables.conf || die "couldn't add the input rule to /etc/nftables.conf"
 	nft -c -f /etc/nftables.conf || die "/etc/nftables.conf no longer parses; the original is /etc/nftables.conf.before-anoncat"
 	echo "added to /etc/nftables.conf (backup: /etc/nftables.conf.before-anoncat)"
 fi
-if ! nft list chain inet filter input | grep -qF "$INPUT_RULE"; then
+if [[ ! -f /etc/anoncat/relay.env ]] && ! nft list chain inet filter input | grep -qF "$INPUT_RULE"; then
 	nft add rule inet filter input "$INPUT_RULE"
 	echo "added to the running firewall"
 fi

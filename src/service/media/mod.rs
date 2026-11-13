@@ -50,7 +50,7 @@ pub use self::{
 	preview::UrlPreviewData,
 	thumbnail::{Animate, Dim},
 };
-pub use self::thumbnail::Inspected;
+pub use self::thumbnail::{Fingerprint, Inspected, pdq_distance};
 pub use self::{cached::CachedMedia, stand_in::CACHE_CONTROL_NO_STORE};
 use crate::storage::Provider;
 
@@ -213,6 +213,14 @@ impl Service {
 
 		let parts: Mxc<'_> = key.as_str().try_into()?;
 		if self.db.search_mxc_metadata_prefix(&parts).await.is_ok() {
+			// Its fingerprints go on the known bad files list first, so the
+			// same picture is caught wherever it turns up again.
+			if let Ok(file) = self.get_stored(&parts).await {
+				let print = self.fingerprint(&file.content);
+				self.services
+					.moderation
+					.add_bad_file(&print, &format!("swapped: {mxc}"), "swap");
+			}
 			self.delete(&parts).await?;
 		}
 
