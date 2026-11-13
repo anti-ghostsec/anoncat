@@ -59,10 +59,23 @@ changed are recorded in this repository's history.
 
 - Admins can block users, servers and rooms for the whole server. Blocked media is replaced with a
   stand-in picture.
-- Optional AI moderation, off unless an admin turns it on. When it is on, the text of messages and
-  pictures in rooms that aren't end-to-end encrypted are sent to a third-party AI service
-  ([Venice AI](https://venice.ai/)) to be checked, with Matrix user IDs masked. Encrypted rooms and
-  direct messages can't be read by the server, so they are never checked.
+- Optional AI moderation, off unless an admin turns it on. When it is on, content is sent to a
+  third-party AI service ([Venice AI](https://venice.ai/)) to be checked. Matrix user IDs, room IDs,
+  aliases and event IDs are swapped for placeholders first, but the content itself has to be sent
+  as it is, so Venice can read it. What can be sent:
+  - the text of messages, and pictures and video frames, in rooms that aren't end-to-end
+    encrypted;
+  - pictures and videos uploaded here, and ones fetched from other servers when someone here opens
+    them, wherever they were posted (end-to-end encrypted files can't be read, so they aren't);
+  - a room's name, topic, address and join rules when someone here joins it or they change,
+    encrypted rooms included, since those aren't encrypted; and its latest messages when the room
+    isn't encrypted;
+  - what people report with their app's Report button, and the reason they give;
+  - the admin's notes on judging, and the reported case a note was written about;
+  - for the admin panel's assistant, the admin's questions, a summary of the server's state, and
+    the output of the commands it runs.
+
+  End-to-end encrypted messages can't be read by the server, so they are never sent.
 
 **Speed**
 

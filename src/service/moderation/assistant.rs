@@ -43,7 +43,11 @@ const AUTO_TIME: Duration = Duration::from_secs(110);
 const OUTPUT_CHARS: usize = 6000;
 
 /// Commands that only read, which the assistant runs without asking. None
-/// of them changes anything, contacts another server or prints a secret.
+/// of them changes anything or prints a secret. Several take a room as an
+/// alias, and another server's alias is looked up by asking that server, so
+/// a command naming one waits for the admin (see `is_read_only`): text the
+/// assistant reads, like a room's name or a message, could otherwise steer
+/// this server into contacting a server of someone else's choosing.
 const READ_ONLY: &[&str] = &[
 	"rooms list",
 	"rooms info",
@@ -65,7 +69,9 @@ const READ_ONLY: &[&str] = &[
 	"federation remote-user-in-rooms",
 	"query room-timeline",
 	"query room-state-cache",
-	"query room-alias",
+	"query room-alias resolve-local-alias",
+	"query room-alias local-aliases-for-room",
+	"query room-alias all-local-aliases",
 	"debug get-pdu",
 	"debug get-room-state",
 	"debug first-pdu-in-room",
@@ -161,8 +167,10 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 		 list-users\n```\nCommands that start like one in the read-only list below run by \
 		 themselves at once, and their output comes back to you as the next message: use them \
 		 freely to find out what you need, up to {AUTO_ROUNDS} rounds, instead of asking the \
-		 admin to run them, and only answer once you know. A reply that mixes read-only \
-		 commands with others runs none of them. Every other command waits for the admin to \
+		 admin to run them, and only answer once you know. One that names another server's \
+		 #alias waits for the admin, since looking that alias up means asking that server; \
+		 use the room ID instead. A reply that mixes read-only commands with others runs \
+		 none of them. Every other command waits for the admin to \
 		 click Run. Never claim something changed unless a command's output says so. Use \
 		 only commands from the list below. Say plainly when a command deletes data or can't \
 		 be undone.\n\nPeople, rooms and events appear as placeholders like @user-3, \
@@ -180,7 +188,9 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 
 		let proposed = proposed_commands(&reply);
 		let runs = !proposed.is_empty()
-			&& proposed.iter().all(|c| is_read_only(c))
+			&& proposed
+				.iter()
+				.all(|c| is_read_only(c, self.services.globals.server_name().as_str()))
 			&& round < AUTO_ROUNDS
 			&& started.elapsed() < AUTO_TIME;
 
@@ -285,13 +295,24 @@ fn proposed_commands(reply: &str) -> Vec<String> {
 		.collect()
 }
 
-/// Whether a command is one line starting with a read-only command's words.
-fn is_read_only(command: &str) -> bool {
+/// Whether a command is one line starting with a read-only command's words,
+/// naming no other server's alias: this server's own aliases resolve from its
+/// database, but another server's is looked up by asking that server.
+fn is_read_only(command: &str, our_server: &str) -> bool {
 	if command.contains('\n') {
 		return false;
 	}
 
 	let words: Vec<&str> = command.split_whitespace().collect();
+	let elsewhere = words.iter().any(|word| {
+		word.trim_matches(['"', '\'', '`'])
+			.strip_prefix('#')
+			.is_some_and(|alias| alias.split_once(':').is_none_or(|(_, server)| server != our_server))
+	});
+	if elsewhere {
+		return false;
+	}
+
 	READ_ONLY.iter().any(|allowed| {
 		let allowed: Vec<&str> = allowed.split(' ').collect();
 		words.len() >= allowed.len() && words[..allowed.len()] == allowed[..]
@@ -473,13 +494,20 @@ mod tests {
 		let reply = "Let me look.\n```command\n!admin query room-timeline last !r:x\n```\nand\n```command\nusers deactivate @a:x\n```";
 		let proposed = proposed_commands(reply);
 		assert_eq!(proposed, ["query room-timeline last !r:x", "users deactivate @a:x"]);
-		assert!(is_read_only(&proposed[0]));
-		assert!(!is_read_only(&proposed[1]));
-		assert!(is_read_only("rooms info !r:x"));
-		assert!(!is_read_only("rooms delete !r:x"));
-		assert!(!is_read_only("rooms listing"));
-		assert!(!is_read_only("rooms info !r:x\nsecond line"));
-		assert!(!is_read_only("server show-config"));
+		let ro = |c: &str| is_read_only(c, "x");
+		assert!(ro(&proposed[0]));
+		assert!(!ro(&proposed[1]));
+		assert!(ro("rooms info !r:x"));
+		assert!(ro("rooms info !r:elsewhere.org"));
+		assert!(ro("rooms info #lobby:x"));
+		assert!(!ro("rooms info #lobby:evil.example"));
+		assert!(!ro("debug get-room-state '#a:evil.example'"));
+		assert!(!ro("query room-alias resolve-alias #a:x"));
+		assert!(ro("query room-alias resolve-local-alias #a:x"));
+		assert!(!ro("rooms delete !r:x"));
+		assert!(!ro("rooms listing"));
+		assert!(!ro("rooms info !r:x\nsecond line"));
+		assert!(!ro("server show-config"));
 	}
 
 	#[test]
