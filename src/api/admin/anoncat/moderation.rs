@@ -272,7 +272,7 @@ pub(crate) async fn media_route(
 			.await?;
 		let mut response = playable.into_response();
 		let headers = response.headers_mut();
-		headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+		headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/webm"));
 		headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 		headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
 		return Ok(response);

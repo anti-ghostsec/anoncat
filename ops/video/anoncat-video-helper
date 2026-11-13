@@ -13,7 +13,8 @@ server can only ask for these three:
 
   frame     one representative still, as JPEG (clients' video thumbnails)
   sheet     six stills from across the video, tiled 3x2, as PNG (the panel)
-  playable  an H.264/AAC MP4 copy any browser can play (the panel)
+  playable  a WebM copy (VP8 and Opus) any browser can play (the panel):
+            open codecs, which need no extra codec packages, unlike H.264
 
 Request:  job name, "\\n", 8-byte big-endian length, the video.
 Reply:    1 byte (0 ok, 1 failed), 8-byte big-endian length, the output or
@@ -80,9 +81,9 @@ def command(job, path, timeout):
     if job == "playable":
         return [*FFMPEG, "-threads", "2", *LIMITS, "-i", path, "-map", "0:v:0",
                 "-map", "0:a:0?", "-sn", "-dn", "-vf", "scale=-2:'min(480,ih)'",
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
-                "-threads", "2", "-c:a", "aac", "-b:a", "96k",
-                "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]
+                "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "1M",
+                "-crf", "10", "-threads", "2", "-c:a", "libopus", "-b:a", "96k",
+                "-f", "webm", "pipe:1"]
     raise ValueError(f"no such job: {job!r}")
 
 

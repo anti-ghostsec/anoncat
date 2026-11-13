@@ -870,7 +870,7 @@ async function openFull(mxc) {
 }
 
 // A video for the panel to play: the copy the server's video worker makes,
-// H.264 that every browser decodes, rather than the file itself. Videos from
+// WebM (VP8 and Opus) that every browser decodes, rather than the file itself. Videos from
 // phones are often HEVC, which most browsers can't decode: they freeze or
 // flash instead of playing. The file itself only when no copy can be made.
 async function playableVideo(server, mediaId) {
@@ -879,6 +879,9 @@ async function playableVideo(server, mediaId) {
 	if (copy?.ok) {
 		const blob = await copy.blob();
 		if (blob.size) return { url: URL.createObjectURL(blob), converted: true };
+	} else if (copy) {
+		const why = (await copy.json().catch(() => ({}))).error;
+		if (why) toast(`No playable copy: ${why}`, 8000);
 	}
 	const res = await fetch(base, authed());
 	if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
@@ -892,6 +895,12 @@ async function playableVideo(server, mediaId) {
 function videoPlayer(url) {
 	const player = h("video", { src: url, controls: true, autoplay: true, playsinline: true, preload: "auto" });
 	player.muted = player.defaultMuted = true;
+	// Say why, rather than sit on a frame.
+	player.addEventListener("error", () => {
+		const code = player.error?.code;
+		const why = { 3: "the browser couldn't decode it", 4: "the browser can't play this format" }[code] || `playback failed (${code ?? "?"})`;
+		toast(`Couldn't play it: ${why}`, 8000);
+	});
 	return player;
 }
 

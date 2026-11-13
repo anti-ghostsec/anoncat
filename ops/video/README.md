@@ -13,7 +13,8 @@ the server.
   ffmpeg with fixed arguments for one of three jobs:
   - `frame`: one still, for clients' video thumbnails;
   - `sheet`: six stills from across the video, for the panel;
-  - `playable`: an H.264/AAC copy any browser can play, for the panel.
+  - `playable`: a WebM copy (VP8 and Opus, open codecs every browser plays
+    without extra codec packages), for the panel.
 
   The request names a job, never ffmpeg's arguments, so even a compromised
   server can't make it run anything else.

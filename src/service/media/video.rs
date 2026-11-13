@@ -466,10 +466,12 @@ pub(super) const FFMPEG_INPUT_LIMITS: [&str; 4] = [
 /// Longest a conversion for the panel may run.
 const PLAYABLE_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// A copy of a video any browser can play, for the admin judging it: H.264
-/// and AAC in MP4, at most 480 lines tall. Videos often come in a codec the
-/// panel's browser can't decode (HEVC from phones, most often), and then
-/// sit on their first frame while the sound plays on. Runs in the video
+/// A copy of a video any browser can play, for the admin judging it: VP8 and
+/// Opus in WebM, open codecs every browser decodes without extra codec
+/// packages (H.264 needs them on some Linux browsers), at most 480 lines
+/// tall. Videos often come in a codec the panel's browser can't decode (HEVC
+/// from phones, most often), and then sit on their first frame while the
+/// sound plays on. Runs in the video
 /// slots, at the lowest priority and on two threads, since it's the heaviest
 /// thing the server does.
 #[implement(super::Service)]
@@ -505,9 +507,9 @@ pub async fn video_playable(&self, content: &[u8]) -> Result<Vec<u8>> {
 	let args = [
 		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "2", protocols,
 		protocol_list, formats, format_list, "-i", input.as_str(), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-vf",
-		"scale=-2:'min(480,ih)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-		"-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "96k", "-movflags",
-		"frag_keyframe+empty_moov", "-f", "mp4", "pipe:1",
+		"scale=-2:'min(480,ih)'", "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8",
+		"-b:v", "1M", "-crf", "10", "-threads", "2", "-c:a", "libopus", "-b:a", "96k", "-f",
+		"webm", "pipe:1",
 	];
 
 	run("nice", args.iter().copied(), limit, deadline).await
