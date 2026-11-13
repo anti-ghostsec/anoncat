@@ -419,6 +419,11 @@ pub async fn video_sheet(&self, content: &[u8]) -> Result<Vec<u8>> {
 		.map_err(|_| err!("Timed out staging the video."))??;
 	let input = path.to_string_lossy().into_owned();
 
+	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
+	if !config.media_video_worker.is_empty() {
+		return run(&config.media_video_worker, ["sheet", input.as_str()], limit, deadline).await;
+	}
+
 	let [protocols, protocol_list, formats, format_list] = FFMPEG_INPUT_LIMITS;
 	let probe = [
 		"-v", "error", protocols, protocol_list, formats, format_list, "-show_entries",
@@ -442,7 +447,6 @@ pub async fn video_sheet(&self, content: &[u8]) -> Result<Vec<u8>> {
 		protocol_list, formats, format_list, "-i", input.as_str(), "-vf", filter.as_str(), "-frames:v", "1", "-f", "image2pipe", "-c:v",
 		"png", "pipe:1",
 	];
-	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
 
 	run("nice", args.iter().copied(), limit, deadline).await
 }
@@ -491,6 +495,11 @@ pub async fn video_playable(&self, content: &[u8]) -> Result<Vec<u8>> {
 		.await
 		.map_err(|_| err!("Timed out staging the video."))??;
 	let input = path.to_string_lossy().into_owned();
+	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
+	if !config.media_video_worker.is_empty() {
+		return run(&config.media_video_worker, ["playable", input.as_str()], limit, deadline)
+			.await;
+	}
 
 	let [protocols, protocol_list, formats, format_list] = FFMPEG_INPUT_LIMITS;
 	let args = [
@@ -500,7 +509,6 @@ pub async fn video_playable(&self, content: &[u8]) -> Result<Vec<u8>> {
 		"-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "96k", "-movflags",
 		"frag_keyframe+empty_moov", "-f", "mp4", "pipe:1",
 	];
-	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
 
 	run("nice", args.iter().copied(), limit, deadline).await
 }

@@ -1,0 +1,57 @@
+# One video job (ops/video/anoncat-video-helper). ffmpeg reads videos from
+# anyone, in hundreds of formats; a bug in one would otherwise run with the
+# server's access to the whole vault. Here: a throwaway user, no network, no
+# vault or home directories, no devices, no capabilities, its own /tmp in
+# RAM, and a memory cap. The video comes in over the socket and the result
+# goes back the same way.
+[Unit]
+Description=anoncat video worker
+CollectMode=inactive-or-failed
+
+[Service]
+ExecStart=/usr/bin/python3 -I /usr/local/lib/anoncat/anoncat-video-helper
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+LogNamespace=anoncat
+DynamicUser=yes
+RuntimeMaxSec=4min
+LimitCORE=0
+
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+# The vault hidden, and /tmp in RAM: the staged video must never touch the
+# unencrypted disk.
+TemporaryFileSystem=/Drives /tmp:size=320M,mode=1777 /var/tmp:size=1M,mode=1777
+ProtectHome=yes
+ProtectSystem=strict
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077
+
+# Lowest priority, and only on the cores the PC can power.
+Nice=19
+IOSchedulingClass=idle
+CPUAffinity=0-3
+CPUQuota=200%
+MemoryMax=3G
+MemorySwapMax=0
+TasksMax=64

@@ -1,0 +1,18 @@
+# anoncat's sandboxed video worker (ops/video/anoncat-video-helper): the
+# server hands it a video and a job, and gets back frames or a playable copy.
+# Only root and the anoncat group can connect. Two at a time, like the
+# server's video slots; each connection gets a fresh worker.
+[Unit]
+Description=anoncat video worker socket
+
+[Socket]
+ListenStream=/run/anoncat-video.sock
+SocketUser=root
+SocketGroup=anoncat
+SocketMode=0660
+Accept=yes
+MaxConnections=2
+TriggerLimitIntervalSec=0
+
+[Install]
+WantedBy=sockets.target

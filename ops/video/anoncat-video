@@ -1,0 +1,56 @@
+#!/usr/bin/python3 -I
+"""Hands one video job to anoncat's sandboxed video worker and prints what
+it makes. The server runs this in place of ffmpeg, so ffmpeg itself never
+runs inside the server (see anoncat-video-helper):
+
+  anoncat-video frame|sheet|playable /path/to/staged/video
+
+Output on stdout; on failure, the reason on stderr and exit status 1.
+"""
+
+import os
+import socket
+import struct
+import sys
+
+SOCKET = os.environ.get("ANONCAT_VIDEO_SOCKET", "/run/anoncat-video.sock")
+JOBS = {"frame", "sheet", "playable"}
+
+
+def read_exact(conn, n):
+    data = bytearray()
+    while len(data) < n:
+        chunk = conn.recv(min(n - len(data), 1 << 20))
+        if not chunk:
+            raise OSError("the video worker hung up")
+        data += chunk
+    return bytes(data)
+
+
+def main():
+    if len(sys.argv) != 3 or sys.argv[1] not in JOBS:
+        sys.exit("usage: anoncat-video frame|sheet|playable FILE")
+    job, path = sys.argv[1], sys.argv[2]
+    with open(path, "rb") as f:
+        video = f.read()
+
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+        conn.connect(SOCKET)
+        conn.sendall(job.encode() + b"\n" + struct.pack(">Q", len(video)))
+        conn.sendall(video)
+        conn.shutdown(socket.SHUT_WR)
+        status = read_exact(conn, 1)[0]
+        (length,) = struct.unpack(">Q", read_exact(conn, 8))
+        payload = read_exact(conn, length)
+
+    if status != 0:
+        sys.stderr.write(payload.decode("utf-8", "replace") + "\n")
+        sys.exit(1)
+    sys.stdout.buffer.write(payload)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except OSError as e:
+        sys.exit(f"anoncat-video: {e}")

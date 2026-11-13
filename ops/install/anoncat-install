@@ -19,7 +19,8 @@ LIB=/usr/local/lib/anoncat
 SBIN=/usr/local/sbin
 UNITS=(anoncat.socket anoncat.service anoncat-netd.service anoncat-tls-renew.service anoncat-tls-renew.timer
 	anoncat-backup.service anoncat-backup.timer anoncat-vault-helper.socket anoncat-vault-helper@.service
-	anoncat-unlock.service anoncat-start.service anoncat-reconnect.service)
+	anoncat-unlock.service anoncat-start.service anoncat-reconnect.service
+	anoncat-video.socket anoncat-video@.service)
 INPUT_RULE='iifname "wg0" tcp dport 8448 accept'
 
 die() { echo "anoncat-install: $*" >&2; exit 1; }
@@ -50,6 +51,7 @@ step "Tools"
 install -d -m 0755 "$LIB"
 install -m 0755 "$OPS/anoncat-netd.py" "$OPS/acme-dynu-hook.py" "$OPS/anoncat-tls" "$LIB/"
 install -m 0755 "$OPS/vault/anoncat-vault-helper" "$OPS/vault/anoncat-unlock-page" "$LIB/"
+install -m 0755 "$OPS/video/anoncat-video" "$OPS/video/anoncat-video-helper" "$LIB/"
 install -d -m 0755 "$LIB/unlock"
 install -m 0644 "$OPS/vault/unlock/unlock.html" "$OPS/vault/unlock/unlock.js" "$OPS/../src/router/panel/panel.css" "$LIB/unlock/"
 install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$OPS/backup/anoncat-backup" "$OPS/install/anoncat-relay" "$SBIN/"
@@ -129,6 +131,13 @@ media_video_thumbnail_command = ["nice", "-n", "19", "ffmpeg", "-nostdin", "-log
 	# Uploads up to 1 GiB, but every other request small: bodies are read
 	# before sign-in is checked, so a big limit for all of them let anyone
 	# run the server out of memory.
+	# ffmpeg runs in its own sandboxed unit (ops/video/README.md), never
+	# inside the server: thumbnails, frame sheets and playable copies all go
+	# through the worker.
+	if ! grep -q '^media_video_worker' "$DATA/anoncat.toml"; then
+		sed -i 's|^media_video_thumbnail_command = .*$|media_video_thumbnail_command = ["/usr/local/lib/anoncat/anoncat-video", "frame", "{input}"]\nmedia_video_worker = "/usr/local/lib/anoncat/anoncat-video"|' "$DATA/anoncat.toml"
+		echo "config: video work moved to the sandboxed worker"
+	fi
 	# Uploads go after 90 days, as the rules page promises, not only the
 	# messages that carried them.
 	if ! grep -q '^cleanup_local_media_max_age' "$DATA/anoncat.toml" \
@@ -140,6 +149,7 @@ cleanup_local_media_max_age = "90d"' "$DATA/anoncat.toml"
 	# ffmpeg reads only the staged file, as a common video container: no
 	# playlists opening other files or URLs.
 	if grep -q '^media_video_thumbnail_command' "$DATA/anoncat.toml" \
+		&& ! grep -q '^media_video_worker' "$DATA/anoncat.toml" \
 		&& ! grep -q '^media_video_thumbnail_command.*protocol_whitelist' "$DATA/anoncat.toml"; then
 		sed -i 's/^\(media_video_thumbnail_command = .*\)"-i", "{input}"/\1"-protocol_whitelist", "file", "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,avi,mpegts,flv", "-i", "{input}"/' "$DATA/anoncat.toml"
 		echo "config: ffmpeg limited to the staged file and common video formats"
@@ -195,10 +205,11 @@ swapon --show
 step "Start"
 # reenable: picks up changed [Install] sections too.
 systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer anoncat-backup.timer \
-	anoncat-vault-helper.socket anoncat-unlock.service anoncat-reconnect.service
+	anoncat-vault-helper.socket anoncat-unlock.service anoncat-reconnect.service \
+	anoncat-video.socket
 # The unlock page only runs while the vault is locked; it's for after a boot.
 systemctl stop anoncat-unlock.service 2>/dev/null || true
-systemctl start anoncat.socket anoncat.service
+systemctl start anoncat-video.socket anoncat.socket anoncat.service
 systemctl start anoncat-tls-renew.timer anoncat-backup.timer anoncat-vault-helper.socket
 # netd is a script: a running copy keeps the old code until restarted.
 systemctl try-restart anoncat-netd.service

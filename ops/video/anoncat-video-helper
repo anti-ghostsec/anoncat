@@ -1,0 +1,129 @@
+#!/usr/bin/python3 -I
+"""anoncat's video worker: runs ffmpeg on one video, in a sandbox of its own.
+
+Started by systemd for each connection to /run/anoncat-video.sock
+(anoncat-video.socket, anoncat-video@.service), with the connection as stdin
+and stdout. Videos come from anyone, local or remote, and ffmpeg reads
+hundreds of formats; a bug in any of them would otherwise be code running
+with the server's access to the whole vault. Here it has no network, no view
+of the vault or home directories, a throwaway user and a memory cap.
+
+The request names a job, never ffmpeg's arguments, so even a compromised
+server can only ask for these three:
+
+  frame     one representative still, as JPEG (clients' video thumbnails)
+  sheet     six stills from across the video, tiled 3x2, as PNG (the panel)
+  playable  an H.264/AAC MP4 copy any browser can play (the panel)
+
+Request:  job name, "\\n", 8-byte big-endian length, the video.
+Reply:    1 byte (0 ok, 1 failed), 8-byte big-endian length, the output or
+          the error text.
+"""
+
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+
+MAX_INPUT = 128 * 1024 * 1024
+MAX_OUTPUT = 128 * 1024 * 1024
+TIMEOUTS = {"frame": 30, "sheet": 30, "playable": 180}
+
+# Only the staged file, read as a common video container: no playlist
+# formats (HLS, concat, SDP) that would open other files or URLs.
+LIMITS = [
+    "-protocol_whitelist", "file",
+    "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,avi,mpegts,flv",
+]
+FFMPEG = ["ffmpeg", "-nostdin", "-loglevel", "error"]
+
+
+def read_exact(stream, n):
+    data = bytearray()
+    while len(data) < n:
+        chunk = stream.read(n - len(data))
+        if not chunk:
+            raise ValueError("the request ended early")
+        data += chunk
+    return bytes(data)
+
+
+def reply(ok, payload):
+    out = sys.stdout.buffer
+    out.write(bytes([0 if ok else 1]) + struct.pack(">Q", len(payload)) + payload)
+    out.flush()
+
+
+def duration(path, timeout):
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", *LIMITS, "-show_entries", "format=duration",
+         "-of", "csv=p=0", path],
+        capture_output=True, timeout=timeout, check=False)
+    try:
+        seconds = float(probe.stdout.decode().strip())
+    except ValueError:
+        return None
+    return seconds if seconds > 0 and seconds < float("inf") else None
+
+
+def command(job, path, timeout):
+    if job == "frame":
+        return [*FFMPEG, "-threads", "1", *LIMITS, "-i", path, "-vf", "thumbnail=30",
+                "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"]
+    if job == "sheet":
+        seconds = duration(path, timeout)
+        pick = f"fps={6.0 / seconds:.6f}" if seconds else "thumbnail=30"
+        return [*FFMPEG, "-threads", "1", *LIMITS, "-i", path,
+                "-vf", f"{pick},scale=320:-2,tile=3x2:padding=4",
+                "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "pipe:1"]
+    if job == "playable":
+        return [*FFMPEG, "-threads", "2", *LIMITS, "-i", path, "-map", "0:v:0",
+                "-map", "0:a:0?", "-sn", "-dn", "-vf", "scale=-2:'min(480,ih)'",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p",
+                "-threads", "2", "-c:a", "aac", "-b:a", "96k",
+                "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"]
+    raise ValueError(f"no such job: {job!r}")
+
+
+def main():
+    stdin = sys.stdin.buffer
+    job = stdin.readline(32).decode("ascii", "replace").strip()
+    if job not in TIMEOUTS:
+        return reply(False, b"no such job")
+    (length,) = struct.unpack(">Q", read_exact(stdin, 8))
+    if length == 0 or length > MAX_INPUT:
+        return reply(False, b"the video is empty or too big")
+
+    with tempfile.NamedTemporaryFile(prefix="video-", dir=os.environ.get("TMPDIR", "/tmp")) as staged:
+        remaining = length
+        while remaining:
+            chunk = stdin.read(min(remaining, 1 << 20))
+            if not chunk:
+                return reply(False, b"the request ended early")
+            staged.write(chunk)
+            remaining -= len(chunk)
+        staged.flush()
+
+        timeout = TIMEOUTS[job]
+        try:
+            done = subprocess.run(command(job, staged.name, timeout), capture_output=True,
+                                  timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            return reply(False, b"ffmpeg took too long")
+
+    if done.returncode != 0 or not done.stdout:
+        return reply(False, (done.stderr[-2000:] or b"ffmpeg made nothing"))
+    if len(done.stdout) > MAX_OUTPUT:
+        return reply(False, b"the output was too big")
+    return reply(True, done.stdout)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, OSError, struct.error) as e:
+        try:
+            reply(False, str(e).encode()[:2000])
+        except OSError:
+            pass

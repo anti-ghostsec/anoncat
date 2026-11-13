@@ -10,6 +10,9 @@ After=network-online.target ferro-drives.service anoncat.socket
 Wants=anoncat-netd.service
 Wants=network-online.target
 Requires=anoncat.socket
+# Video work runs in its own sandboxed unit (ops/video/README.md).
+Wants=anoncat-video.socket
+After=anoncat-video.socket
 RequiresMountsFor=/Drives/server/data
 # Locked vault: skip quietly instead of starting on an empty directory.
 ConditionPathIsMountPoint=/Drives/server/data

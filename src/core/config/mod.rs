@@ -3224,6 +3224,16 @@ pub struct Config {
 	)]
 	pub media_video_thumbnail_max_size: usize,
 
+	/// Program that does the panel's video work (frames from across a video,
+	/// a copy any browser can play) instead of ffmpeg running in the server
+	/// itself: `<program> sheet|playable <file>`, output on stdout. anoncat's
+	/// is `/usr/local/lib/anoncat/anoncat-video`, which hands the job to a
+	/// sandboxed worker. Empty runs ffmpeg here.
+	///
+	/// default: ""
+	#[serde(default)]
+	pub media_video_worker: String,
+
 	/// Directory a video is staged in for the thumbnail program to read, one
 	/// file per running program, removed as soon as it exits. Leave unset to
 	/// use a `tmp` subdirectory of the database path, which keeps large videos
