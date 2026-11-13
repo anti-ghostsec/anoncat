@@ -869,19 +869,16 @@ async function openFull(mxc) {
 	URL.revokeObjectURL(url);
 }
 
-// A video for the panel to play. The file itself by default, which starts at
+// A video or sound file for the panel to play: a short-lived link to it on
+// the server, not a blob: URL, which some browsers' players (WebKitGTK's,
+// through GStreamer) won't play. The file itself by default, which starts at
 // once; `converted` asks the server's video worker for a WebM copy (VP8 and
 // Opus) every browser decodes, for a video in a codec this browser can't
 // play (HEVC from phones, often), at the cost of a wait while it's made.
 async function playableVideo(server, mediaId, converted = false) {
-	const base = `${MOD}/media/${enc(server)}/${enc(mediaId)}`;
-	const res = await fetch(converted ? `${base}?convert=1` : base, authed());
-	if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-	const blob = await res.blob();
-	if (!blob.size) throw new Error("the server sent nothing");
-	// A type the server got wrong still goes to the player: the browser sniffs
-	// the bytes, and the status line says what it was sent.
-	return { url: URL.createObjectURL(blob), converted, type: blob.type || "no type", size: blob.size };
+	const r = await api("POST", `${MOD}/media/${enc(server)}/${enc(mediaId)}/play`, { convert: converted });
+	if (!r.bytes) throw new Error("the server sent nothing");
+	return { url: r.url, converted: r.converted, type: r.media_type || "no type", size: r.bytes };
 }
 
 // A player that starts silent: what a video is shows before anything plays
@@ -898,10 +895,8 @@ async function useConverted(player, status, server, mediaId) {
 	status.firstChild.textContent = "Making a copy any browser can play\u2026";
 	try {
 		const got = await playableVideo(server, mediaId, true);
-		const old = player.src;
 		player.src = got.url;
 		player.muted = true;
-		URL.revokeObjectURL(old);
 		status._got = got;
 		player.play().catch(() => {});
 	} catch (e) {
@@ -923,11 +918,9 @@ async function playInline(el, mxc, kind) {
 			player = videoPlayer(got.url);
 			note = playerStatus(player, got, server, mediaId);
 		} else {
-			const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed());
-			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-			const blob = await res.blob();
-			if (!blob.type.startsWith(`${kind}/`)) throw new Error("Not something the panel can play.");
-			player = h(kind, { src: URL.createObjectURL(blob), controls: true, autoplay: true, preload: "metadata" });
+			const got = await playableVideo(server, mediaId);
+			player = h(kind, { src: got.url, controls: true, autoplay: true, preload: "metadata" });
+			player.muted = player.defaultMuted = true;
 		}
 		el.classList.add("revealed", "playing");
 		el.replaceChildren(player);
@@ -982,7 +975,8 @@ async function openFullVideo(mxc) {
 	await shown;
 	player.pause();
 	delete $("#dialog").dataset.mxc;
-	URL.revokeObjectURL(player.src);
+	player.removeAttribute("src");
+	player.load();
 }
 
 pages.federation = async (main, params) => {

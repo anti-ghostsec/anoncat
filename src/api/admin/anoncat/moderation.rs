@@ -459,3 +459,190 @@ pub(crate) async fn notes_route(
 
 	Ok(Json(NotesResponse { guidance }))
 }
+
+/// How long a play key opens its file.
+const PLAY_KEY_LIFE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Play keys kept at once; the oldest goes first.
+const PLAYS_KEPT: usize = 6;
+
+/// A file the panel's player may fetch by key. Some browsers (WebKitGTK's,
+/// through GStreamer) don't play a video from a blob: URL, only from a real
+/// one, and a `<video>` can't send the admin's token: the key, made by an
+/// admin's request and good for one file for a while, stands in for it.
+struct Play {
+	mxc: String,
+	/// The converted copy, made once; the original is read when fetched.
+	converted: Option<axum::body::Bytes>,
+	kind: String,
+	made: std::time::Instant,
+}
+
+static PLAYS: std::sync::LazyLock<std::sync::Mutex<Vec<(String, Play)>>> =
+	std::sync::LazyLock::new(Default::default);
+
+#[derive(Default, Deserialize)]
+pub(crate) struct PlayRequest {
+	#[serde(default)]
+	convert: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct PlayResponse {
+	url: String,
+	converted: bool,
+	media_type: String,
+	bytes: usize,
+}
+
+/// `POST .../moderation/media/{server}/{media_id}/play`: a key the panel's
+/// player fetches the file with, or with `convert`, a copy any browser plays.
+pub(crate) async fn play_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	Path((server, media_id)): Path<(String, String)>,
+	Json(body): Json<PlayRequest>,
+) -> Result<Json<PlayResponse>> {
+	super::require_admin_token(&services, &headers).await?;
+
+	let mxc = format!("mxc://{server}/{media_id}");
+	let parts: Mxc<'_> = mxc.as_str().try_into()?;
+	if services.media.is_swapped(&parts) {
+		return Err!(Request(NotFound("Swapped for the stand-in: the file is gone.")));
+	}
+	let original = services.media.get_stored(&parts).await?;
+	let kind = original.content_type.unwrap_or_default();
+	let playable = kind.starts_with("video/") || kind.starts_with("audio/");
+	if !playable {
+		return Err!(Request(Unrecognized("Not a video or sound file.")));
+	}
+
+	let (converted, kind, bytes) = if body.convert {
+		if !kind.starts_with("video/") {
+			return Err!(Request(Unrecognized("Only videos can be converted.")));
+		}
+		let copy = services
+			.media
+			.video_playable(&original.content)
+			.await?;
+		let len = copy.len();
+		(Some(axum::body::Bytes::from(copy)), "video/webm".to_owned(), len)
+	} else {
+		if original.content.len() > PLAY_MAX_BYTES {
+			return Err!(Request(TooLarge("Too big to play in the panel.")));
+		}
+		(None, kind, original.content.len())
+	};
+
+	let key = tuwunel_core::utils::rand::string(32);
+	{
+		let mut plays = PLAYS.lock().expect("locked");
+		plays.retain(|(_, p)| p.made.elapsed() < PLAY_KEY_LIFE);
+		while plays.len() >= PLAYS_KEPT {
+			plays.remove(0);
+		}
+		plays.push((key.clone(), Play {
+			mxc,
+			converted,
+			kind: kind.clone(),
+			made: std::time::Instant::now(),
+		}));
+	}
+
+	Ok(Json(PlayResponse {
+		url: format!("/_anoncat/admin/v1/moderation/play/{key}"),
+		converted: body.convert,
+		media_type: kind,
+		bytes,
+	}))
+}
+
+/// `GET .../moderation/play/{key}`: the file a play key opens, with byte
+/// ranges, which players use to seek and to read a file's index at its end.
+pub(crate) async fn play_file_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	Path(key): Path<String>,
+) -> Result<Response> {
+	let found = {
+		let plays = PLAYS.lock().expect("locked");
+		plays
+			.iter()
+			.find(|(k, p)| *k == key && p.made.elapsed() < PLAY_KEY_LIFE)
+			.map(|(_, p)| (p.mxc.clone(), p.converted.clone(), p.kind.clone()))
+	};
+	let Some((mxc, converted, kind)) = found else {
+		return Err!(Request(NotFound("This play link has expired; press play again.")));
+	};
+
+	let body = match converted {
+		| Some(bytes) => bytes,
+		| None => {
+			let parts: Mxc<'_> = mxc.as_str().try_into()?;
+			if services.media.is_swapped(&parts) {
+				return Err!(Request(NotFound("Swapped for the stand-in: the file is gone.")));
+			}
+			axum::body::Bytes::from(services.media.get_stored(&parts).await?.content)
+		},
+	};
+
+	let total = body.len();
+	let range = headers
+		.get(header::RANGE)
+		.and_then(|v| v.to_str().ok())
+		.and_then(|v| byte_range(v, total));
+
+	let mut response = match range {
+		| Some((start, end)) => {
+			let mut response = body.slice(start..=end).into_response();
+			*response.status_mut() = axum::http::StatusCode::PARTIAL_CONTENT;
+			response.headers_mut().insert(
+				header::CONTENT_RANGE,
+				HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))?,
+			);
+			response
+		},
+		| None => body.into_response(),
+	};
+	let headers = response.headers_mut();
+	headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&kind)?);
+	headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+	headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+	headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+
+	Ok(response)
+}
+
+/// A single `bytes=` range, inclusive, within `total`: `a-b`, `a-` or `-n`.
+fn byte_range(value: &str, total: usize) -> Option<(usize, usize)> {
+	let spec = value.trim().strip_prefix("bytes=")?;
+	if spec.contains(',') || total == 0 {
+		return None;
+	}
+	let (start, end) = spec.split_once('-')?;
+	let last = total - 1;
+	let (start, end) = match (start.trim(), end.trim()) {
+		| ("", n) => {
+			let n: usize = n.parse().ok()?;
+			(total.saturating_sub(n), last)
+		},
+		| (a, "") => (a.parse().ok()?, last),
+		| (a, b) => (a.parse().ok()?, b.parse::<usize>().ok()?.min(last)),
+	};
+
+	(start <= end && start <= last).then_some((start, end))
+}
+
+#[cfg(test)]
+mod play_tests {
+	use super::byte_range;
+
+	#[test]
+	fn ranges() {
+		assert_eq!(byte_range("bytes=0-", 10), Some((0, 9)));
+		assert_eq!(byte_range("bytes=2-4", 10), Some((2, 4)));
+		assert_eq!(byte_range("bytes=5-99", 10), Some((5, 9)));
+		assert_eq!(byte_range("bytes=-3", 10), Some((7, 9)));
+		assert_eq!(byte_range("bytes=10-", 10), None);
+		assert_eq!(byte_range("bytes=0-1,4-5", 10), None);
+	}
+}

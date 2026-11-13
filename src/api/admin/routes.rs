@@ -32,6 +32,8 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/moderation/reports", get(m::reports_route))
 		.route("/_anoncat/admin/v1/moderation/reports/{id}", post(m::act_route))
 		.route("/_anoncat/admin/v1/moderation/media/{server}/{media_id}", get(m::media_route))
+		.route("/_anoncat/admin/v1/moderation/media/{server}/{media_id}/play", post(m::play_route))
+		.route("/_anoncat/admin/v1/moderation/play/{key}", get(m::play_file_route))
 		.route("/_anoncat/admin/v1/moderation/assistant", post(m::assistant_route))
 		.route("/_anoncat/admin/v1/moderation/rooms/check", post(m::check_rooms_route))
 		.route("/_anoncat/admin/v1/moderation/blocklist", get(m::blocklist_route).merge(post(m::block_route)))
