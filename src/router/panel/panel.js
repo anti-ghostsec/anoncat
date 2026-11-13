@@ -877,7 +877,11 @@ async function playInline(el, mxc, kind) {
 		if (!blob.type.startsWith(`${kind}/`)) throw new Error("Not something the panel can play.");
 		const url = URL.createObjectURL(blob);
 		el.classList.add("revealed", "playing");
-		el.replaceChildren(h(kind, { src: url, controls: true, autoplay: true, preload: "metadata" }));
+		const player = h(kind, { src: url, controls: true, autoplay: true, preload: "metadata" });
+		// A video starts silent: what it is shows before anything plays out
+		// loud. The controls turn the sound on.
+		if (kind === "video") player.muted = player.defaultMuted = true;
+		el.replaceChildren(player);
 	} catch (e) {
 		toast(`Couldn't play it: ${e.message}`);
 		button.disabled = false;
