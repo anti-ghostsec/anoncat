@@ -672,7 +672,7 @@ async function remoteMedia(main, params) {
 	const aiButton = h("button", { class: "small", type: "button", onclick: thenAsk(async () => {
 		const what = only ? `everything stored from ${only}` : "everything stored from other servers";
 		if (!(await ask("Have the AI check these?", {
-			text: `Each picture and video in ${what} is checked once, one at a time, in the background: pictures as a whole and in parts, videos by six frames. What it flags goes to Reports. Swapped, hidden and blocked servers' media is skipped. Each one is a Venice call.`,
+			text: `Each picture and video in ${what} is checked once, one at a time, in the background: pictures as a whole and in parts, videos by six frames. What it flags goes to Reports. Swapped, hidden and blocked servers' media is skipped. Each one is a call to the AI service.`,
 			confirm: "Start" }))) return;
 		const r = await attempt("Started; flagged ones go to Reports", () => api("POST", `${MOD}/backlog`, { server: only }));
 		if (r) pollAi();
@@ -1522,7 +1522,7 @@ pages.settings = async (main) => {
 	};
 	const modelSelect = (name, vision) => {
 		const select = h("select", { name },
-			h("option", { value: "auto" }, vision ? "Auto (Venice's default for images)" : "Auto (Venice's default)"),
+			h("option", { value: "auto" }, vision ? "Auto (the service's default for images)" : "Auto (the service's default)"),
 			models.filter((m) => !vision || m.vision).map((m) => h("option", { value: m.id },
 				`${m.id}${m.traits.length ? ` — ${m.traits.join(", ")}` : ""}${m.price_in ? ` — $${m.price_in}/M in` : ""}`)));
 		if (s[name] !== "auto" && !models.some((m) => m.id === s[name])) select.append(h("option", { value: s[name] }, s[name]));
@@ -1573,14 +1573,14 @@ pages.settings = async (main) => {
 		h("section", { class: "card" },
 			h("h2", {}, "AI moderation"),
 			res.key_saved
-				? h("p", { class: "small" }, h("span", { class: "tag ok" }, "key saved"), "Venice API key found.")
-				: h("p", { class: "small" }, h("span", { class: "tag warn" }, "no key"), `Save your Venice API key in ${res.key_file || "the file set by ai_key_file"} first; the AI does nothing without it.`),
-			check("enabled", "Turn on AI moderation", "Only rooms that aren't encrypted are ever read. Names and IDs are replaced with placeholders (U1, R1) before anything is sent to Venice."),
+				? h("p", { class: "small" }, h("span", { class: "tag ok" }, "key saved"), "AI service key found.")
+				: h("p", { class: "small" }, h("span", { class: "tag warn" }, "no key"), `Save your AI service key in ${res.key_file || "the file set by ai_key_file"} first; the AI does nothing without it.`),
+			check("enabled", "Turn on AI moderation", "Only rooms that aren't encrypted are ever read. Names and IDs are replaced with placeholders (U1, R1) before anything is sent to the AI service."),
 			h("div", { class: "toolbar" }, h("button", { type: "button", class: "ghost small", onclick: async () => {
 				testOut.textContent = "Testing…";
 				const r = await attempt(null, () => api("POST", `${MOD}/test`, {}));
 				testOut.textContent = r ? r.message : "Test failed.";
-			} }, "Test Venice connection")),
+			} }, "Test the AI connection")),
 			testOut),
 		h("section", { class: "card" },
 			h("h2", {}, "Which rooms"),
@@ -1599,7 +1599,7 @@ pages.settings = async (main) => {
 			h("h2", {}, "What to check"),
 			check("check_messages", "Messages"),
 			check("check_images", "Images (up to 8 MiB)", "Long pictures are also checked in parts, and animated ones frame by frame, so nothing hides past the first glance."),
-			check("check_uploads", "Also check every picture uploaded here", "Not only ones posted in watched rooms: a picture sent in an encrypted room, or only shared as a link, is otherwise never checked. Each one goes to Venice the same way as images in public rooms. Encrypted attachments can't be read and are skipped."),
+			check("check_uploads", "Also check every picture uploaded here", "Not only ones posted in watched rooms: a picture sent in an encrypted room, or only shared as a link, is otherwise never checked. Each one goes to the AI service the same way as images in public rooms. Encrypted attachments can't be read and are skipped."),
 			check("check_remote", "Also check every picture fetched from other servers", "Each picture someone here opens from another server is checked once, as it arrives, wherever it was posted. This is what covers the hundreds of servers you can't go through by hand. Only full pictures are fetched this way; small previews and profile pictures usually come as thumbnails and aren't. Costs one AI check per picture."),
 			field("Report files at least this big (MiB, 0 = off)", large, "Large files get a report for you to look at, without the AI."),
 			field("Check new messages every (minutes)", batch, "Messages are checked together, which is cheaper. 40 waiting messages are checked at once.")),
@@ -1614,7 +1614,7 @@ pages.settings = async (main) => {
 		h("section", { class: "card" },
 			h("h2", {}, "Models and rules"),
 			field("Text model", modelSelect("text_model", false)),
-			field("Image model", modelSelect("vision_model", true), "Venice runs the open models (Qwen, DeepSeek, GLM, Gemma, Llama, Venice) itself without keeping anything. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
+			field("Image model", modelSelect("vision_model", true), "The open models (Qwen, DeepSeek, GLM, Gemma, Llama) run on the no-retention service itself, which keeps nothing. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
 			field("Server rules, as the AI is told them", rules),
 			field("Notes on judging", guidance, "How to judge borderline cases, in your words. Added to every check, and the AI follows them over its own sense. \"Dismiss + note for the AI\" on a report adds a note here, and the AI merges it with the others so the list stays short."),
 			h("div", { class: "toolbar" },
@@ -1784,7 +1784,7 @@ pages.assistant = async (main) => {
 	});
 	fill(main, 
 		h("h1", {}, "Assistant"),
-		h("p", { class: "muted" }, "Chats with Venice AI. It sees a snapshot of the server's state each time you send, with people and rooms replaced by placeholders. Commands that only look things up it runs by itself and reads their output; anything that changes something only runs when you click Run and confirm. Ctrl+Enter sends."),
+		h("p", { class: "muted" }, "Chats with the no-retention AI service. It sees a snapshot of the server's state each time you send, with people and rooms replaced by placeholders. Commands that only look things up it runs by itself and reads their output; anything that changes something only runs when you click Run and confirm. Ctrl+Enter sends."),
 		log, input,
 		h("div", { class: "toolbar" },
 			h("button", { onclick: send }, "Send"),

@@ -419,8 +419,10 @@ pub async fn video_sheet(&self, content: &[u8]) -> Result<Vec<u8>> {
 		.map_err(|_| err!("Timed out staging the video."))??;
 	let input = path.to_string_lossy().into_owned();
 
+	let [protocols, protocol_list, formats, format_list] = FFMPEG_INPUT_LIMITS;
 	let probe = [
-		"-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", input.as_str(),
+		"-v", "error", protocols, protocol_list, formats, format_list, "-show_entries",
+		"format=duration", "-of", "csv=p=0", input.as_str(),
 	];
 	let seconds = run("ffprobe", probe.iter().copied(), 4096, deadline)
 		.await
@@ -436,14 +438,26 @@ pub async fn video_sheet(&self, content: &[u8]) -> Result<Vec<u8>> {
 	);
 	let filter = format!("{pick},scale=320:-2,tile=3x2:padding=4");
 	let args = [
-		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "1", "-i",
-		input.as_str(), "-vf", filter.as_str(), "-frames:v", "1", "-f", "image2pipe", "-c:v",
+		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "1", protocols,
+		protocol_list, formats, format_list, "-i", input.as_str(), "-vf", filter.as_str(), "-frames:v", "1", "-f", "image2pipe", "-c:v",
 		"png", "pipe:1",
 	];
 	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
 
 	run("nice", args.iter().copied(), limit, deadline).await
 }
+
+/// ffmpeg's options limiting what it will open to the one staged file, read
+/// as a common video container. It probes the real format whatever the
+/// upload claims, and playlist formats (HLS, concat, SDP) would open other
+/// files or URLs: a picture of a local file in a thumbnail, or a request from
+/// this server to anywhere.
+pub(super) const FFMPEG_INPUT_LIMITS: [&str; 4] = [
+	"-protocol_whitelist",
+	"file",
+	"-format_whitelist",
+	"mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,avi,mpegts,flv",
+];
 
 /// Longest a conversion for the panel may run.
 const PLAYABLE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -478,9 +492,10 @@ pub async fn video_playable(&self, content: &[u8]) -> Result<Vec<u8>> {
 		.map_err(|_| err!("Timed out staging the video."))??;
 	let input = path.to_string_lossy().into_owned();
 
+	let [protocols, protocol_list, formats, format_list] = FFMPEG_INPUT_LIMITS;
 	let args = [
-		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "2", "-i",
-		input.as_str(), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-vf",
+		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "2", protocols,
+		protocol_list, formats, format_list, "-i", input.as_str(), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-vf",
 		"scale=-2:'min(480,ih)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
 		"-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "96k", "-movflags",
 		"frag_keyframe+empty_moov", "-f", "mp4", "pipe:1",

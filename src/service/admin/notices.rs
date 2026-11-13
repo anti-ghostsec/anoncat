@@ -31,6 +31,8 @@ pub async fn send_message(&self, message_content: RoomMessageEventContent) -> Re
 
 /// Most notices kept; older ones are dropped.
 const NOTICES_KEPT: usize = 1000;
+/// Notices older than this are deleted: 30 days.
+const NOTICES_MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 
 /// One notice, as stored and as the panel shows it.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -84,11 +86,19 @@ pub async fn notices(&self, limit: usize) -> Vec<Notice> {
 		.collect()
 		.await;
 
-	for (key, _) in all.iter().skip(NOTICES_KEPT) {
-		self.notices.remove(key);
+	// Past the most kept, or older than 30 days: notices name accounts and
+	// what they did, and mustn't outlive the messages themselves.
+	let cutoff = tuwunel_core::utils::time::now_millis().saturating_sub(NOTICES_MAX_AGE_MS);
+	let mut kept = Vec::new();
+	for (at, (key, notice)) in all.into_iter().enumerate() {
+		if at >= NOTICES_KEPT || notice.ts < cutoff {
+			self.notices.remove(&key);
+		} else {
+			kept.push(notice);
+		}
 	}
 
-	all.into_iter().take(limit).map(|(_, n)| n).collect()
+	kept.into_iter().take(limit).collect()
 }
 
 /// anoncat has no bot account to send messages with.

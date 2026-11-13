@@ -19,7 +19,7 @@ Config (in the vault's `anoncat.toml`; the installer adds it):
 
 ```toml
 database_backup_path = "/Drives/server/data/backups"
-database_backups_to_keep = 7
+database_backups_to_keep = 2
 admin_signal_execute = ["server backup-database"]
 ```
 

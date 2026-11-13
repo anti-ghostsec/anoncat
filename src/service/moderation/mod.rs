@@ -80,6 +80,8 @@ const IMAGE_MAX_BYTES: u64 = 8 << 20;
 const EXCERPT: usize = 1000;
 /// Reports kept; the oldest closed ones go first.
 const REPORTS_KEPT: usize = 5000;
+/// Closed reports older than this are deleted: 30 days.
+const CLOSED_REPORTS_MAX_AGE_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 /// How long Venice's model list is reused.
 const MODELS_TTL: Duration = Duration::from_secs(60 * 60);
 /// Least time between two notices about failed checks.
@@ -553,7 +555,7 @@ async fn model(&self, configured: &str, vision: bool) -> Result<String> {
 		.into_iter()
 		.find(|m| m.traits.iter().any(|t| t == wanted))
 		.map(|m| m.id)
-		.ok_or_else(|| err!("Venice names no {wanted} model; pick one in Settings"))
+		.ok_or_else(|| err!("The AI service names no {wanted} model; pick one in Settings"))
 }
 
 /// Queues a new event if it may need a look. Cheap; the work happens in the
@@ -775,7 +777,7 @@ async fn check_batch(&self, items: Vec<Item>) -> Result {
 	}
 
 	let Some(key) = self.key() else {
-		return Err!("no Venice API key is saved, so nothing was checked");
+		return Err!("no AI service key is saved, so nothing was checked");
 	};
 
 	// Images are still checked when the messages fail, and the other way
@@ -1281,10 +1283,14 @@ pub async fn reports(&self, all: bool, limit: usize) -> Vec<Report> {
 		.collect()
 		.await;
 
+	// Closed reports go after 30 days, like the messages they quote; open
+	// ones stay until an admin decides.
+	let cutoff = now_millis().saturating_sub(CLOSED_REPORTS_MAX_AGE_MS);
 	for old in reports
 		.iter()
-		.skip(REPORTS_KEPT)
-		.filter(|r| r.status != "open")
+		.enumerate()
+		.filter(|(at, r)| r.status != "open" && (*at >= REPORTS_KEPT || r.ts < cutoff))
+		.map(|(_, r)| r)
 	{
 		self.reports_map.remove(&old.id.to_be_bytes());
 	}
@@ -1431,7 +1437,7 @@ async fn forget_blocked_rooms(&self) {
 #[implement(Service)]
 pub async fn test(&self) -> Result<String> {
 	let Some(key) = self.key() else {
-		return Err!(Request(NotFound("No Venice API key is saved yet.")));
+		return Err!(Request(NotFound("No AI service key is saved yet.")));
 	};
 
 	let settings = self.settings();
@@ -1448,7 +1454,7 @@ pub async fn test(&self) -> Result<String> {
 	.await?;
 
 	Ok(format!(
-		"Venice answered \"{}\" using {model}. Images go to {vision}.",
+		"The AI service answered \"{}\" using {model}. Images go to {vision}.",
 		reply.chars().take(40).collect::<String>()
 	))
 }

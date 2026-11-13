@@ -15,6 +15,9 @@ RequiresMountsFor=/Drives/server/data
 ConditionPathIsMountPoint=/Drives/server/data
 
 [Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
 # The killswitch for the server's own traffic: the kernel lets it use only
 # loopback and the VPN, so if wg0 goes down it goes offline instead of
 # reaching anything from the home IP. anoncat-relay is the tunnel to the

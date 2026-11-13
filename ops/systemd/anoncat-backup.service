@@ -8,6 +8,9 @@ After=anoncat.service
 ConditionPathIsMountPoint=/Drives/server/data
 
 [Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
 Type=oneshot
 ExecStart=/usr/local/sbin/anoncat-backup run
 LogNamespace=anoncat

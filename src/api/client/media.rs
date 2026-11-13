@@ -51,7 +51,7 @@ pub(crate) async fn get_media_config_route(
 	_body: Ruma<get_media_config::v1::Request>,
 ) -> Result<get_media_config::v1::Response> {
 	Ok(get_media_config::v1::Response {
-		upload_size: ruma_from_usize(services.server.config.max_request_size),
+		upload_size: ruma_from_usize(services.server.config.upload_limit()),
 	})
 }
 

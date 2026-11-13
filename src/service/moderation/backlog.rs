@@ -24,7 +24,7 @@ pub fn start_backlog(self: &Arc<Self>, server: Option<String>) -> Result {
 		)));
 	}
 	if self.key().is_none() {
-		return Err!(Request(Forbidden("No Venice API key is saved.")));
+		return Err!(Request(Forbidden("No AI service key is saved.")));
 	}
 	{
 		let mut scan = self.backlog.write().expect("locked");

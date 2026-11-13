@@ -125,7 +125,7 @@ fn case_of(report: &super::Report) -> String {
 async fn tidy(&self, notes: &str, new: Option<(&str, Option<&str>)>) -> Result<String> {
 	let settings = self.settings();
 	let Some(key) = self.key() else {
-		return Err!("no Venice API key is saved");
+		return Err!("no AI service key is saved");
 	};
 	let model = self.model(&settings.text_model, false).await?;
 	let system = format!(

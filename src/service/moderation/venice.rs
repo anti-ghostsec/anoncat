@@ -1,7 +1,8 @@
 //! Venice AI's chat API (OpenAI-shaped), as the moderation uses it.
 //!
 //! Requests leave through the server's own network, which is the VPN tunnel;
-//! nothing about this machine but the API key goes with them. The user agent
+//! no address or name of this machine goes with them, only the API key and
+//! what is being checked (see the README for what that can be). The user agent
 //! is plain so it doesn't name the server software.
 
 use std::time::Duration;
@@ -33,12 +34,12 @@ pub(super) async fn models(client: &reqwest::Client) -> Result<Vec<Model>> {
 		.timeout(TIMEOUT)
 		.send()
 		.await
-		.map_err(|e| err!("Venice unreachable: {e}"))?;
+		.map_err(|e| err!("AI service unreachable: {e}"))?;
 
 	let body: Value = res
 		.json()
 		.await
-		.map_err(|e| err!("Venice model list unreadable: {e}"))?;
+		.map_err(|e| err!("AI service model list unreadable: {e}"))?;
 
 	let models = body["data"]
 		.as_array()
@@ -130,26 +131,26 @@ pub(super) async fn chat(
 		.timeout(TIMEOUT)
 		.send()
 		.await
-		.map_err(|e| err!("Venice unreachable: {e}"))?;
+		.map_err(|e| err!("AI service unreachable: {e}"))?;
 
 	let status = res.status();
 	let reply: Value = res
 		.json()
 		.await
-		.map_err(|e| err!("Venice reply unreadable ({status}): {e}"))?;
+		.map_err(|e| err!("AI service reply unreadable ({status}): {e}"))?;
 
 	if !status.is_success() {
 		let message = reply["error"]["message"]
 			.as_str()
 			.or_else(|| reply["error"].as_str())
 			.unwrap_or("no detail");
-		return Err!("Venice refused ({status}): {message}");
+		return Err!("AI service refused ({status}): {message}");
 	}
 
 	reply["choices"][0]["message"]["content"]
 		.as_str()
 		.map(strip_thinking)
-		.ok_or_else(|| err!("Venice reply had no text"))
+		.ok_or_else(|| err!("AI service reply had no text"))
 }
 
 /// Drops a reasoning model's `<think>` block.

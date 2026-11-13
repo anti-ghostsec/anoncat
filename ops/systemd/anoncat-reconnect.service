@@ -12,6 +12,9 @@ After=sys-subsystem-net-devices-wg0.device
 ConditionPathIsMountPoint=/Drives/server/data
 
 [Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
 Type=oneshot
 TimeoutStartSec=150
 ExecStart=/bin/bash -c '\

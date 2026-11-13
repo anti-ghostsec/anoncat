@@ -99,6 +99,11 @@ pub(crate) async fn create_knock_event_v1_route(
 	)
 	.map_err(|e| err!(Request(BadJson("Event sender is not a valid user ID: {e}"))))?;
 
+	// make_knock refuses a blocked user, but a server can skip it.
+	if services.moderation.user_blocked(&sender) {
+		return Err!(Request(Forbidden("You are blocked on this homeserver.")));
+	}
+
 	services
 		.event_handler
 		.acl_check(sender.server_name(), &body.room_id)

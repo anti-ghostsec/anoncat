@@ -109,6 +109,12 @@ async fn create_join_event(
 	let (content, joining_user) =
 		validate_join_event_shape(services, &value, origin, room_id).await?;
 
+	// make_join refuses a blocked user, but a server can skip it and send
+	// its own join event.
+	if services.moderation.user_blocked(&joining_user) {
+		return Err!(Request(Forbidden("You are blocked on this homeserver.")));
+	}
+
 	let room_version_rules = room_version::rules(&room_version_id)?;
 
 	if let Some(authorising_user) = content.join_authorized_via_users_server {

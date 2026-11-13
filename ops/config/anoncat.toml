@@ -20,14 +20,14 @@ port = 8449
 # Admin panel, loopback only: http://127.0.0.1:8450/_anoncat/panel/
 admin_panel_address = "127.0.0.1:8450"
 
-# Venice AI key for the panel's AI moderation (Settings page). Kept in the
+# The AI service's key for the panel's AI moderation (Settings page). Kept in the
 # vault; the AI stays off until the file exists and it's switched on.
 ai_key_file = "/Drives/server/data/secrets/venice"
 
 # Video previews: one still frame per video, taken by ffmpeg at lowest
 # priority, one at a time (media_video_thumbnail_concurrency), so videos show
 # a picture in clients and in the panel instead of a grey box.
-media_video_thumbnail_command = ["nice", "-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "1", "-i", "{input}", "-vf", "thumbnail=30", "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"]
+media_video_thumbnail_command = ["nice", "-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "1", "-protocol_whitelist", "file", "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,avi,mpegts,flv", "-i", "{input}", "-vf", "thumbnail=30", "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"]
 
 # Online database backups (RocksDB backup engine), inside the vault; unchanged
 # files are shared between backups. The daily anoncat-backup timer asks for
@@ -42,8 +42,16 @@ ip_source = "connect_info"
 
 log = "warn"
 
-# Biggest single upload. Uploads are held in memory while they arrive.
-max_request_size = "1 GiB"
+# Biggest request body, for anything but an upload. Bodies are held in
+# memory and read before the request's sign-in is checked, so this stays small:
+# with 1 GiB here, anyone could send a few huge requests to /login and run the
+# server out of memory.
+max_request_size = "24 MiB"
+
+# Biggest single upload. Only an upload with a valid access token, checked
+# before the file is read, may be this big. Uploads are held in memory while
+# they arrive.
+max_upload_size = "1 GiB"
 
 # Longest a request may take, upload included (seconds). 30 minutes lets a
 # 1 GiB upload finish on a slow phone connection through the VPN.
@@ -51,7 +59,8 @@ client_request_timeout = 1800
 
 # --- registration --------------------------------------------------------------
 # Apps signing up need a token: this one (from the installer) or invite tokens
-# made in the panel. The first account registered becomes the server admin.
+# made in the panel. The first account registered in an app with this token
+# becomes the server admin (never one made on the web sign-up page).
 allow_registration = true
 registration_token = "@REGISTRATION_TOKEN@"
 
@@ -96,6 +105,10 @@ cleanup_remote_media_max_age = "30d"
 # 90. Encrypted messages can't be told apart, so they go after 30.
 cleanup_message_max_age = "30d"
 cleanup_media_message_max_age = "90d"
+# The files themselves go 90 days after upload too, as the rules page says;
+# otherwise only the messages would go and anyone with the link could still
+# fetch the file. Profile and room pictures are kept.
+cleanup_local_media_max_age = "90d"
 # Everyone's uploads together; the oldest go first past this.
 cleanup_local_media_max_size = "100 GiB"
 cleanup_disk_percent = 90

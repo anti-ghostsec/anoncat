@@ -9,6 +9,9 @@ After=anoncat.service
 RequiresMountsFor=/Drives/server/data
 
 [Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
 User=anoncat
 Group=anoncat
 ExecStart=/usr/bin/python3 -I /usr/local/lib/anoncat/anoncat-netd.py
@@ -28,6 +31,9 @@ LogNamespace=anoncat
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/Drives/server/data/netd
+# netd needs its state, the Dynu and Codeberg keys and the certificate: none
+# of the users' data.
+InaccessiblePaths=-/Drives/server/data/db -/Drives/server/data/backups -/Drives/server/data/anoncat.toml -/Drives/server/data/secrets/venice
 ProtectHome=yes
 PrivateTmp=disconnected
 PrivateDevices=yes

@@ -7,6 +7,9 @@ RequiresMountsFor=/Drives/server/data
 ConditionPathIsMountPoint=/Drives/server/data
 
 [Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
 Type=oneshot
 User=anoncat
 Group=anoncat
@@ -22,6 +25,9 @@ LogNamespace=anoncat
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/Drives/server/data/tls
+# lego and the hook face the network, and need only the certificates and the
+# Dynu key: none of the users' data.
+InaccessiblePaths=-/Drives/server/data/db -/Drives/server/data/backups -/Drives/server/data/anoncat.toml -/Drives/server/data/secrets/venice -/Drives/server/data/secrets/codeberg -/Drives/server/data/netd
 ProtectHome=yes
 PrivateTmp=disconnected
 PrivateDevices=yes

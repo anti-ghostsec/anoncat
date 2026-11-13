@@ -170,7 +170,9 @@ async fn redact_events(services: crate::State, args: RedactArgs) -> Result<JsonV
 		};
 
 		for pdu in pdus {
-			if let Ok(content) = pdu.get_content::<JsonValue>() {
+			if pdu.kind != TimelineEventType::RoomMember
+				&& let Ok(content) = pdu.get_content::<JsonValue>()
+			{
 				media_links(&content, &mut media);
 			}
 
@@ -180,25 +182,52 @@ async fn redact_events(services: crate::State, args: RedactArgs) -> Result<JsonV
 		}
 	}
 
+	// Only the user's own files: anyone can put someone else's link in a
+	// message, and swapping deletes a file for good, for everyone.
 	let note = format!("posted by {}", args.user_id);
 	for mxc in &media {
-		services.media.swap(mxc, &note).await.ok();
+		if is_theirs(&services, mxc, &args.user_id).await {
+			services.media.swap(mxc, &note).await.ok();
+		}
 	}
 
 	Ok(task_result(&failed))
 }
 
-/// Every `mxc://` link in an event's content: the file, its thumbnail, and
-/// links nested anywhere else.
-fn media_links(value: &JsonValue, out: &mut BTreeSet<String>) {
-	match value {
-		| JsonValue::String(s) if s.starts_with("mxc://") => {
-			out.insert(s.clone());
-		},
-		| JsonValue::Array(items) => items.iter().for_each(|v| media_links(v, out)),
-		| JsonValue::Object(map) => map.values().for_each(|v| media_links(v, out)),
-		| _ => {},
+/// The files a message carries: its `url` (or an encrypted file's), and its
+/// thumbnail's. Links anywhere else in the content are only links, and may
+/// be anyone's.
+fn media_links(content: &JsonValue, out: &mut BTreeSet<String>) {
+	let fields = [
+		&content["url"],
+		&content["file"]["url"],
+		&content["info"]["thumbnail_url"],
+		&content["info"]["thumbnail_file"]["url"],
+	];
+	for field in fields {
+		if let Some(link) = field.as_str().filter(|l| l.starts_with("mxc://")) {
+			out.insert(link.to_owned());
+		}
 	}
+}
+
+/// Whether a file is the user's own: uploaded by them here, or, for a user
+/// of another server, kept by that server (whose uploads aren't recorded as
+/// anyone's here).
+async fn is_theirs(services: &crate::State, mxc: &str, user_id: &UserId) -> bool {
+	let Ok(parts) = <ruma::Mxc<'_>>::try_from(mxc) else {
+		return false;
+	};
+	if services.globals.server_is_ours(parts.server_name) {
+		return services
+			.media
+			.media_entry(&parts)
+			.await
+			.and_then(|entry| entry.user_id)
+			.is_some_and(|uploader| uploader == user_id);
+	}
+
+	parts.server_name == user_id.server_name()
 }
 
 fn is_candidate(pdu: &PduEvent, args: &RedactArgs) -> bool {

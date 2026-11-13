@@ -28,6 +28,7 @@ const RULES: &str = r#"<h1>Rules and privacy</h1>
 <li>Your IP address is not stored or logged.</li>
 <li>Location and camera details are removed from photos you upload (not from videos).</li>
 <li>Admins can technically read rooms that are not encrypted. Use encrypted chats for anything private.</li>
+<li>When AI moderation is on, a third-party AI service that keeps nothing it's sent checks pictures and videos uploaded or opened here, messages in rooms anyone can join, room names and topics, and what people report. Usernames and room IDs are replaced before anything is sent. Encrypted messages and files can't be read, so they are never sent.</li>
 <li>Other servers in your rooms get copies of your messages and profile, and we can't delete those.</li>
 <li>Messages are deleted after 30 days, or 90 days if they have a picture or file.</li>
 <li>Delete your account any time at <a href="/login">/login</a>. Your uploads go with it, and backups keep it for up to 2 more days.</li>

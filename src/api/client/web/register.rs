@@ -130,7 +130,10 @@ async fn register(services: &Services, body: &Submit) -> Result<OwnedUserId> {
 		.full_register(Register {
 			user_id: Some(&user_id),
 			password: Some(&body.password),
-			grant_first_user_admin: true,
+			// Never from the web page: on a fresh install, whoever solved the
+			// first captcha would be admin. The first account made in an app
+			// with the registration token is.
+			grant_first_user_admin: false,
 			..Default::default()
 		})
 		.await?;

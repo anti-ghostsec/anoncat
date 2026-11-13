@@ -149,7 +149,7 @@ impl Masks {
 #[implement(Service)]
 pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Said>> {
 	let Some(key) = self.key() else {
-		return Err!(Request(NotFound("No Venice API key is saved yet.")));
+		return Err!(Request(NotFound("No AI service key is saved yet.")));
 	};
 
 	let settings = self.settings();

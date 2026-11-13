@@ -1,9 +1,12 @@
 //! Room checks. When someone here joins a room, or a room someone here is in
 //! changes its name, topic or address, the AI is asked what the room is
-//! about: its name, topic, address, who can join, and its latest messages
-//! when it isn't encrypted. A room it finds questionable or bad becomes a
-//! report, the admin gets a notice, and its new messages are checked from
-//! then on. Rooms need not be public or listed anywhere to be checked.
+//! about: its name, topic, address and who can join, and, for a room anyone
+//! can join or one listed in the directory, its latest messages when it isn't
+//! encrypted. A room it finds questionable or bad becomes a report and the
+//! admin gets a notice; an open one's new messages are checked from then on.
+//! A private room or direct chat is checked by name and topic only: what's
+//! said there isn't sent to the AI unless the admin adds the room to the
+//! watched ones.
 
 use std::{
 	collections::HashSet,
@@ -21,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tuwunel_core::{
 	Err, Result, debug, implement,
-	utils::{stream::TryIgnore, time::now_millis},
+	utils::{ReadyExt, stream::TryIgnore, time::now_millis},
 };
 use tuwunel_matrix::{Event, PduEvent, pdu::PduCount};
 
@@ -124,7 +127,7 @@ pub async fn check_all_rooms(&self) -> Result<usize> {
 		return Err!(Request(Forbidden("Turn on AI moderation in Settings first.")));
 	}
 	if self.key().is_none() {
-		return Err!(Request(NotFound("No Venice API key is saved yet.")));
+		return Err!(Request(NotFound("No AI service key is saved yet.")));
 	}
 
 	let server_user = &self.services.globals.server_user;
@@ -172,7 +175,7 @@ pub(super) async fn check_pending_rooms(&self) -> Result {
 	}
 
 	let Some(key) = self.key() else {
-		return Err!("no Venice API key is saved, so no room was checked");
+		return Err!("no AI service key is saved, so no room was checked");
 	};
 
 	let mut failed = 0_usize;
@@ -245,7 +248,8 @@ async fn check_room(
 		return Ok(());
 	}
 
-	let joining = match state.get_join_rules(room_id).await {
+	let join_rule = state.get_join_rules(room_id).await;
+	let joining = match join_rule {
 		| JoinRule::Public => "anyone",
 		| JoinRule::Invite => "invited people",
 		| JoinRule::Knock | JoinRule::KnockRestricted(_) => "people who ask and are let in",
@@ -257,18 +261,26 @@ async fn check_room(
 		.room_joined_count(room_id)
 		.await
 		.unwrap_or(0);
+	// Other servers only: this one's name isn't the AI provider's business.
 	let servers: Vec<String> = services
 		.state_cache
 		.room_servers(room_id)
+		.ready_filter(|server| !services.globals.server_is_ours(server))
 		.take(10)
 		.map(ToString::to_string)
 		.collect()
 		.await;
 
+	// Messages are read only from rooms open to anyone, or listed: what's
+	// said in a private room or a direct chat stays out of the AI provider's
+	// hands, even when it isn't encrypted. Those get the name and topic only.
+	let open = matches!(join_rule, JoinRule::Public)
+		|| services.directory.is_public_room(room_id).await;
+
 	let mut aliases = Aliases::default();
 	let mut messages = Vec::new();
 	let mut files = 0_usize;
-	if !encrypted {
+	if !encrypted && open {
 		// Just joined, the server holds little of the room yet: fetch some
 		// history, as an app scrolling up would.
 		if let Err(e) = services
@@ -393,7 +405,9 @@ async fn check_room(
 	report.suggested = "review".into();
 	self.save_report(&report);
 
-	let watching = !encrypted && self.watch_room(room_id);
+	// A private room is flagged from its name and topic, and stays out of
+	// the watched ones unless the admin adds it.
+	let watching = !encrypted && open && self.watch_room(room_id);
 	let notice = format!(
 		"Room check: {title} ({room_id}) looks {verdict}: {reason} {who} is in it. See report \
 		 {id} under Reports.{watching}",

@@ -9,5 +9,8 @@ After=anoncat-unlock.service
 ConditionPathIsMountPoint=/Drives/server/data
 
 [Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
 Type=oneshot
 ExecStart=/usr/bin/systemctl start --no-block anoncat.socket anoncat.service

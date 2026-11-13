@@ -645,6 +645,16 @@ pub struct Config {
 	)]
 	pub max_request_size: usize,
 
+	/// Max size of a file upload, when it should be bigger than
+	/// `max_request_size`. Only an upload that carries a valid access token
+	/// gets it, checked before the body is read, so nobody without an account
+	/// can make the server hold more than `max_request_size` per request.
+	/// 0 means the same as `max_request_size`.
+	///
+	/// default: 0
+	#[serde(default, deserialize_with = "deserialize_bytesize_usize")]
+	pub max_upload_size: usize,
+
 	/// Maximum size of a response body buffered from a remote server. Applies
 	/// to federation requests, push gateway and appservice transactions, and
 	/// remote media fetched for URL previews. A peer cannot be trusted to honor
@@ -5821,6 +5831,11 @@ static DEPRECATED_KEYS: &[&str; 11] = &[
 ];
 
 impl Config {
+	/// The biggest upload allowed: `max_upload_size`, unless
+	/// `max_request_size` is bigger or it isn't set.
+	#[must_use]
+	pub fn upload_limit(&self) -> usize { self.max_upload_size.max(self.max_request_size) }
+
 	/// Loads raw configuration from ordered file and environment sources.
 	///
 	/// Explicit paths follow config files selected through the supported
