@@ -869,25 +869,18 @@ async function openFull(mxc) {
 	URL.revokeObjectURL(url);
 }
 
-// A video for the panel to play: the copy the server's video worker makes,
-// WebM (VP8 and Opus) that every browser decodes, rather than the file itself. Videos from
-// phones are often HEVC, which most browsers can't decode: they freeze or
-// flash instead of playing. The file itself only when no copy can be made.
-async function playableVideo(server, mediaId) {
+// A video for the panel to play. The file itself by default, which starts at
+// once; `converted` asks the server's video worker for a WebM copy (VP8 and
+// Opus) every browser decodes, for a video in a codec this browser can't
+// play (HEVC from phones, often), at the cost of a wait while it's made.
+async function playableVideo(server, mediaId, converted = false) {
 	const base = `${MOD}/media/${enc(server)}/${enc(mediaId)}`;
-	const copy = await fetch(`${base}?convert=1`, authed()).catch(() => null);
-	if (copy?.ok) {
-		const blob = await copy.blob();
-		if (blob.size) return { url: URL.createObjectURL(blob), converted: true };
-	} else if (copy) {
-		const why = (await copy.json().catch(() => ({}))).error;
-		if (why) toast(`No playable copy: ${why}`, 8000);
-	}
-	const res = await fetch(base, authed());
+	const res = await fetch(converted ? `${base}?convert=1` : base, authed());
 	if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
 	const blob = await res.blob();
-	if (!blob.type.startsWith("video/")) throw new Error("Not something the panel can play.");
-	return { url: URL.createObjectURL(blob), converted: false };
+	if (!blob.size) throw new Error("the server sent nothing");
+	if (!converted && !blob.type.startsWith("video/")) throw new Error("Not something the panel can play.");
+	return { url: URL.createObjectURL(blob), converted, type: blob.type, size: blob.size };
 }
 
 // A player that starts silent: what a video is shows before anything plays
@@ -895,13 +888,25 @@ async function playableVideo(server, mediaId) {
 function videoPlayer(url) {
 	const player = h("video", { src: url, controls: true, autoplay: true, playsinline: true, preload: "auto" });
 	player.muted = player.defaultMuted = true;
-	// Say why, rather than sit on a frame.
-	player.addEventListener("error", () => {
-		const code = player.error?.code;
-		const why = { 3: "the browser couldn't decode it", 4: "the browser can't play this format" }[code] || `playback failed (${code ?? "?"})`;
-		toast(`Couldn't play it: ${why}`, 8000);
-	});
 	return player;
+}
+
+// Swaps a player's file for the converted copy, keeping it muted.
+async function useConverted(player, status, server, mediaId) {
+	status.dataset.converting = "1";
+	status.firstChild.textContent = "Making a copy any browser can play\u2026";
+	try {
+		const got = await playableVideo(server, mediaId, true);
+		const old = player.src;
+		player.src = got.url;
+		player.muted = true;
+		URL.revokeObjectURL(old);
+		status._got = got;
+		player.play().catch(() => {});
+	} catch (e) {
+		toast(`Couldn't make a playable copy: ${e.message}`, 8000);
+	}
+	delete status.dataset.converting;
 }
 
 async function playInline(el, mxc, kind) {
@@ -909,14 +914,13 @@ async function playInline(el, mxc, kind) {
 	const button = el.querySelector(".play");
 	button.disabled = true;
 	button.textContent = "\u2026";
-	button.title = "Getting a copy any browser can play\u2026";
 	try {
 		let player;
 		let note = null;
 		if (kind === "video") {
 			const got = await playableVideo(server, mediaId);
 			player = videoPlayer(got.url);
-			if (!got.converted) note = h("span", { class: "thumb-badge warn" }, "the file itself; no playable copy could be made");
+			note = playerStatus(player, got, server, mediaId);
 		} else {
 			const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed());
 			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
@@ -925,7 +929,8 @@ async function playInline(el, mxc, kind) {
 			player = h(kind, { src: URL.createObjectURL(blob), controls: true, autoplay: true, preload: "metadata" });
 		}
 		el.classList.add("revealed", "playing");
-		el.replaceChildren(player, note || "");
+		el.replaceChildren(player);
+		if (note) el.after(note);
 	} catch (e) {
 		toast(`Couldn't play it: ${e.message}`);
 		button.disabled = false;
@@ -933,11 +938,37 @@ async function playInline(el, mxc, kind) {
 	}
 }
 
+// What the player is doing, in words, under it: which file it got, and
+// whether it's moving. Text only, nothing of the video itself, so a video
+// that won't play says why.
+function playerStatus(player, got, server, mediaId) {
+	const text = h("span", {});
+	const convert = h("button", { class: "ghost tiny", type: "button", title: "For a video that won't play here: the server makes a copy every browser can play",
+		onclick: () => useConverted(player, line, server, mediaId) }, "Won't play? Use a converted copy");
+	const line = h("div", { class: "small muted player-status" }, text, " ", convert);
+	line._got = got;
+	const time = (t) => Number.isFinite(t) ? `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}` : "?";
+	const update = () => {
+		if (line.dataset.converting) return;
+		const g = line._got;
+		convert.hidden = g.converted;
+		const source = `${g.converted ? "converted copy" : "the file itself"}, ${g.type || "?"}, ${bytes(g.size)}`;
+		const e = player.error;
+		const frames = player.getVideoPlaybackQuality?.().totalVideoFrames;
+		const state = e ? `error ${e.code}${e.message ? `: ${e.message}` : ""}`
+			: player.paused ? (player.readyState < 2 ? "loading" : "paused") : "playing";
+		text.textContent = `${source} \u00B7 ${state} \u00B7 ${time(player.currentTime)} / ${time(player.duration)} \u00B7 ${player.videoWidth}\u00D7${player.videoHeight} \u00B7 ${frames ?? "?"} frames`;
+	};
+	update();
+	const timer = setInterval(() => { if (!document.contains(line)) return clearInterval(timer); update(); }, 500);
+	for (const ev of ["playing", "pause", "error", "loadeddata", "stalled", "waiting"]) player.addEventListener(ev, update);
+	return line;
+}
+
 // A video at full size, playing, in a window: what someone sees when they
 // open it in an app.
 async function openFullVideo(mxc) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
-	toast("Getting a copy any browser can play\u2026", 8000);
 	let got;
 	try {
 		got = await playableVideo(server, mediaId);
@@ -945,12 +976,12 @@ async function openFullVideo(mxc) {
 		return toast(`Couldn't play it: ${e.message}`);
 	}
 	const player = videoPlayer(got.url);
-	const shown = ask("Full size", { content: h("div", { class: "full-view" }, player), confirm: "Close", cancel: false });
+	const shown = ask("Full size", { content: h("div", { class: "full-view" }, player, playerStatus(player, got, server, mediaId)), confirm: "Close", cancel: false });
 	$("#dialog").dataset.mxc = mxc;
 	await shown;
 	player.pause();
 	delete $("#dialog").dataset.mxc;
-	URL.revokeObjectURL(got.url);
+	URL.revokeObjectURL(player.src);
 }
 
 pages.federation = async (main, params) => {

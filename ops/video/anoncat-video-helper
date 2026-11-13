@@ -68,7 +68,7 @@ def duration(path, timeout):
     return seconds if seconds > 0 and seconds < float("inf") else None
 
 
-def command(job, path, timeout):
+def command(job, path, timeout, out):
     if job == "frame":
         return [*FFMPEG, "-threads", "1", *LIMITS, "-i", path, "-vf", "thumbnail=30",
                 "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "pipe:1"]
@@ -83,7 +83,10 @@ def command(job, path, timeout):
                 "-map", "0:a:0?", "-sn", "-dn", "-vf", "scale=-2:'min(480,ih)'",
                 "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "1M",
                 "-crf", "10", "-threads", "2", "-c:a", "libopus", "-b:a", "96k",
-                "-f", "webm", "pipe:1"]
+                # To a file, not a pipe: only then does the WebM get its
+                # duration and seek index, without which some browsers won't
+                # seek, or start.
+                "-f", "webm", "-y", out]
     raise ValueError(f"no such job: {job!r}")
 
 
@@ -107,17 +110,25 @@ def main():
         staged.flush()
 
         timeout = TIMEOUTS[job]
+        out = staged.name + ".webm"
         try:
-            done = subprocess.run(command(job, staged.name, timeout), capture_output=True,
+            done = subprocess.run(command(job, staged.name, timeout, out), capture_output=True,
                                   timeout=timeout, check=False)
+            output = done.stdout
+            if job == "playable" and done.returncode == 0:
+                with open(out, "rb") as f:
+                    output = f.read(MAX_OUTPUT + 1)
         except subprocess.TimeoutExpired:
             return reply(False, b"ffmpeg took too long")
+        finally:
+            if os.path.exists(out):
+                os.unlink(out)
 
-    if done.returncode != 0 or not done.stdout:
+    if done.returncode != 0 or not output:
         return reply(False, (done.stderr[-2000:] or b"ffmpeg made nothing"))
-    if len(done.stdout) > MAX_OUTPUT:
+    if len(output) > MAX_OUTPUT:
         return reply(False, b"the output was too big")
-    return reply(True, done.stdout)
+    return reply(True, output)
 
 
 if __name__ == "__main__":
