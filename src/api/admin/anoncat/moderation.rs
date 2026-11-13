@@ -202,6 +202,9 @@ pub(crate) async fn media_route(
 	let thumb = uri
 		.query()
 		.is_some_and(|q| q.split('&').any(|p| p == "thumb=1"));
+	let convert = uri
+		.query()
+		.is_some_and(|q| q.split('&').any(|p| p == "convert=1"));
 
 	// A picture's preview is made here from the file itself: a stored
 	// thumbnail may be another server's, and could show an innocent crop of
@@ -257,6 +260,21 @@ pub(crate) async fn media_route(
 		headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
 		headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
 		headers.insert("x-anoncat-sheet", HeaderValue::from_static("1"));
+		return Ok(response);
+	}
+
+	// With `?convert=1`, a copy the browser can surely play, for a video
+	// its own codec left frozen on the first frame.
+	if convert && is_video {
+		let playable = services
+			.media
+			.video_playable(&original.content)
+			.await?;
+		let mut response = playable.into_response();
+		let headers = response.headers_mut();
+		headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+		headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+		headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
 		return Ok(response);
 	}
 

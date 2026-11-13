@@ -444,3 +444,48 @@ pub async fn video_sheet(&self, content: &[u8]) -> Result<Vec<u8>> {
 
 	run("nice", args.iter().copied(), limit, deadline).await
 }
+
+/// Longest a conversion for the panel may run.
+const PLAYABLE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// A copy of a video any browser can play, for the admin judging it: H.264
+/// and AAC in MP4, at most 480 lines tall. Videos often come in a codec the
+/// panel's browser can't decode (HEVC from phones, most often), and then
+/// sit on their first frame while the sound plays on. Runs in the video
+/// slots, at the lowest priority and on two threads, since it's the heaviest
+/// thing the server does.
+#[implement(super::Service)]
+pub async fn video_playable(&self, content: &[u8]) -> Result<Vec<u8>> {
+	let config = &self.services.config;
+	if config.media_video_thumbnail_command.is_empty() {
+		return Err!("Video conversion isn't set up.");
+	}
+	if content.len() > config.media_video_thumbnail_max_size {
+		return Err!("Too big to convert.");
+	}
+
+	let deadline = Instant::now()
+		.checked_add(PLAYABLE_TIMEOUT)
+		.ok_or_else(|| err!("Timeout is out of range."))?;
+	let Ok(Ok(_slot)) = timeout_at(deadline, self.video_thumbnail_slots.acquire()).await else {
+		return Err!("Timed out waiting for a video slot.");
+	};
+
+	let path = staging_dir(config).join(format!("{STAGED}{}", random_string(NAME_LENGTH)));
+	defer! {{ remove_file(&path).ok(); }}
+	timeout_at(deadline, stage(&path, content))
+		.await
+		.map_err(|_| err!("Timed out staging the video."))??;
+	let input = path.to_string_lossy().into_owned();
+
+	let args = [
+		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "2", "-i",
+		input.as_str(), "-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-vf",
+		"scale=-2:'min(480,ih)'", "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+		"-pix_fmt", "yuv420p", "-threads", "2", "-c:a", "aac", "-b:a", "96k", "-movflags",
+		"frag_keyframe+empty_moov", "-f", "mp4", "pipe:1",
+	];
+	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
+
+	run("nice", args.iter().copied(), limit, deadline).await
+}

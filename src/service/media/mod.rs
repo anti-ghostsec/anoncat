@@ -233,6 +233,12 @@ impl Service {
 		Err!("This build can't read videos.")
 	}
 
+	/// Without video support built in nothing can be converted.
+	#[cfg(not(feature = "media_thumbnail"))]
+	pub async fn video_playable(&self, _content: &[u8]) -> Result<Vec<u8>> {
+		Err!("This build can't read videos.")
+	}
+
 	/// Everything swapped for the stand-in for good, by mxc:// link. Their
 	/// files are gone, so nothing else lists them.
 	pub async fn swapped(&self) -> Vec<String> {

@@ -8,12 +8,14 @@ use std::{
 
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join};
 use ruma::{
-	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedServerName, OwnedUserId, RoomId,
+	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedServerName,
+	OwnedUserId, RoomId,
 	RoomOrAliasId, RoomVersionId, UserId,
 	api::{error::ErrorKind, federation},
 	canonical_json::to_canonical_value,
 	events::{
 		StateEventType,
+		space::child::SpaceChildEventContent,
 		room::{
 			create::RoomCreateEventContent,
 			join_rules::RoomJoinRulesEventContent,
@@ -1157,6 +1159,12 @@ pub(super) async fn get_servers_for_room(
 
 	servers.extend_from_slice(&additional_servers);
 
+	// Last, servers from the spaces here that list the room: a client often
+	// names one via, from a space's listing, and when that server has since
+	// left the room nothing else would be tried, since newer room IDs name no
+	// server. Explicit vias still go first.
+	servers.extend(space_servers(services, user_id, room_id).await);
+
 	// 1. (room alias server)?
 	// 2. (room id server)?
 	// 3. shuffle [via query + resolve servers]?
@@ -1185,6 +1193,59 @@ pub(super) async fn get_servers_for_room(
 
 	debug_info!(?servers);
 	Ok(servers)
+}
+
+/// Most servers taken from spaces for one join.
+const SPACE_SERVERS_MAX: usize = 24;
+
+/// Servers likely to be in a room, from the spaces the user is in that list
+/// it as a child: that listing's own via servers, then the space's other
+/// servers, which often share its rooms. Only state already here is read.
+async fn space_servers(
+	services: &Services,
+	user_id: &UserId,
+	room_id: &RoomId,
+) -> Vec<OwnedServerName> {
+	let spaces: Vec<OwnedRoomId> = services
+		.state_cache
+		.rooms_joined(user_id)
+		.map(ToOwned::to_owned)
+		.collect()
+		.await;
+
+	let mut vias = Vec::new();
+	let mut members = Vec::new();
+	for space in &spaces {
+		let Ok(child) = services
+			.state_accessor
+			.room_state_get_content::<SpaceChildEventContent>(
+				space,
+				&StateEventType::SpaceChild,
+				room_id.as_str(),
+			)
+			.await
+		else {
+			continue;
+		};
+		// A child event with no via is one the space took back.
+		if child.via.is_empty() {
+			continue;
+		}
+		vias.extend(child.via);
+		members.extend(
+			services
+				.state_cache
+				.room_servers(space)
+				.map(ToOwned::to_owned)
+				.collect::<Vec<_>>()
+				.await,
+		);
+	}
+	shuffle(&mut members);
+	vias.extend(members);
+	vias.retain(|server| !services.globals.server_is_ours(server));
+	vias.truncate(SPACE_SERVERS_MAX);
+	vias
 }
 
 #[cfg(test)]

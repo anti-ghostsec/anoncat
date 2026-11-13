@@ -865,6 +865,42 @@ async function openFull(mxc) {
 	URL.revokeObjectURL(url);
 }
 
+// A video in a codec the browser can't decode (HEVC from phones, often)
+// sits on one frame, or none, while its time runs on. When that happens the
+// server makes a copy the browser can play, and that plays instead.
+function watchDecoding(el, player, server, mediaId, url) {
+	let swapped = false;
+	const frames = () => player.getVideoPlaybackQuality?.().totalVideoFrames ?? player.webkitDecodedFrameCount ?? null;
+	const convert = async () => {
+		if (swapped) return;
+		swapped = true;
+		clearInterval(check);
+		player.pause();
+		const note = h("span", { class: "thumb-badge" }, "This browser can't play its format; converting\u2026");
+		el.append(note);
+		try {
+			const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?convert=1`, authed());
+			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+			const copy = URL.createObjectURL(await res.blob());
+			URL.revokeObjectURL(url);
+			player.src = copy;
+			player.muted = true;
+			note.textContent = "converted copy";
+			player.play().catch(() => {});
+		} catch (e) {
+			note.textContent = `Couldn't convert it: ${e.message}`;
+		}
+	};
+	player.addEventListener("error", convert);
+	const check = setInterval(() => {
+		if (!player.isConnected) return clearInterval(check);
+		if (player.paused || player.currentTime < 1.5) return;
+		const decoded = frames();
+		if (player.videoWidth === 0 || (decoded !== null && decoded <= 1)) convert();
+		else clearInterval(check);
+	}, 500);
+}
+
 async function playInline(el, mxc, kind) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
 	const button = el.querySelector(".play");
@@ -880,7 +916,10 @@ async function playInline(el, mxc, kind) {
 		const player = h(kind, { src: url, controls: true, autoplay: true, preload: "metadata" });
 		// A video starts silent: what it is shows before anything plays out
 		// loud. The controls turn the sound on.
-		if (kind === "video") player.muted = player.defaultMuted = true;
+		if (kind === "video") {
+			player.muted = player.defaultMuted = true;
+			watchDecoding(el, player, server, mediaId, url);
+		}
 		el.replaceChildren(player);
 	} catch (e) {
 		toast(`Couldn't play it: ${e.message}`);
