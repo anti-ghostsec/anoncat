@@ -879,8 +879,9 @@ async function playableVideo(server, mediaId, converted = false) {
 	if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
 	const blob = await res.blob();
 	if (!blob.size) throw new Error("the server sent nothing");
-	if (!converted && !blob.type.startsWith("video/")) throw new Error("Not something the panel can play.");
-	return { url: URL.createObjectURL(blob), converted, type: blob.type, size: blob.size };
+	// A type the server got wrong still goes to the player: the browser sniffs
+	// the bytes, and the status line says what it was sent.
+	return { url: URL.createObjectURL(blob), converted, type: blob.type || "no type", size: blob.size };
 }
 
 // A player that starts silent: what a video is shows before anything plays
