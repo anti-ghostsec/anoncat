@@ -25,7 +25,7 @@ mod storage;
 mod venice;
 
 use std::{
-	collections::{HashMap, HashSet},
+	collections::{HashMap, HashSet, VecDeque},
 	sync::{
 		Arc, Mutex, RwLock,
 		atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use regex::Regex;
 use ruma::{
-	Mxc, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId,
+	Mxc, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, UserId,
 	events::{TimelineEventType, room::join_rules::JoinRule},
 };
 use serde::{Deserialize, Serialize};
@@ -78,6 +78,11 @@ const MODELS_TTL: Duration = Duration::from_secs(60 * 60);
 const FAILURE_NOTICE_EVERY: Duration = Duration::from_secs(60 * 60);
 const SETTINGS_KEY: &[u8] = b"moderation";
 
+/// Uploads checked at once; more wait their turn.
+const UPLOAD_CHECKS_AT_ONCE: usize = 2;
+/// Uploads remembered as checked.
+const CHECKED_UPLOADS_KEPT: usize = 1000;
+
 const IMAGE_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 pub struct Service {
@@ -111,6 +116,10 @@ pub struct Service {
 	/// Uploads and posts over the last day, per account.
 	recent: Mutex<HashMap<OwnedUserId, storage::Recent>>,
 	scan: storage::Scan,
+	/// Uploads being checked at once.
+	upload_checks: Arc<tokio::sync::Semaphore>,
+	/// Uploads checked lately, so a post of one isn't checked again.
+	checked_uploads: Mutex<VecDeque<String>>,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -139,6 +148,10 @@ pub struct Settings {
 	pub extra_rooms: Vec<OwnedRoomId>,
 	pub check_messages: bool,
 	pub check_images: bool,
+	/// Also check every picture uploaded here as it arrives, wherever it is
+	/// posted, or if it never is: one sent in an encrypted room, or shared
+	/// as a link, is otherwise never seen.
+	pub check_uploads: bool,
 	/// Ask the AI about rooms people here join, public or not.
 	pub check_rooms: bool,
 	/// Files at least this large are reported for a look, without the AI.
@@ -181,6 +194,7 @@ impl Default for Settings {
 			extra_rooms: Vec::new(),
 			check_messages: true,
 			check_images: true,
+			check_uploads: false,
 			check_rooms: true,
 			large_file_mb: 100,
 			text_model: "auto".into(),
@@ -287,6 +301,8 @@ impl crate::Service for Service {
 			posts_lock: Mutex::new(()),
 			recent: Mutex::default(),
 			scan: storage::Scan::default(),
+			upload_checks: Arc::new(tokio::sync::Semaphore::new(UPLOAD_CHECKS_AT_ONCE)),
+			checked_uploads: Mutex::default(),
 		}))
 	}
 
@@ -596,7 +612,9 @@ struct Message {
 }
 
 struct Image {
-	item: Item,
+	/// The message that posted it; none for an upload checked on its own.
+	item: Option<Item>,
+	uploader: OwnedUserId,
 	mxc: String,
 	mime: String,
 	/// Posted by whoever uploaded it, so hiding it hides only their upload.
@@ -688,7 +706,11 @@ async fn check_batch(&self, items: Vec<Item>) -> Result {
 					.user_id
 					.as_deref()
 					.is_none_or(|uploader| uploader == item.sender);
-			images.push(Image { item, mxc: mxc_string, mime, own });
+			if self.checked_upload(&mxc_string) {
+				continue;
+			}
+			let uploader = item.sender.clone();
+			images.push(Image { item: Some(item), uploader, mxc: mxc_string, mime, own });
 		}
 	}
 
@@ -795,14 +817,148 @@ async fn check_messages(&self, settings: &Settings, key: &str, messages: Vec<Mes
 	Ok(())
 }
 
+/// Checks a picture someone here just uploaded, when the settings ask for
+/// every upload to be checked. Runs in the background; the upload isn't held
+/// up.
+#[implement(Service)]
+pub fn notify_upload(
+	self: &Arc<Self>,
+	uploader: &UserId,
+	mxc: &str,
+	mime: Option<&str>,
+	size: usize,
+) {
+	let settings = self.settings();
+	// The type is whatever the app declared; the bytes decide. Anything that
+	// doesn't decode as a picture here, such as an encrypted attachment, is
+	// left alone.
+	let mime = mime.unwrap_or_default().to_owned();
+	if !settings.enabled
+		|| !settings.check_images
+		|| !settings.check_uploads
+		|| u64::try_from(size).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES
+	{
+		return;
+	}
+
+	let this = Arc::clone(self);
+	let image = Image {
+		item: None,
+		uploader: uploader.to_owned(),
+		mxc: mxc.to_owned(),
+		mime,
+		own: true,
+	};
+	self.services.server.runtime().spawn(async move {
+		let Ok(_permit) = this.upload_checks.acquire().await else {
+			return;
+		};
+		let Some(key) = this.key() else {
+			return;
+		};
+		{
+			let mut checked = this.checked_uploads.lock().expect("locked");
+			checked.push_back(image.mxc.clone());
+			while checked.len() > CHECKED_UPLOADS_KEPT {
+				checked.pop_front();
+			}
+		}
+		let settings = this.settings();
+		if let Err(e) = this.check_image(&settings, &key, &image).await {
+			warn!("Couldn't check an upload: {e}");
+		}
+	});
+}
+
+/// Whether the upload was checked on its own lately.
+#[implement(Service)]
+fn checked_upload(&self, mxc: &str) -> bool {
+	self.checked_uploads
+		.lock()
+		.expect("locked")
+		.iter()
+		.any(|m| m == mxc)
+}
+
+/// A report about an upload not seen in any room.
+#[implement(Service)]
+fn upload_report(&self, uploader: &UserId) -> Report {
+	let now = now_millis();
+	let id = {
+		let mut last = self.last_id.lock().expect("locked");
+		*last = now.max(last.saturating_add(1));
+		*last
+	};
+
+	Report {
+		id,
+		ts: now,
+		kind: "image".into(),
+		room_id: String::new(),
+		room_name: Some("Checked on upload".into()),
+		event_id: String::new(),
+		sender: uploader.to_string(),
+		mxc: None,
+		excerpt: String::new(),
+		category: String::new(),
+		severity: "medium".into(),
+		reason: String::new(),
+		suggested: "review".into(),
+		hidden: false,
+		status: "open".into(),
+		source: "ai".into(),
+	}
+}
+
 #[implement(Service)]
 async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Result {
 	let mxc: Mxc<'_> = image.mxc.as_str().try_into()?;
 	let media = self.services.media.get_stored(&mxc).await?;
-	let mime = image.mime.clone();
 	if u64::try_from(media.content.len()).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES {
 		return Ok(());
 	}
+
+	// The whole picture, and a long one in parts, an animated one as frames:
+	// a vision model shrinks a tall picture to a sliver and sees only the
+	// first frame of an animation, which is where something meant to slip
+	// past would hide. A picture that won't decode here goes as it is.
+	let content = media.content;
+	let decoded = self
+		.services
+		.media
+		.ai_views_owned(content.clone())
+		.await
+		.ok();
+	let (views, note) = match decoded {
+		| Some(seen) if seen.views.len() > 1 => {
+			let what = if seen.frames > 1 {
+				format!("an animation of {} frames, {}x{}", seen.frames, seen.width, seen.height)
+			} else {
+				format!("a long picture, {}x{}", seen.width, seen.height)
+			};
+			let note = format!(
+				"These {} images are one upload, {what}: first the whole of it, then {}. Judge \
+				 the upload as a whole; if any part or frame breaks the rules, the upload does.",
+				seen.views.len(),
+				if seen.frames > 1 { "frames from across it" } else { "overlapping parts along its length" },
+			);
+			let views = seen
+				.views
+				.into_iter()
+				.map(|data| Part::Image { mime: "image/png".into(), data })
+				.collect::<Vec<_>>();
+			(views, note)
+		},
+		| Some(seen) => (
+			seen.views
+				.into_iter()
+				.map(|data| Part::Image { mime: "image/png".into(), data })
+				.collect(),
+			"Check this image.".into(),
+		),
+		| None if image.item.is_none() => return Ok(()),
+		| None => (vec![Part::Image { mime: image.mime.clone(), data: content }], "Check this image.".into()),
+	};
 
 	let model = self.model(&settings.vision_model, true).await?;
 	let system = format!(
@@ -814,10 +970,8 @@ async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Re
 		guidance = guidance_block(&settings),
 	);
 
-	let parts = vec![
-		Part::Text("Check this image.".into()),
-		Part::Image { mime, data: media.content },
-	];
+	let mut parts = vec![Part::Text(note)];
+	parts.extend(views);
 	let reply = venice::chat(self.client(), key, &model, &system, &[], parts).await?;
 	let Some(answer) = json_in(&reply) else {
 		return Err!("the AI's answer wasn't the expected JSON");
@@ -829,11 +983,15 @@ async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Re
 	}
 
 	let bad = verdict == "bad";
-	let mut report = self
-		.new_report("image", &image.item, "ai")
-		.await;
+	let mut report = match &image.item {
+		| Some(item) => {
+			let mut report = self.new_report("image", item, "ai").await;
+			report.excerpt = excerpt(item.content["body"].as_str().unwrap_or_default());
+			report
+		},
+		| None => self.upload_report(&image.uploader),
+	};
 	report.mxc = Some(image.mxc.clone());
-	report.excerpt = excerpt(image.item.content["body"].as_str().unwrap_or_default());
 	report.category = text_field(&answer["category"], "other");
 	report.severity = if bad { "high" } else { "medium" }.into();
 	report.reason = text_field(&answer["reason"], "");

@@ -50,6 +50,7 @@ pub use self::{
 	preview::UrlPreviewData,
 	thumbnail::{Animate, Dim},
 };
+pub use self::thumbnail::Inspected;
 pub use self::{cached::CachedMedia, stand_in::CACHE_CONTROL_NO_STORE};
 use crate::storage::Provider;
 

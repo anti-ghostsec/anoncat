@@ -92,6 +92,10 @@ pub(crate) async fn create_content_route(
 		.create(mxc, Some(user), Some(&content_disposition), content_type, &body.file)
 		.await?;
 
+	services
+		.moderation
+		.notify_upload(user, &mxc.to_string(), content_type, body.file.len());
+
 	Ok(create_content::v3::Response {
 		content_uri: mxc.to_string().into(),
 		blurhash: None,
@@ -175,6 +179,10 @@ pub(crate) async fn create_content_async_route(
 		.media
 		.upload_pending(&mxc, user, Some(&content_disposition), content_type, &body.file)
 		.await?;
+
+	services
+		.moderation
+		.notify_upload(user, &mxc.to_string(), content_type, body.file.len());
 
 	Ok(create_content_async::v3::Response {})
 }

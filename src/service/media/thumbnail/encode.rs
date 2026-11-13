@@ -202,7 +202,7 @@ fn encode_sequence(frames: Frames<'_>, dim: &Dim, limit: usize) -> Result<(Vec<u
 /// built without limits of its own and composites a whole source canvas on its
 /// first advance, so the canvas is budgeted and the decoder told what it may
 /// allocate before it is ever advanced.
-fn source_frames(bytes: &[u8], budget: u64) -> Result<(Frames<'_>, u64)> {
+pub(super) fn source_frames(bytes: &[u8], budget: u64) -> Result<(Frames<'_>, u64)> {
 	let format = reader(bytes)?
 		.format()
 		.ok_or_else(|| err!(debug_warn!("Picture names no format.")))?;

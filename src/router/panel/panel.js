@@ -639,22 +639,53 @@ function nextPreview() {
 
 const authed = () => ({ headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}` }, credentials: "omit", cache: "no-store" });
 
-// The moderation's own preview serves stored media even while hidden. Media
-// this server has no copy of comes through the ordinary thumbnail route,
-// which fetches it from its server.
+// The moderation's own preview serves stored media even while hidden, and
+// fetches what this server has no copy of from its server. For a picture it
+// is made from the file itself, never a thumbnail the sender or another
+// server chose (those can be an innocent crop of something that isn't), and
+// it says how big the picture is and how many frames it has.
 async function loadPreview(el, mxc) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
-	const blob = await queued(async () => {
+	const got = await queued(async () => {
 		if (!el.isConnected) return null;
-		let res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?thumb=1`, authed());
-		if (!res.ok) res = await fetch(`/_matrix/client/v1/media/thumbnail/${enc(server)}/${enc(mediaId)}?width=320&height=240&method=scale&allow_remote=true`, authed());
-		return res.ok ? res.blob() : null;
+		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?thumb=1`, authed());
+		if (!res.ok) return null;
+		const num = (name) => Number(res.headers.get(name)) || 0;
+		return { blob: await res.blob(), width: num("x-anoncat-width"), height: num("x-anoncat-height"), frames: num("x-anoncat-frames") };
 	});
+	if (!got) {
+		const label = el.querySelector(".thumb-label");
+		if (label) label.textContent = "No preview";
+		return;
+	}
 	// Only raster images become blob: URLs; an SVG or HTML one would be a
 	// document on the panel's own origin.
-	if (!blob || !RASTER.has(blob.type) || !el.isConnected) return;
-	const url = URL.createObjectURL(blob);
+	if (!RASTER.has(got.blob.type) || !el.isConnected) return;
+	const url = URL.createObjectURL(got.blob);
 	el.querySelector(".thumb-label")?.replaceWith(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
+	if (got.width && got.height) {
+		const long = Math.max(got.width, got.height) >= 2 * Math.min(got.width, got.height);
+		const badges = [`${got.width}\u00D7${got.height}`];
+		if (got.frames > 1) badges.push(`animated, ${got.frames} frames`);
+		if (long) badges.push(got.height > got.width ? "very tall" : "very wide");
+		el.append(h("span", { class: `thumb-badge${got.frames > 1 || long ? " warn" : ""}`,
+			title: got.frames > 1 || long ? "The small preview can't show all of this. Open it full size before deciding." : "" }, badges.join(" \u00B7 ")));
+		el.append(h("button", { class: "full", type: "button", title: "Open the whole file, full size", "aria-label": "Open full size",
+			onclick: (e) => { e.stopPropagation(); openFull(mxc); } }, "\u2922"));
+	}
+}
+
+// The file itself, at full size and moving if it moves, in a scrollable
+// window: what someone sees when they open it in an app.
+async function openFull(mxc) {
+	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+	const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed()).catch(() => null);
+	if (!res?.ok) return toast("Couldn't load the file.");
+	const blob = await res.blob();
+	if (!RASTER.has(blob.type)) return toast("Not a picture the panel can show.");
+	const url = URL.createObjectURL(blob);
+	await ask("Full size", { content: h("div", { class: "full-view" }, h("img", { src: url, alt: "" })), confirm: "Close", cancel: false });
+	URL.revokeObjectURL(url);
 }
 
 async function playInline(el, mxc, kind) {
@@ -1087,7 +1118,9 @@ function eventLine(ev, reported) {
 			const file = isMxc(c.url) ? c.url : null;
 			const still = isMxc(c.info?.thumbnail_url) ? c.info.thumbnail_url : null;
 			const type = c.info?.mimetype || { "m.image": null, "m.video": "video/mp4", "m.audio": "audio/mpeg" }[c.msgtype] || (ev.type === "m.sticker" ? null : "application/octet-stream");
-			const thumb = file && (c.msgtype !== "m.file" || still) ? mediaThumb(file, type, { still: still || file }) : null;
+			// The preview is the file itself: the sender's thumbnail_url is
+			// theirs to choose, and can show something other than the file.
+			const thumb = file && (c.msgtype !== "m.file" || still) ? mediaThumb(file, type) : null;
 			preview = thumb || file ? h("div", {}, thumb, file ? mediaActions(file, { compact: true }) : null) : null;
 		} else body = c.body;
 	} else if (ev.type === "m.room.member") body = h("span", { class: "muted" }, `${c.membership}${ev.state_key !== ev.sender ? ` ${ev.state_key}` : ""}`);
@@ -1189,7 +1222,8 @@ pages.settings = async (main) => {
 		h("section", { class: "card" },
 			h("h2", {}, "What to check"),
 			check("check_messages", "Messages"),
-			check("check_images", "Images (up to 8 MiB)"),
+			check("check_images", "Images (up to 8 MiB)", "Long pictures are also checked in parts, and animated ones frame by frame, so nothing hides past the first glance."),
+			check("check_uploads", "Also check every picture uploaded here", "Not only ones posted in watched rooms: a picture sent in an encrypted room, or only shared as a link, is otherwise never checked. Each one goes to Venice the same way as images in public rooms. Encrypted attachments can't be read and are skipped."),
 			field("Report files at least this big (MiB, 0 = off)", large, "Large files get a report for you to look at, without the AI."),
 			field("Check new messages every (minutes)", batch, "Messages are checked together, which is cheaper. 40 waiting messages are checked at once.")),
 		h("section", { class: "card" },
@@ -1218,6 +1252,7 @@ pages.settings = async (main) => {
 			watch_public_joined: f.has("watch_public_joined"),
 			check_messages: f.has("check_messages"),
 			check_images: f.has("check_images"),
+			check_uploads: f.has("check_uploads"),
 			check_rooms: f.has("check_rooms"),
 			media_mode: f.get("media_mode") || "suggest",
 			extra_rooms: [...watched, ...String(f.get("extra_rooms_add") || "").split(/\s+/).filter(Boolean)],

@@ -204,6 +204,36 @@ pub(crate) async fn media_route(
 		.query()
 		.is_some_and(|q| q.split('&').any(|p| p == "thumb=1"));
 
+	// A picture's preview is made here from the file itself: a stored
+	// thumbnail may be another server's, and could show an innocent crop of
+	// something that isn't. Its size and frame count go along, so the panel
+	// can say when it's long or animated.
+	let original = services.media.get_stored(&mxc).await?;
+	let is_picture = original
+		.content_type
+		.as_deref()
+		.is_some_and(|t| PREVIEW_TYPES.contains(&t));
+	if thumb && is_picture {
+		let preview = services
+			.media
+			.admin_preview_owned(original.content)
+			.await?;
+		let mut response = preview
+			.views
+			.into_iter()
+			.next()
+			.unwrap_or_default()
+			.into_response();
+		let headers = response.headers_mut();
+		headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+		headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+		headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+		headers.insert("x-anoncat-width", HeaderValue::from(preview.width));
+		headers.insert("x-anoncat-height", HeaderValue::from(preview.height));
+		headers.insert("x-anoncat-frames", HeaderValue::from(preview.frames));
+		return Ok(response);
+	}
+
 	let media = if thumb {
 		let dim = Dim::new(320, 240, Some(Method::Scale));
 		services
@@ -211,7 +241,7 @@ pub(crate) async fn media_route(
 			.get_stored_thumbnail(&mxc, &dim, Animate::Never)
 			.await?
 	} else {
-		services.media.get_stored(&mxc).await?
+		original
 	};
 
 	let Some(kind) = media.content_type.filter(|t| {

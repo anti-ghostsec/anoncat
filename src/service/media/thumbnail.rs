@@ -9,6 +9,7 @@ mod dimension;
 mod encode;
 #[cfg(feature = "media_thumbnail")]
 mod generate;
+mod inspect;
 mod request;
 mod sniff;
 #[cfg(all(test, feature = "media_thumbnail"))]
@@ -18,6 +19,7 @@ mod tests;
 pub(super) use animate::ANIMATED_TYPES;
 pub use animate::Animate;
 pub use dimension::Dim;
+pub use inspect::Inspected;
 #[cfg(all(test, feature = "media_thumbnail"))]
 pub(super) use encode::encode_frames;
 #[cfg(all(test, feature = "media_thumbnail"))]
