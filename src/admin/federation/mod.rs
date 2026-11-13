@@ -1,3 +1,4 @@
+mod block;
 mod disable_room;
 mod enable_room;
 mod fetch_support_well_known;
@@ -22,6 +23,14 @@ pub(super) enum FederationCommand {
 	/// room's federation lock, and shows no event or time. A room with a listed
 	/// event is left out of the second list.
 	IncomingFederation,
+
+	/// - Blocks a person (@name:server) or a whole server, as the panel's
+	///   Block button does. An account here is locked too.
+	Block {
+		target: String,
+		/// Why, kept in the blocklist
+		reason: Vec<String>,
+	},
 
 	/// - Disables incoming federation handling for a room.
 	///

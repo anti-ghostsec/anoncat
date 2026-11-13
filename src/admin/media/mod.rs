@@ -9,6 +9,8 @@ mod get_file_info;
 mod get_remote_file;
 mod get_remote_thumbnail;
 mod preview;
+mod swap;
+mod where_posted;
 
 use clap::{ArgGroup, Subcommand};
 use ruma::{OwnedEventId, OwnedMxcUri, OwnedServerName};
@@ -78,6 +80,32 @@ pub(super) enum MediaCommand {
 		/// Long argument to delete local media
 		#[arg(long)]
 		yes_i_want_to_delete_local_media: bool,
+	},
+
+	/// - Who uploaded a file, and which messages carry it with their senders.
+	///   Rooms that are encrypted can't be searched.
+	WherePosted {
+		mxc: OwnedMxcUri,
+	},
+
+	/// - Swaps a file for the stand-in for good: deleted, and everyone sees
+	///   the stand-in instead. Can't be undone.
+	Swap {
+		mxc: OwnedMxcUri,
+		/// Why, kept for the panel
+		reason: Vec<String>,
+	},
+
+	/// - Hides a file until review: kept, but served to nobody.
+	Hide {
+		mxc: OwnedMxcUri,
+		/// Why, kept for the panel
+		reason: Vec<String>,
+	},
+
+	/// - Serves a hidden file again.
+	Unhide {
+		mxc: OwnedMxcUri,
 	},
 
 	GetFileInfo {

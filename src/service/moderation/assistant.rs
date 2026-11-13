@@ -65,6 +65,7 @@ const READ_ONLY: &[&str] = &[
 	"server memory-usage",
 	"server list-backups",
 	"media get-file-info",
+	"media where-posted",
 	"federation incoming-federation",
 	"federation remote-user-in-rooms",
 	"query room-timeline",
@@ -193,7 +194,17 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 		 output that shows that very event. Never work it out from timing, from which server \
 		 a file is on, or from who spoke last: name nobody, and say it can't be told. In an \
 		 encrypted room the server can't read which file a message carries. A file on another \
-		 server was uploaded by someone there, not necessarily by anyone in the room.\n\n# Server now\n{snapshot}\n# Read-only \
+		 server was uploaded by someone there, not necessarily by anyone in the room.\n\nWhen \
+		 something bad was posted, don't stop at who sent it: say what can be done, and put the \
+		 commands for it in command blocks. Run media where-posted on the file first: it names \
+		 the uploader of a file from here, and the messages carrying it with their senders. \
+		 Then, depending on what it finds: media swap <mxc> [reason] takes the file away from \
+		 everyone for good, whoever sent it; media hide <mxc> holds it for review; \
+		 users redact-event <event> removes a message sent from here; federation block \
+		 <@user:server or server> [reason] stops a person or a whole server; users deactivate \
+		 ends an account here. If the sender can't be found because the room is encrypted, \
+		 swapping the file still works, and asking someone in the room to report the message \
+		 from their app names the sender.\n\n# Server now\n{snapshot}\n# Read-only \
 		 commands\n{read_only}\n\n# Admin commands\n{commands}"
 	);
 
@@ -485,14 +496,14 @@ async fn snapshot(&self) -> Result<String> {
 	for r in &reports {
 		writeln!(
 			out,
-			"  - report {} ({}): {} {} by {} in {}, event {}, {}{}, suggests {}{}: {}",
+			"  - report {} (found by {}): {} {}, posted by {} in {}, event {}, {}{}, suggests {}{}: {}",
 			r.id,
 			r.source,
 			r.severity,
 			r.category,
-			r.sender,
+			if r.sender.is_empty() { "unknown" } else { &r.sender },
 			r.room_id,
-			r.event_id,
+			if r.event_id.is_empty() { "unknown" } else { &r.event_id },
 			r.kind,
 			r.mxc.as_deref().map(|m| format!(" {m}")).unwrap_or_default(),
 			r.suggested,
