@@ -452,6 +452,7 @@ dialog::backdrop { background: rgba(4, 6, 10, 0.6); backdrop-filter: blur(4px); 
 .media-thumb .full { position: absolute; right: 6px; top: 6px; padding: 2px 7px; font-size: 13px; line-height: 1.2; background: rgba(0, 0, 0, 0.7); border: 1px solid var(--line); }
 .full-view { max-height: 75vh; overflow: auto; text-align: center; }
 .full-view img { max-width: 100%; height: auto; }
+.full-view video { max-width: 100%; max-height: 72vh; background: #000; }
 .stat.warn { border-color: #b26a00; }
 .stat.warn .value { color: #f0a020; }
 .reporters { margin: 6px 0; padding-left: 1.2rem; }

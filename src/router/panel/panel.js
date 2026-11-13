@@ -772,6 +772,10 @@ function mediaThumb(mxc, type, { still = mxc, cls = "", held = false } = {}) {
 		el.append(h("button", { class: "play", type: "button", title: `Play the ${kind} here`, "aria-label": `Play the ${kind}`,
 			onclick: () => playInline(el, mxc, kind) }, "\u25B6"));
 	}
+	if (kind === "video") {
+		el.append(h("button", { class: "full", type: "button", title: "Play it full size", "aria-label": "Play full size",
+			onclick: (e) => { e.stopPropagation(); openFullVideo(mxc); } }, "\u2922"));
+	}
 	return el;
 }
 
@@ -865,40 +869,30 @@ async function openFull(mxc) {
 	URL.revokeObjectURL(url);
 }
 
-// A video in a codec the browser can't decode (HEVC from phones, often)
-// sits on one frame, or none, while its time runs on. When that happens the
-// server makes a copy the browser can play, and that plays instead.
-function watchDecoding(el, player, server, mediaId, url) {
-	let swapped = false;
-	const frames = () => player.getVideoPlaybackQuality?.().totalVideoFrames ?? player.webkitDecodedFrameCount ?? null;
-	const convert = async () => {
-		if (swapped) return;
-		swapped = true;
-		clearInterval(check);
-		player.pause();
-		const note = h("span", { class: "thumb-badge" }, "This browser can't play its format; converting\u2026");
-		el.append(note);
-		try {
-			const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?convert=1`, authed());
-			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-			const copy = URL.createObjectURL(await res.blob());
-			URL.revokeObjectURL(url);
-			player.src = copy;
-			player.muted = true;
-			note.textContent = "converted copy";
-			player.play().catch(() => {});
-		} catch (e) {
-			note.textContent = `Couldn't convert it: ${e.message}`;
-		}
-	};
-	player.addEventListener("error", convert);
-	const check = setInterval(() => {
-		if (!player.isConnected) return clearInterval(check);
-		if (player.paused || player.currentTime < 1.5) return;
-		const decoded = frames();
-		if (player.videoWidth === 0 || (decoded !== null && decoded <= 1)) convert();
-		else clearInterval(check);
-	}, 500);
+// A video for the panel to play: the copy the server's video worker makes,
+// H.264 that every browser decodes, rather than the file itself. Videos from
+// phones are often HEVC, which most browsers can't decode: they freeze or
+// flash instead of playing. The file itself only when no copy can be made.
+async function playableVideo(server, mediaId) {
+	const base = `${MOD}/media/${enc(server)}/${enc(mediaId)}`;
+	const copy = await fetch(`${base}?convert=1`, authed()).catch(() => null);
+	if (copy?.ok) {
+		const blob = await copy.blob();
+		if (blob.size) return { url: URL.createObjectURL(blob), converted: true };
+	}
+	const res = await fetch(base, authed());
+	if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+	const blob = await res.blob();
+	if (!blob.type.startsWith("video/")) throw new Error("Not something the panel can play.");
+	return { url: URL.createObjectURL(blob), converted: false };
+}
+
+// A player that starts silent: what a video is shows before anything plays
+// out loud. The controls turn the sound on.
+function videoPlayer(url) {
+	const player = h("video", { src: url, controls: true, autoplay: true, playsinline: true, preload: "auto" });
+	player.muted = player.defaultMuted = true;
+	return player;
 }
 
 async function playInline(el, mxc, kind) {
@@ -906,26 +900,48 @@ async function playInline(el, mxc, kind) {
 	const button = el.querySelector(".play");
 	button.disabled = true;
 	button.textContent = "\u2026";
+	button.title = "Getting a copy any browser can play\u2026";
 	try {
-		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed());
-		if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
-		const blob = await res.blob();
-		if (!blob.type.startsWith(`${kind}/`)) throw new Error("Not something the panel can play.");
-		const url = URL.createObjectURL(blob);
-		el.classList.add("revealed", "playing");
-		const player = h(kind, { src: url, controls: true, autoplay: true, preload: "metadata" });
-		// A video starts silent: what it is shows before anything plays out
-		// loud. The controls turn the sound on.
+		let player;
+		let note = null;
 		if (kind === "video") {
-			player.muted = player.defaultMuted = true;
-			watchDecoding(el, player, server, mediaId, url);
+			const got = await playableVideo(server, mediaId);
+			player = videoPlayer(got.url);
+			if (!got.converted) note = h("span", { class: "thumb-badge warn" }, "the file itself; no playable copy could be made");
+		} else {
+			const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed());
+			if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+			const blob = await res.blob();
+			if (!blob.type.startsWith(`${kind}/`)) throw new Error("Not something the panel can play.");
+			player = h(kind, { src: URL.createObjectURL(blob), controls: true, autoplay: true, preload: "metadata" });
 		}
-		el.replaceChildren(player);
+		el.classList.add("revealed", "playing");
+		el.replaceChildren(player, note || "");
 	} catch (e) {
 		toast(`Couldn't play it: ${e.message}`);
 		button.disabled = false;
 		button.textContent = "\u25B6";
 	}
+}
+
+// A video at full size, playing, in a window: what someone sees when they
+// open it in an app.
+async function openFullVideo(mxc) {
+	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+	toast("Getting a copy any browser can play\u2026", 8000);
+	let got;
+	try {
+		got = await playableVideo(server, mediaId);
+	} catch (e) {
+		return toast(`Couldn't play it: ${e.message}`);
+	}
+	const player = videoPlayer(got.url);
+	const shown = ask("Full size", { content: h("div", { class: "full-view" }, player), confirm: "Close", cancel: false });
+	$("#dialog").dataset.mxc = mxc;
+	await shown;
+	player.pause();
+	delete $("#dialog").dataset.mxc;
+	URL.revokeObjectURL(got.url);
 }
 
 pages.federation = async (main, params) => {
