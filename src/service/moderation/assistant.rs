@@ -171,7 +171,8 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 		 #alias waits for the admin, since looking that alias up means asking that server; \
 		 use the room ID instead. A reply that mixes read-only commands with others runs \
 		 none of them. Every other command waits for the admin to \
-		 click Run. Never claim something changed unless a command's output says so. Use \
+		 click Run. Don't use tool or function calls of any kind, DSML included: a command block is the \
+		 only way a command runs. Never claim something changed unless a command's output says so. Use \
 		 only commands from the list below. Say plainly when a command deletes data or can't \
 		 be undone.\n\nPeople, rooms and events appear as placeholders like @user-3, \
 		 !room-1, #alias-2. Use them exactly as written, as complete IDs; they're turned back \
@@ -252,7 +253,65 @@ async fn ask(&self, key: &str, model: &str, system: &str, history: &[Turn]) -> R
 
 	let reply = venice::chat(self.client(), key, model, &system, &turns, Vec::new()).await?;
 
-	Ok(self.masks.lock().expect("locked").unmask(&reply))
+	let reply = self.masks.lock().expect("locked").unmask(&reply);
+
+	Ok(from_dsml(&reply))
+}
+
+/// A tag of DeepSeek's tool-call markup (DSML), with either bar it's
+/// written with: `<｜DSML｜name` or `</｜DSML｜name`.
+const DSML: &str = r"<\s*/?\s*[｜|]\s*DSML\s*[｜|]\s*";
+
+/// DeepSeek models were trained to call tools in their own markup, and
+/// write it even when told to use ```command blocks:
+///
+/// ```text
+/// <｜DSML｜function_calls>
+/// <｜DSML｜invoke name="run_command">
+/// <｜DSML｜parameter name="command" string="true">users list-users</｜DSML｜parameter>
+/// </｜DSML｜invoke>
+/// </｜DSML｜function_calls>
+/// ```
+///
+/// Each invoke becomes a ```command block, so the panel, the chat history
+/// and the read-only check all see one form. The command is the parameter
+/// named like one, else the only one there is; an invoke without one is
+/// dropped rather than guessed at.
+fn from_dsml(reply: &str) -> String {
+	static INVOKE: LazyLock<Regex> = LazyLock::new(|| {
+		Regex::new(&format!(r#"(?s){DSML}invoke\s+name\s*=\s*"[^"]*"\s*>(.*?){DSML}invoke\s*>"#))
+			.expect("valid regex")
+	});
+	static PARAM: LazyLock<Regex> = LazyLock::new(|| {
+		Regex::new(&format!(
+			r#"(?s){DSML}parameter\s+name\s*=\s*"([^"]*)"[^>]*>(.*?){DSML}parameter\s*>"#
+		))
+		.expect("valid regex")
+	});
+	static WRAPPER: LazyLock<Regex> = LazyLock::new(|| {
+		Regex::new(&format!(r"{DSML}(function_calls|tool_calls)\s*>")).expect("valid regex")
+	});
+
+	if !reply.contains("DSML") {
+		return reply.to_owned();
+	}
+
+	let replaced = INVOKE.replace_all(reply, |invoke: &regex::Captures<'_>| {
+		let params: Vec<(String, String)> = PARAM
+			.captures_iter(&invoke[1])
+			.map(|p| (p[1].to_lowercase(), p[2].trim().to_owned()))
+			.collect();
+		let command = params
+			.iter()
+			.find(|(name, _)| ["command", "cmd", "admin_command", "input", "query"].contains(&name.as_str()))
+			.or_else(|| (params.len() == 1).then(|| &params[0]))
+			.map(|(_, value)| value.lines().next().unwrap_or_default().trim().to_owned())
+			.filter(|command| !command.is_empty());
+
+		command.map_or_else(String::new, |command| format!("\n```command\n{command}\n```\n"))
+	});
+
+	WRAPPER.replace_all(&replaced, "").trim().to_owned()
 }
 
 #[implement(Service)]
@@ -494,6 +553,12 @@ mod tests {
 		let reply = "Let me look.\n```command\n!admin query room-timeline last !r:x\n```\nand\n```command\nusers deactivate @a:x\n```";
 		let proposed = proposed_commands(reply);
 		assert_eq!(proposed, ["query room-timeline last !r:x", "users deactivate @a:x"]);
+		let dsml = "Checking.\n<｜DSML｜function_calls>\n<｜DSML｜invoke name=\"run_command\">\n<｜DSML｜parameter name=\"command\" string=\"true\">users list-users</｜DSML｜parameter>\n</｜DSML｜invoke>\n<|DSML|invoke name=\"x\"><|DSML|parameter name=\"text\">rooms info !r:x</|DSML|parameter></|DSML|invoke>\n</｜DSML｜function_calls>";
+		let normal = super::from_dsml(dsml);
+		assert_eq!(proposed_commands(&normal), ["users list-users", "rooms info !r:x"]);
+		assert!(!normal.contains("DSML"));
+		assert_eq!(super::from_dsml("no markup"), "no markup");
+
 		let ro = |c: &str| is_read_only(c, "x");
 		assert!(ro(&proposed[0]));
 		assert!(!ro(&proposed[1]));
