@@ -405,3 +405,39 @@ pub(crate) async fn backlog_status_route(
 
 	Ok(Json(services.moderation.backlog_status()))
 }
+
+#[derive(Deserialize)]
+pub(crate) struct NoteBody {
+	#[serde(default)]
+	note: String,
+	/// The report the note was written about, so the note can say what it
+	/// covers.
+	#[serde(default)]
+	report: Option<u64>,
+	/// "add" (the default), "tidy" or "undo".
+	#[serde(default)]
+	action: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct NotesResponse {
+	guidance: String,
+}
+
+/// `POST /_anoncat/admin/v1/moderation/notes`: adds a note for the AI and
+/// has it merged in, tidies the notes, or undoes the last tidy.
+pub(crate) async fn notes_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	Json(body): Json<NoteBody>,
+) -> Result<Json<NotesResponse>> {
+	super::require_admin_token(&services, &headers).await?;
+	let moderation = &services.moderation;
+	let guidance = match body.action.as_str() {
+		| "tidy" => moderation.tidy_notes().await?,
+		| "undo" => moderation.undo_tidy()?,
+		| _ => moderation.add_note(&body.note, body.report).await?,
+	};
+
+	Ok(Json(NotesResponse { guidance }))
+}

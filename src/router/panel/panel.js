@@ -66,6 +66,17 @@ function ask(title, { text, pre, content, fields = [], confirm = "OK", danger = 
 			for (const [name, input] of Object.entries(inputs)) values[name] = input.type === "checkbox" ? input.checked : input.value;
 			resolve(values);
 		};
+		// Enter in a one-line field confirms, as the button would; without
+		// this the browser takes the first button (Cancel) and the note was
+		// lost. In a text box, Enter still makes a new line.
+		body.onkeydown = (e) => {
+			if (e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+			const t = e.target;
+			if (t.tagName !== "INPUT" || ["checkbox", "radio", "file", "button", "submit"].includes(t.type)) return;
+			e.preventDefault();
+			if (!body.reportValidity()) return;
+			dialog.close("ok");
+		};
 		dialog.returnValue = "";
 		dialog.showModal();
 	});
@@ -1017,14 +1028,13 @@ pages.blocklist = async (main) => {
 // Adds a line to the AI's guidance, from a report it got wrong.
 async function teachAi(r) {
 	const v = await ask("Note for the AI", {
-		text: `The AI said: "${r.reason}". Write how cases like this should be judged; it's added to the AI's notes in Settings, where you can change it later.`,
+		text: `The AI said: "${r.reason}". Write how cases like this should be judged. What this report was about goes with the note, so the AI can turn "that's fine" into a rule that says what is fine, and keep it to cases like this one. You can change it in Settings.`,
 		fields: [{ name: "note", label: "Note", required: true, placeholder: "e.g. Rooms that list what's banned aren't promoting it." }],
 		confirm: "Add note" });
 	const note = v?.note?.trim();
 	if (!note) return false;
-	const cur = await api("GET", `${MOD}/settings`);
-	const guidance = [cur.settings.guidance?.trim(), `- ${note.replace(/^[-\s]+/, "")}`].filter(Boolean).join("\n");
-	return Boolean(await attempt("Note added", () => api("PUT", `${MOD}/settings`, { guidance })));
+	toast("Adding the note; the AI is merging it with the others\u2026", 8000);
+	return Boolean(await attempt("Note added and merged with the others", () => api("POST", `${MOD}/notes`, { note, report: r.id })));
 }
 
 // Fingerprints of files that must never come in again. Swapping media adds
@@ -1159,7 +1169,17 @@ pages.reports = async (main, params) => {
 			if (r.hidden) buttons.push(h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide"));
 		}
 		let preview = null;
-		if (r.mxc) preview = h("div", {}, mediaThumb(r.mxc, null, { cls: "report-thumb", held: r.hidden }), mediaActions(r.mxc, { onChanged: refresh }));
+		// The file's own type comes first, so a video gets its frames and
+		// can be played here, like in Media.
+		if (r.mxc) {
+			preview = h("div", {}, h("div", { class: "report-thumb muted small" }, "\u2026"));
+			const [server, mediaId] = r.mxc.replace("mxc://", "").split("/");
+			api("GET", `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`)
+				.catch(() => null)
+				.then((info) => fill(preview,
+					mediaThumb(r.mxc, info?.media_type || null, { cls: "report-thumb", held: r.hidden }),
+					mediaActions(r.mxc, { info: info || undefined, onChanged: refresh })));
+		}
 		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}`, tabindex: "-1",
 			"data-group-sender": r.sender || "", "data-group-server": r.sender ? serverOf(r.sender) || r.sender : "", "data-group-room": r.room_name || r.room_id || "" },
 			h("div", { class: "report-head" },
@@ -1532,7 +1552,17 @@ pages.settings = async (main) => {
 			field("Text model", modelSelect("text_model", false)),
 			field("Image model", modelSelect("vision_model", true), "Venice runs the open models (Qwen, DeepSeek, GLM, Gemma, Llama, Venice) itself without keeping anything. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
 			field("Server rules, as the AI is told them", rules),
-			field("Notes on judging", guidance, "How to judge borderline cases, in your words. Added to every check, and the AI follows them over its own sense. \"Dismiss + note for the AI\" on a report adds a line here.")),
+			field("Notes on judging", guidance, "How to judge borderline cases, in your words. Added to every check, and the AI follows them over its own sense. \"Dismiss + note for the AI\" on a report adds a note here, and the AI merges it with the others so the list stays short."),
+			h("div", { class: "toolbar" },
+				h("button", { type: "button", class: "ghost small", onclick: async () => {
+					toast("Tidying the notes\u2026", 8000);
+					const r = await attempt("Notes tidied", () => api("POST", `${MOD}/notes`, { action: "tidy" }));
+					if (r) guidance.value = r.guidance;
+				} }, "Tidy notes with the AI"),
+				h("button", { type: "button", class: "ghost small", title: "Put back the notes from before the last tidy", onclick: async () => {
+					const r = await attempt("Earlier notes put back", () => api("POST", `${MOD}/notes`, { action: "undo" }));
+					if (r) guidance.value = r.guidance;
+				} }, "Undo last tidy"))),
 		trustedCard,
 		h("div", { class: "toolbar" }, h("button", { type: "submit" }, "Save settings")));
 
@@ -1684,7 +1714,10 @@ pages.assistant = async (main) => {
 		draw();
 	};
 	redrawChat = draw;
-	input.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); });
+	// Enter sends; Shift+Enter makes a new line.
+	input.addEventListener("keydown", (e) => {
+		if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+	});
 	fill(main, 
 		h("h1", {}, "Assistant"),
 		h("p", { class: "muted" }, "Chats with Venice AI. It sees a snapshot of the server's state each time you send, with people and rooms replaced by placeholders. Commands that only look things up it runs by itself and reads their output; anything that changes something only runs when you click Run and confirm. Ctrl+Enter sends."),

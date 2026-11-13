@@ -21,6 +21,7 @@ mod assistant;
 mod backlog;
 mod badfiles;
 mod blocklist;
+mod notes;
 mod stand_in;
 mod room_check;
 mod reachable;
@@ -186,6 +187,9 @@ pub struct Settings {
 	/// The admin's own notes on judging, added to every check: how to read
 	/// borderline cases the AI got wrong.
 	pub guidance: String,
+	/// The notes as they were before the AI last tidied them, so a tidy
+	/// that lost something can be undone.
+	pub guidance_previous: String,
 	/// Rooms whose name, topic and description the admin judged fine; they
 	/// aren't checked as a whole again. Their messages still are.
 	pub trusted_rooms: Vec<OwnedRoomId>,
@@ -223,6 +227,7 @@ impl Default for Settings {
 			vision_model: "auto".into(),
 			rules: DEFAULT_RULES.into(),
 			guidance: DEFAULT_GUIDANCE.into(),
+			guidance_previous: String::new(),
 			trusted_rooms: Vec::new(),
 			batch_minutes: 2,
 			cat_stand_in: true,
@@ -259,7 +264,11 @@ fn guidance_block(settings: &Settings) -> String {
 	}
 
 	format!(
-		"\n\nThe admin's own notes on judging. Follow them over your own sense of a case:\n{guidance}"
+		"\n\nThe admin's own notes on judging. Each note is about the kind of case it describes: \
+		 follow it over your own sense when a case clearly matches that description, and \
+		 don't stretch it to cases it doesn't describe. A note that something isn't sexual or \
+		 isn't harmful covers only what it names. No note makes sexual content involving a \
+		 minor acceptable.\n{guidance}"
 	)
 }
 
