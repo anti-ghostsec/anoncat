@@ -460,6 +460,14 @@
 #
 #max_request_size = "24 MiB"
 
+# Max size of a file upload, when it should be bigger than
+# `max_request_size`. Only an upload that carries a valid access token
+# gets it, checked before the body is read, so nobody without an account
+# can make the server hold more than `max_request_size` per request.
+# 0 means the same as `max_request_size`.
+#
+#max_upload_size = 0
+
 # Maximum size of a response body buffered from a remote server. Applies
 # to federation requests, push gateway and appservice transactions, and
 # remote media fetched for URL previews. A peer cannot be trusted to honor
@@ -2747,6 +2755,14 @@
 # reloadable: yes
 #
 #media_video_thumbnail_max_size = "128 MiB"
+
+# Program that does the panel's video work (frames from across a video,
+# a copy any browser can play) instead of ffmpeg running in the server
+# itself: `<program> sheet|playable <file>`, output on stdout. anoncat's
+# is `/usr/local/lib/anoncat/anoncat-video`, which hands the job to a
+# sandboxed worker. Empty runs ffmpeg here.
+#
+#media_video_worker = ""
 
 # Directory a video is staged in for the thumbnail program to read, one
 # file per running program, removed as soon as it exits. Leave unset to
