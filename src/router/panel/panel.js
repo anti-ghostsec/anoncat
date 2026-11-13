@@ -383,15 +383,36 @@ pages.rooms = async (main, params) => {
 
 	fill(main, 
 		h("h1", {}, "Rooms"),
-		h("div", { class: "toolbar" }, h("input", { placeholder: "Search rooms", value: q, onkeydown: (e) => e.key === "Enter" && go({ q: e.target.value, from: 0 }) })),
+		h("div", { class: "toolbar" }, h("input", { placeholder: "Search rooms", value: q, onkeydown: (e) => e.key === "Enter" && go({ q: e.target.value, from: 0 }) }),
+			h("span", { class: "muted small" }, "\u201cList publicly\u201d puts a room on this server's public list. For a room not shown here, paste its #address or !ID into Look up.")),
 		table(["Room", "Members", "", ""], rows, "No rooms match."),
 		pager(from, res.total_rooms, (f) => go({ from: f })));
 };
+
+// Puts a room on this server's public room list, or takes it off, whoever
+// made it. Only this server's list changes; the room's own settings and
+// other servers' lists stay as they are.
+function listButton(roomId, listed, name, refresh) {
+	return h("button", { class: "ghost small", title: listed ? "Take it off this server's public room list" : "Show it in this server's public room list, without its creator doing anything", onclick: async () => {
+		if (!listed) {
+			const ok = await ask(`List ${name || roomId} publicly?`, {
+				text: "Anyone browsing this server's public rooms will see it and can ask to join. Only this server's list changes; whether people can actually join still depends on the room's own settings.",
+				confirm: "List it" });
+			if (!ok) return;
+		}
+		const r = await attempt(null, () => command(`rooms directory ${listed ? "unpublish" : "publish"} ${roomId}`));
+		if (!r) return;
+		if (!r.ok) return toast(`Couldn't change the listing: ${r.output.replace(/<[^>]*>/g, "").trim()}`);
+		toast(listed ? "Taken off the public list" : "Listed publicly");
+		refresh?.();
+	} }, listed ? "Unlist" : "List publicly");
+}
 
 function roomActions(r, refresh) {
 	const id = enc(r.room_id);
 	return [
 		h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: r.room_id }, r.name || r.canonical_alias || "Room") }, "Look"),
+		listButton(r.room_id, r.public, r.name || r.canonical_alias, refresh),
 		h("button", { class: "ghost small", onclick: () => navigate("media", { room: r.room_id }) }, "Media"),
 		h("button", { class: "ghost small", onclick: async () => {
 			const v = await ask(`Delete history in ${r.name || r.room_id}`, {
@@ -2123,6 +2144,7 @@ function lookupCard(item, blocked) {
 						details ? h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: roomId }, details.name || roomId) }, "Look at room") : null,
 						details && item.event ? h("button", { class: "small", onclick: () => lookAt({ kind: "message", room_id: roomId, event_id: item.event }, "Linked message") }, "Look at message") : null,
 						details ? h("button", { class: "ghost small", onclick: () => navigate("media", { room: roomId }) }, "Media in it") : null,
+						details ? listButton(roomId, details.public, details.name, () => render()) : null,
 						h("button", { class: "ghost small", onclick: () => copyText(roomId) }, "Copy room ID"),
 						h("button", { class: "danger small", onclick: () => blockRoom(roomId, details?.name) }, "Block room")));
 			} else if (item.kind === "server") {
