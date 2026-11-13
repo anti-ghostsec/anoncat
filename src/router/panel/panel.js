@@ -1826,9 +1826,10 @@ pages.assistant = async (main) => {
 		if (text) chat.push({ role: "user", content: text });
 		draw();
 		log.append(h("p", { class: "muted small" }, "Thinking and looking things up…"));
-		const messages = chat.map(({ role, content }) => ({ role, content }));
-		const r = await attempt(null, () => api("POST", `${MOD}/assistant`, { messages }));
-		if (!r) chat.push({ role: "assistant", content: "(no answer)" });
+		const messages = chat.filter((t) => !t.failed).map(({ role, content }) => ({ role, content }));
+		let r = null;
+		try { r = await api("POST", `${MOD}/assistant`, { messages }); }
+		catch (e) { chat.push({ role: "assistant", failed: true, content: `(no answer: ${e.message})` }); }
 		for (const t of r ? r.turns : []) chat.push(t.command
 			? { role: "user", shared: true, auto: true, command: t.command, output: t.output, content: t.content }
 			: { role: t.role, content: t.content, ran: t.ran });

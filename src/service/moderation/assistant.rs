@@ -116,7 +116,7 @@ impl Masks {
 				| b'!' => "!room",
 				| b'#' => "#alias",
 				| b'$' => "$event",
-				| b'm' => "+media",
+				| b'm' => "mxc://media",
 				| _ => "+group",
 			};
 			let mask = format!("{kind}-{}", self.to.len().saturating_add(1));
@@ -129,13 +129,25 @@ impl Masks {
 
 	fn unmask(&self, text: &str) -> String {
 		static MASKS: LazyLock<Regex> = LazyLock::new(|| {
-			Regex::new(r"[@!#$+](?:user|room|alias|event|group|media)-[0-9]+\b").expect("valid regex")
+			Regex::new(r"[@!#$+](?:user|room|alias|event|group)-[0-9]+\b").expect("valid regex")
+		});
+		// Media is written as mxc://media-7, but models drop the scheme, add
+		// a second one, or use the old +media-7: any of them is that file.
+		static MEDIA: LazyLock<Regex> = LazyLock::new(|| {
+			Regex::new(r"(?:mxc://)*\+?\bmedia-([0-9]+)\b").expect("valid regex")
 		});
 
-		MASKS
-			.replace_all(text, |c: &regex::Captures<'_>| {
+		let text = MASKS.replace_all(text, |c: &regex::Captures<'_>| {
+			self.from
+				.get(&c[0])
+				.cloned()
+				.unwrap_or_else(|| c[0].to_owned())
+		});
+
+		MEDIA
+			.replace_all(&text, |c: &regex::Captures<'_>| {
 				self.from
-					.get(&c[0])
+					.get(&format!("mxc://media-{}", &c[1]))
 					.cloned()
 					.unwrap_or_else(|| c[0].to_owned())
 			})
@@ -175,8 +187,13 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 		 only way a command runs. Never claim something changed unless a command's output says so. Use \
 		 only commands from the list below. Say plainly when a command deletes data or can't \
 		 be undone.\n\nPeople, rooms and events appear as placeholders like @user-3, \
-		 !room-1, #alias-2. Use them exactly as written, as complete IDs; they're turned back \
-		 into the real ones before anything runs.\n\n# Server now\n{snapshot}\n# Read-only \
+		 !room-1, #alias-2, and files as mxc://media-4. Use them exactly as written, as \
+		 complete IDs; they're turned back into the real ones before anything runs.\n\nWho \
+		 sent something is known only from a report's sender or an event's sender in command \
+		 output that shows that very event. Never work it out from timing, from which server \
+		 a file is on, or from who spoke last: name nobody, and say it can't be told. In an \
+		 encrypted room the server can't read which file a message carries. A file on another \
+		 server was uploaded by someone there, not necessarily by anyone in the room.\n\n# Server now\n{snapshot}\n# Read-only \
 		 commands\n{read_only}\n\n# Admin commands\n{commands}"
 	);
 
@@ -468,14 +485,16 @@ async fn snapshot(&self) -> Result<String> {
 	for r in &reports {
 		writeln!(
 			out,
-			"  - report {} ({}): {} {} by {} in {}, {}, suggests {}{}: {}",
+			"  - report {} ({}): {} {} by {} in {}, event {}, {}{}, suggests {}{}: {}",
 			r.id,
 			r.source,
 			r.severity,
 			r.category,
 			r.sender,
 			r.room_id,
+			r.event_id,
 			r.kind,
+			r.mxc.as_deref().map(|m| format!(" {m}")).unwrap_or_default(),
 			r.suggested,
 			if r.hidden { ", media hidden" } else { "" },
 			r.reason
@@ -584,5 +603,18 @@ mod tests {
 			masks.unmask("```command\nusers deactivate @user-1\n``` and @user-99"),
 			"```command\nusers deactivate @bob:anoncat.gleeze.com\n``` and @user-99"
 		);
+	}
+
+	#[test]
+	fn media_placeholders_turn_back_however_written() {
+		let mut masks = Masks::default();
+		assert_eq!(masks.mask("who sent mxc://xmr.example/AbC_d-9"), "who sent mxc://media-1");
+		for written in ["mxc://media-1", "media-1", "+media-1", "mxc://mxc://media-1", "mxc://+media-1"] {
+			assert_eq!(
+				masks.unmask(&format!("media get-file-info {written}")),
+				"media get-file-info mxc://xmr.example/AbC_d-9",
+				"{written}"
+			);
+		}
 	}
 }
