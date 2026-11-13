@@ -374,3 +374,34 @@ pub(crate) async fn unblock_route(
 	let admin = super::require_admin_token(&services, &headers).await?;
 	Ok(Json(services.moderation.unblock(&target, &admin).await?))
 }
+
+#[derive(Deserialize)]
+pub(crate) struct BacklogBody {
+	#[serde(default)]
+	server: Option<String>,
+}
+
+/// `POST /_anoncat/admin/v1/moderation/backlog`: has the AI check media
+/// already stored from other servers (one server's, or all).
+pub(crate) async fn backlog_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	Json(body): Json<BacklogBody>,
+) -> Result<Json<tuwunel_service::moderation::BadScan>> {
+	super::require_admin_token(&services, &headers).await?;
+	services
+		.moderation
+		.start_backlog(body.server.filter(|s| !s.is_empty()))?;
+
+	Ok(Json(services.moderation.backlog_status()))
+}
+
+/// `GET /_anoncat/admin/v1/moderation/backlog`: how far that check got.
+pub(crate) async fn backlog_status_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+) -> Result<Json<tuwunel_service::moderation::BadScan>> {
+	super::require_admin_token(&services, &headers).await?;
+
+	Ok(Json(services.moderation.backlog_status()))
+}

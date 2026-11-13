@@ -40,6 +40,7 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/media/stand-in", put(a::cached_media::put_stand_in_route).merge(delete(a::cached_media::delete_stand_in_route)))
 		.route("/_anoncat/admin/v1/media/stand-in/{name}", get(a::cached_media::stand_in_route))
 		.route("/_anoncat/admin/v1/media/cached/purge", post(a::cached_media::purge_route))
+		.route("/_anoncat/admin/v1/moderation/backlog", post(m::backlog_route).merge(get(m::backlog_status_route)))
 		.route("/_anoncat/admin/v1/badfiles", get(a::badfiles::list_route))
 		.route("/_anoncat/admin/v1/badfiles/export", get(a::badfiles::export_route))
 		.route("/_anoncat/admin/v1/badfiles/import", post(a::badfiles::import_route))

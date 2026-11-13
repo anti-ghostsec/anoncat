@@ -453,6 +453,23 @@ pages.media = async (main, params) => {
 		list);
 }
 
+// Takes a file off the screen everywhere it's shown, the moment it's
+// swapped, hidden or deleted: its previews (and anything playing) become a
+// plain label, and a full-size view of it closes. Nothing bad stays in front
+// of you until the next reload.
+function blankMedia(mxc, label) {
+	for (const el of document.querySelectorAll(".media-thumb[data-mxc]")) {
+		if (el.dataset.mxc !== mxc) continue;
+		for (const m of el.querySelectorAll("video, audio")) { m.pause(); m.removeAttribute("src"); m.load(); }
+		el.classList.remove("revealed", "playing");
+		el.classList.add("gone");
+		el.replaceChildren(h("span", { class: "thumb-label" }, label));
+		el._load = null;
+	}
+	const dialog = $("#dialog");
+	if (dialog.open && dialog.dataset.mxc === mxc) dialog.close();
+}
+
 // Ticking several files and acting on them at once, and filters for the
 // grid. Swapping deletes each file for good and serves the stand-in; deleting
 // a copy from another server only frees the space here.
@@ -480,7 +497,7 @@ function bulkBar(grid, { remote, onDone }) {
 			for (let el = queue.shift(); el; el = queue.shift()) {
 				const [server, mediaId] = el.dataset.mxc.replace("mxc://", "").split("/");
 				const path = `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`;
-				try { await fn(path); done++; } catch { failed++; }
+				try { await fn(path); done++; blankMedia(el.dataset.mxc, label === "Swap" ? "Swapped for the stand-in" : "Deleted"); } catch { failed++; }
 				count.textContent = `${done + failed} of ${chosen.length}\u2026`;
 			}
 		};
@@ -506,8 +523,18 @@ function bulkBar(grid, { remote, onDone }) {
 		for (const el of shown) { el.querySelector(".pick").checked = on; el.classList.toggle("picked", on); }
 		update();
 	} }, "Select all shown");
+	// Bigger previews, remembered on this browser.
+	const BIG = "anoncat-big-previews";
+	const big = (() => { try { return localStorage.getItem(BIG) === "1"; } catch { return false; } })();
+	grid.classList.toggle("large", big);
+	const size = h("button", { type: "button", class: "ghost small", onclick: () => {
+		const on = !grid.classList.contains("large");
+		grid.classList.toggle("large", on);
+		size.textContent = on ? "Smaller previews" : "Bigger previews";
+		try { localStorage.setItem(BIG, on ? "1" : "0"); } catch {}
+	} }, big ? "Smaller previews" : "Bigger previews");
 	update();
-	return h("div", { class: "toolbar bulk" }, filter, all, count, ...buttons);
+	return h("div", { class: "toolbar bulk" }, filter, all, count, ...buttons, size);
 }
 
 function mediaTabs(current) {
@@ -608,6 +635,26 @@ async function remoteMedia(main, params) {
 		: h("p", { class: "muted" }, only ? "Nothing cached from this server." : "Nothing cached from other servers.");
 	const bulk = res.media.length ? bulkBar(grid, { remote: true, onDone: reload }) : null;
 
+	// The AI's pass over what's already stored: this server's, or everyone's.
+	const aiLine = h("span", { class: "muted small" });
+	const aiButton = h("button", { class: "small", type: "button", onclick: thenAsk(async () => {
+		const what = only ? `everything stored from ${only}` : "everything stored from other servers";
+		if (!(await ask("Have the AI check these?", {
+			text: `Each picture and video in ${what} is checked once, one at a time, in the background: pictures as a whole and in parts, videos by six frames. What it flags goes to Reports. Swapped, hidden and blocked servers' media is skipped. Each one is a Venice call.`,
+			confirm: "Start" }))) return;
+		const r = await attempt("Started; flagged ones go to Reports", () => api("POST", `${MOD}/backlog`, { server: only }));
+		if (r) pollAi();
+	}) }, only ? `AI check everything from ${only}` : "AI check everything stored");
+	const pollAi = async () => {
+		const st = await api("GET", `${MOD}/backlog`).catch(() => null);
+		if (!st || !aiLine.isConnected) return;
+		aiButton.disabled = st.running;
+		aiLine.textContent = st.running ? `Checking: ${st.checked} of ${st.total}, ${st.found} flagged so far.`
+			: st.finished_ts ? `Last check ${date(st.finished_ts)}: ${st.checked} checked, ${st.found} flagged.` : "";
+		if (st.running) setTimeout(pollAi, 4000);
+	};
+	pollAi();
+
 	fill(main,
 		h("h1", {}, only ? `Media from ${only}` : "Media from other servers"),
 		mediaTabs("remote"),
@@ -617,7 +664,9 @@ async function remoteMedia(main, params) {
 			res.cat_stand_in
 				? "Hidden media and media from blocked servers show up for people here as the stand-in picture chosen in Settings."
 				: "Stand-in pictures are off in Settings, so hidden and blocked media shows as a broken image."),
-		only ? h("div", { class: "toolbar" }, h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote" }) }, "All servers")) : null,
+		h("div", { class: "toolbar" },
+			only ? h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote" }) }, "All servers") : null,
+			aiButton, aiLine),
 		only ? null : h("h2", {}, "By server"),
 		only || res.servers.length < 2 ? null : h("div", { class: "toolbar" }, h("input", { type: "search", placeholder: "Search servers, e.g. cloud", "aria-label": "Search servers",
 			oninput: (e) => {
@@ -673,16 +722,20 @@ const RASTER = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "i
 // A blurred preview of any media: a small still (a frame, for a video),
 // fetched once it scrolls into view and only a few at a time, so long lists
 // stay quick. Videos and audio play in place.
-function mediaThumb(mxc, type, { still = mxc, cls = "" } = {}) {
+function mediaThumb(mxc, type, { still = mxc, cls = "", held = false } = {}) {
 	const kind = !type || RASTER.has(type) ? "image"
 		: type.startsWith("video/") ? "video"
 		: type.startsWith("audio/") ? "audio" : "file";
 	const label = h("span", { class: "thumb-label" }, { image: type || "media", video: "video", audio: "audio" }[kind] || type);
-	const el = h("div", { class: `media-thumb ${kind}${cls ? ` ${cls}` : ""}`, title: "Click to reveal" }, label);
+	const el = h("div", { class: `media-thumb ${kind}${cls ? ` ${cls}` : ""}`, title: "Click to reveal", "data-mxc": mxc }, label);
 	el.addEventListener("click", (e) => {
 		if (!e.target.closest("video, audio, .play")) el.classList.toggle("revealed");
 	});
-	if (kind === "image" || kind === "video" || still !== mxc) whenSeen(el, () => loadPreview(el, still));
+	// Hidden media isn't loaded until asked for: it was hidden for a reason.
+	if (held) {
+		label.textContent = "Hidden \u2014 click to load the preview";
+		el.addEventListener("click", () => { if (!el.querySelector("img")) loadPreview(el, still); }, { once: true });
+	} else if (kind === "image" || kind === "video" || still !== mxc) whenSeen(el, () => loadPreview(el, still));
 	if (kind === "video" || kind === "audio") {
 		el.append(h("button", { class: "play", type: "button", title: `Play the ${kind} here`, "aria-label": `Play the ${kind}`,
 			onclick: () => playInline(el, mxc, kind) }, "\u25B6"));
@@ -773,7 +826,10 @@ async function openFull(mxc) {
 	const blob = await res.blob();
 	if (!RASTER.has(blob.type)) return toast("Not a picture the panel can show.");
 	const url = URL.createObjectURL(blob);
-	await ask("Full size", { content: h("div", { class: "full-view" }, h("img", { src: url, alt: "" })), confirm: "Close", cancel: false });
+	const shown = ask("Full size", { content: h("div", { class: "full-view" }, h("img", { src: url, alt: "" })), confirm: "Close", cancel: false });
+	$("#dialog").dataset.mxc = mxc;
+	await shown;
+	delete $("#dialog").dataset.mxc;
 	URL.revokeObjectURL(url);
 }
 
@@ -1057,7 +1113,10 @@ pages.reports = async (main, params) => {
 	const refresh = () => render();
 	const sevTag = (s) => h("span", { class: `tag ${s === "high" ? "bad" : s === "medium" ? "warn" : ""}` }, s);
 	const items = res.reports.map((r) => {
-		const act = (action, done) => attempt(done, () => api("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => x && refresh());
+		const act = (action, done) => attempt(done, () => api("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => {
+			if (x && action === "hide" && r.mxc) blankMedia(r.mxc, "Hidden");
+			return x && refresh();
+		});
 		// A picture checked as it arrived, uploaded or fetched, has no room or
 		// message; its sender is the uploader, or the server it came from.
 		const roomless = !r.room_id;
@@ -1100,7 +1159,7 @@ pages.reports = async (main, params) => {
 			if (r.hidden) buttons.push(h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide"));
 		}
 		let preview = null;
-		if (r.mxc) preview = h("div", {}, mediaThumb(r.mxc, null, { cls: "report-thumb" }), mediaActions(r.mxc, { onChanged: refresh }));
+		if (r.mxc) preview = h("div", {}, mediaThumb(r.mxc, null, { cls: "report-thumb", held: r.hidden }), mediaActions(r.mxc, { onChanged: refresh }));
 		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}`, tabindex: "-1",
 			"data-group-sender": r.sender || "", "data-group-server": r.sender ? serverOf(r.sender) || r.sender : "", "data-group-room": r.room_name || r.room_id || "" },
 			h("div", { class: "report-head" },
@@ -1285,6 +1344,7 @@ function mediaActions(mxc, { info, compact = false, onDeleted, onChanged } = {})
 			if (!(await ask("Swap it for the stand-in?", { text, confirm: "Swap and delete", danger: true }))) return;
 			const done = await attempt("Swapped; the file is deleted", () => api("POST", `${path}/hide`));
 			if (!done) return;
+			blankMedia(mxc, "Swapped for the stand-in");
 			Object.assign(i, { hidden: true, swapped: true, stored: false });
 			draw(i);
 			onChanged?.();
@@ -1307,7 +1367,7 @@ function mediaActions(mxc, { info, compact = false, onDeleted, onChanged } = {})
 					? `${mxc}\nUploaded here${i.uploader ? ` by ${i.uploader}` : ""}. It's gone for good, for everyone, including other servers that ask for it.`
 					: `${mxc}\nOnly this server's copy goes. It's fetched again if someone here opens it, unless it's swapped or its server is blocked. To get rid of it for good, swap it instead.`;
 				if (!(await ask("Delete this media?", { text, confirm: "Delete", danger: true }))) return;
-				if (await attempt("Deleted", () => api("DELETE", path))) { i.stored = false; draw(i); onDeleted?.(); }
+				if (await attempt("Deleted", () => api("DELETE", path))) { blankMedia(mxc, "Deleted"); i.stored = false; draw(i); onDeleted?.(); }
 			}) }, "Delete") : null,
 			!i.local && !i.server_blocked ? h("button", { class: cls, type: "button", onclick: thenAsk(async () => {
 				if (await blockTarget(server)) { i.server_blocked = true; draw(i); onChanged?.(); }

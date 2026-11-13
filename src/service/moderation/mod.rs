@@ -18,6 +18,7 @@
 //! watched from then on.
 
 mod assistant;
+mod backlog;
 mod badfiles;
 mod blocklist;
 mod stand_in;
@@ -135,6 +136,8 @@ pub struct Service {
 	/// Fingerprints of known bad files.
 	bad_files: badfiles::State,
 	bad_scan: badfiles::ScanState,
+	/// Progress of the AI's pass over media already stored.
+	backlog: badfiles::ScanState,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -337,6 +340,7 @@ impl crate::Service for Service {
 			reachable: reachable::State::default(),
 			bad_files: badfiles::State::default(),
 			bad_scan: badfiles::ScanState::default(),
+			backlog: badfiles::ScanState::default(),
 		}))
 	}
 
@@ -650,7 +654,7 @@ struct Message {
 	body: String,
 }
 
-struct Image {
+pub(super) struct Image {
 	/// The message that posted it; none for an upload checked on its own.
 	item: Option<Item>,
 	/// Who it came from: the uploader here, or the server it was fetched
@@ -911,9 +915,12 @@ fn check_arrival(
 	size: usize,
 ) {
 	let settings = self.settings();
+	// Videos are judged by frames taken from them, so their own size isn't
+	// the limit; the frame-taking has its own.
+	let video = mime.is_some_and(|m| m.starts_with("video/"));
 	if !settings.enabled
 		|| !settings.check_images
-		|| u64::try_from(size).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES
+		|| (!video && u64::try_from(size).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES)
 		|| self.checked_upload(mxc)
 	{
 		return;
@@ -1012,7 +1019,33 @@ async fn image_verdict(
 	fallback: bool,
 ) -> Result<Option<Value>> {
 	let mxc: Mxc<'_> = mxc_str.try_into()?;
-	let media = self.services.media.get_stored(&mxc).await?;
+	// Media from another server may be stored only as the thumbnails people
+	// here were shown; then the biggest of those is what's judged.
+	let mut media = match self.services.media.get_stored(&mxc).await {
+		| Ok(media) => media,
+		// Boxed: the thumbnail path is deep, and this sits inside the
+		// moderation worker's own future.
+		| Err(_) => Box::pin(self.services.media.get_stored_thumbnail(
+			&mxc,
+			&crate::media::Dim::new(800, 600, Some(ruma::media::Method::Scale)),
+			crate::media::Animate::Never,
+		))
+		.await?,
+	};
+
+	// A video is judged by six frames from across it, tiled into one
+	// picture: the same view the admin's preview gives.
+	let is_video = media
+		.content_type
+		.as_deref()
+		.is_some_and(|t| t.starts_with("video/"));
+	if is_video {
+		let Ok(sheet) = self.services.media.video_sheet(&media.content).await else {
+			return Ok(None);
+		};
+		media.content = sheet;
+	}
+
 	if u64::try_from(media.content.len()).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES {
 		return Ok(None);
 	}
@@ -1059,6 +1092,14 @@ async fn image_verdict(
 		| None => (vec![Part::Image { mime: mime.to_owned(), data: content }], "Check this image.".into()),
 	};
 
+	let note = if is_video {
+		"This picture is six frames taken from across one video, tiled three by two. Judge \
+		 the video as a whole; if any frame breaks the rules, the video does."
+			.to_owned()
+	} else {
+		note
+	};
+
 	let model = self.model(&settings.vision_model, true).await?;
 	let system = format!(
 		"You check images posted in the public rooms of a chat server. Its rules:\n{rules}\n\n\
@@ -1081,17 +1122,17 @@ async fn image_verdict(
 }
 
 #[implement(Service)]
-async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Result {
+async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Result<bool> {
 	let Some(answer) = self
 		.image_verdict(settings, key, &image.mxc, &image.mime, image.item.is_some())
 		.await?
 	else {
-		return Ok(());
+		return Ok(false);
 	};
 
 	let verdict = answer["verdict"].as_str().unwrap_or("ok");
 	if verdict == "ok" {
-		return Ok(());
+		return Ok(false);
 	}
 
 	let bad = verdict == "bad";
@@ -1128,7 +1169,7 @@ async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Re
 			.await;
 	}
 
-	Ok(())
+	Ok(true)
 }
 
 #[implement(Service)]
