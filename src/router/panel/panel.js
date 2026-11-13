@@ -651,7 +651,7 @@ async function loadPreview(el, mxc) {
 		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?thumb=1`, authed());
 		if (!res.ok) return null;
 		const num = (name) => Number(res.headers.get(name)) || 0;
-		return { blob: await res.blob(), width: num("x-anoncat-width"), height: num("x-anoncat-height"), frames: num("x-anoncat-frames") };
+		return { blob: await res.blob(), width: num("x-anoncat-width"), height: num("x-anoncat-height"), frames: num("x-anoncat-frames"), sheet: res.headers.get("x-anoncat-sheet") === "1" };
 	});
 	if (!got) {
 		const label = el.querySelector(".thumb-label");
@@ -663,6 +663,7 @@ async function loadPreview(el, mxc) {
 	if (!RASTER.has(got.blob.type) || !el.isConnected) return;
 	const url = URL.createObjectURL(got.blob);
 	el.querySelector(".thumb-label")?.replaceWith(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
+	if (got.sheet) el.append(h("span", { class: "thumb-badge", title: "Six frames from across the whole video, taken from the file itself. Play it to see all of it." }, "frames from across it"));
 	if (got.width && got.height) {
 		const long = Math.max(got.width, got.height) >= 2 * Math.min(got.width, got.height);
 		const badges = [`${got.width}\u00D7${got.height}`];
@@ -889,12 +890,16 @@ pages.reports = async (main, params) => {
 	const sevTag = (s) => h("span", { class: `tag ${s === "high" ? "bad" : s === "medium" ? "warn" : ""}` }, s);
 	const items = res.reports.map((r) => {
 		const act = (action, done) => attempt(done, () => api("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => x && refresh());
-		const buttons = [h("button", { class: "small", onclick: () => lookAt(r) }, r.kind === "room" ? "Look at room" : "Look at message")];
+		// A picture checked as it arrived, uploaded or fetched, has no room or
+		// message; its sender is the uploader, or the server it came from.
+		const roomless = !r.room_id;
+		const fromServer = roomless && r.sender && !r.sender.startsWith("@");
+		const buttons = roomless ? [] : [h("button", { class: "small", onclick: () => lookAt(r) }, r.kind === "room" ? "Look at room" : "Look at message")];
 		if (r.status === "open") {
 			if (r.mxc) buttons.push(r.hidden
 				? h("button", { class: "ghost small", onclick: () => act("unhide", "Shown again") }, "Unhide")
 				: h("button", { class: r.suggested === "hide" ? "small" : "ghost small", onclick: () => act("hide", "Hidden") }, "Hide media"));
-			if (r.kind !== "large_file" && r.kind !== "room") buttons.push(h("button", { class: r.suggested === "redact" ? "danger small" : "ghost small", onclick: async () => {
+			if (!roomless && r.kind !== "large_file" && r.kind !== "room") buttons.push(h("button", { class: r.suggested === "redact" ? "danger small" : "ghost small", onclick: async () => {
 				if (!(await ask("Remove this message?", { text: "Redacts it as you. Needs you to be in the room with the power to remove messages. Other servers drop their copies too.", confirm: "Remove", danger: true }))) return;
 				const ok = await attempt("Removed", () => api("PUT", `/_matrix/client/v3/rooms/${enc(r.room_id)}/redact/${enc(r.event_id)}/${Date.now()}`, { reason: "Moderation" }));
 				if (ok) await act("resolve", null);
@@ -903,6 +908,10 @@ pages.reports = async (main, params) => {
 				buttons.push(h("button", { class: "danger small", onclick: async () => {
 					if (await blockRoom(r.room_id, r.room_name)) await act("resolve", null);
 				} }, "Block room"));
+			} else if (fromServer) {
+				buttons.push(h("button", { class: "danger small", onclick: async () => {
+					if (await blockTarget(r.sender, { reason: r.category || "" })) refresh();
+				} }, `Block ${r.sender}`));
 			} else if (r.sender) {
 				buttons.push(h("button", { class: "danger small", onclick: async () => {
 					if (await blockTarget(r.sender, { reason: r.category || "" })) refresh();
@@ -936,6 +945,7 @@ pages.reports = async (main, params) => {
 			r.excerpt ? h("pre", { class: "notice-body excerpt" }, r.excerpt) : null,
 			h("div", { class: "small muted" }, r.kind === "room"
 				? `${r.room_id}${r.sender ? `, joined by ${r.sender}` : ""}`
+				: roomless ? `${r.room_name || "Checked as it arrived"}: ${fromServer ? "from" : "by"} ${r.sender}`
 				: `${r.sender} in ${r.room_name || r.room_id}`),
 			h("div", { class: "toolbar" }, buttons));
 	});
@@ -1224,6 +1234,7 @@ pages.settings = async (main) => {
 			check("check_messages", "Messages"),
 			check("check_images", "Images (up to 8 MiB)", "Long pictures are also checked in parts, and animated ones frame by frame, so nothing hides past the first glance."),
 			check("check_uploads", "Also check every picture uploaded here", "Not only ones posted in watched rooms: a picture sent in an encrypted room, or only shared as a link, is otherwise never checked. Each one goes to Venice the same way as images in public rooms. Encrypted attachments can't be read and are skipped."),
+			check("check_remote", "Also check every picture fetched from other servers", "Each picture someone here opens from another server is checked once, as it arrives, wherever it was posted. This is what covers the hundreds of servers you can't go through by hand. Only full pictures are fetched this way; small previews and profile pictures usually come as thumbnails and aren't. Costs one AI check per picture."),
 			field("Report files at least this big (MiB, 0 = off)", large, "Large files get a report for you to look at, without the AI."),
 			field("Check new messages every (minutes)", batch, "Messages are checked together, which is cheaper. 40 waiting messages are checked at once.")),
 		h("section", { class: "card" },
@@ -1253,6 +1264,7 @@ pages.settings = async (main) => {
 			check_messages: f.has("check_messages"),
 			check_images: f.has("check_images"),
 			check_uploads: f.has("check_uploads"),
+			check_remote: f.has("check_remote"),
 			check_rooms: f.has("check_rooms"),
 			media_mode: f.get("media_mode") || "suggest",
 			extra_rooms: [...watched, ...String(f.get("extra_rooms_add") || "").split(/\s+/).filter(Boolean)],

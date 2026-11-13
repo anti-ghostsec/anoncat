@@ -9,12 +9,11 @@ use axum::{
 	http::{HeaderMap, HeaderValue, Uri, header},
 	response::{IntoResponse, Response},
 };
-use ruma::{Mxc, media::Method};
+use ruma::Mxc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tuwunel_core::{Err, Result};
 use tuwunel_service::{
-	media::{Animate, Dim},
 	moderation::{Blocked, Model, Report, Said, Settings, Turn},
 };
 
@@ -208,7 +207,17 @@ pub(crate) async fn media_route(
 	// thumbnail may be another server's, and could show an innocent crop of
 	// something that isn't. Its size and frame count go along, so the panel
 	// can say when it's long or animated.
-	let original = services.media.get_stored(&mxc).await?;
+	// A swapped item's file is gone; the admin sees what everyone else now
+	// does in its place.
+	let original = if services.media.is_swapped(&mxc) {
+		let choice = services
+			.moderation
+			.stand_in_image()
+			.unwrap_or_else(|| "orange".into());
+		services.media.stand_in_picture(&choice)
+	} else {
+		services.media.get_stored(&mxc).await?
+	};
 	let is_picture = original
 		.content_type
 		.as_deref()
@@ -234,15 +243,29 @@ pub(crate) async fn media_route(
 		return Ok(response);
 	}
 
-	let media = if thumb {
-		let dim = Dim::new(320, 240, Some(Method::Scale));
-		services
-			.media
-			.get_stored_thumbnail(&mxc, &dim, Animate::Never)
-			.await?
-	} else {
-		original
-	};
+	// A video's preview is frames from across it, taken here from the file:
+	// its stored thumbnail may be the sender's or another server's choice.
+	let is_video = original
+		.content_type
+		.as_deref()
+		.is_some_and(|t| t.starts_with("video/"));
+	if thumb && is_video {
+		let sheet = services.media.video_sheet(&original.content).await?;
+		let mut response = sheet.into_response();
+		let headers = response.headers_mut();
+		headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+		headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+		headers.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+		headers.insert("x-anoncat-sheet", HeaderValue::from_static("1"));
+		return Ok(response);
+	}
+
+	// Anything else has no preview made from the file, and a stored
+	// thumbnail isn't trusted to show what the file is.
+	if thumb {
+		return Err!(Request(Unrecognized("No preview for this kind of file.")));
+	}
+	let media = original;
 
 	let Some(kind) = media.content_type.filter(|t| {
 		PREVIEW_TYPES.contains(&t.as_str()) || (!thumb && PLAYABLE_TYPES.contains(&t.as_str()))

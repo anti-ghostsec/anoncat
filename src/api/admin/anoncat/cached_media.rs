@@ -99,6 +99,31 @@ pub(crate) async fn list_route(
 		});
 	}
 
+	// Swapped items' files are gone, so they're not among the cached ones;
+	// they're listed anyway, showing the stand-in, so a swap doesn't look
+	// like the item vanished.
+	for mxc in services.media.swapped().await {
+		let Ok(parts) = Mxc::try_from(mxc.as_str()) else {
+			continue;
+		};
+		if services.globals.server_is_ours(parts.server_name)
+			|| only.as_deref().is_some_and(|s| parts.server_name.as_str() != s)
+			|| media.iter().any(|m| m.mxc == mxc)
+		{
+			continue;
+		}
+		media.push(Item {
+			server: parts.server_name.to_string(),
+			media_type: Some("image/png".into()),
+			bytes: 0,
+			fetched_ts: 0,
+			hidden: true,
+			swapped: true,
+			in_room: services.moderation.in_any_room(&mxc).await,
+			mxc,
+		});
+	}
+
 	Ok(Json(ListResponse {
 		cat_stand_in: services.moderation.cat_stand_in(),
 		items: cached.len(),

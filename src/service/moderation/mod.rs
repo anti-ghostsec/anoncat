@@ -44,7 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{Notify, mpsc};
 use tuwunel_core::{
-	Err, Result, debug, err, implement,
+	Err, Result, debug, defer, err, implement,
 	utils::{stream::TryIgnore, time::now_millis},
 	warn,
 };
@@ -80,6 +80,8 @@ const SETTINGS_KEY: &[u8] = b"moderation";
 
 /// Uploads checked at once; more wait their turn.
 const UPLOAD_CHECKS_AT_ONCE: usize = 2;
+/// Arrivals waiting for the AI before new ones are skipped.
+const ARRIVALS_WAITING_MAX: usize = 300;
 /// Uploads remembered as checked.
 const CHECKED_UPLOADS_KEPT: usize = 1000;
 
@@ -120,6 +122,8 @@ pub struct Service {
 	upload_checks: Arc<tokio::sync::Semaphore>,
 	/// Uploads checked lately, so a post of one isn't checked again.
 	checked_uploads: Mutex<VecDeque<String>>,
+	/// Arrivals queued or being checked.
+	arrivals_waiting: AtomicUsize,
 }
 
 /// Whether the AI may hide an image it judges clearly bad until an admin
@@ -152,6 +156,9 @@ pub struct Settings {
 	/// posted, or if it never is: one sent in an encrypted room, or shared
 	/// as a link, is otherwise never seen.
 	pub check_uploads: bool,
+	/// Also check every picture fetched from another server as it arrives:
+	/// what people here open from anywhere, not only watched rooms.
+	pub check_remote: bool,
 	/// Ask the AI about rooms people here join, public or not.
 	pub check_rooms: bool,
 	/// Files at least this large are reported for a look, without the AI.
@@ -195,6 +202,7 @@ impl Default for Settings {
 			check_messages: true,
 			check_images: true,
 			check_uploads: false,
+			check_remote: false,
 			check_rooms: true,
 			large_file_mb: 100,
 			text_model: "auto".into(),
@@ -303,6 +311,7 @@ impl crate::Service for Service {
 			scan: storage::Scan::default(),
 			upload_checks: Arc::new(tokio::sync::Semaphore::new(UPLOAD_CHECKS_AT_ONCE)),
 			checked_uploads: Mutex::default(),
+			arrivals_waiting: AtomicUsize::new(0),
 		}))
 	}
 
@@ -614,7 +623,11 @@ struct Message {
 struct Image {
 	/// The message that posted it; none for an upload checked on its own.
 	item: Option<Item>,
-	uploader: OwnedUserId,
+	/// Who it came from: the uploader here, or the server it was fetched
+	/// from.
+	uploader: String,
+	/// Where it was found, for a report not tied to a room.
+	origin: &'static str,
 	mxc: String,
 	mime: String,
 	/// Posted by whoever uploaded it, so hiding it hides only their upload.
@@ -709,8 +722,8 @@ async fn check_batch(&self, items: Vec<Item>) -> Result {
 			if self.checked_upload(&mxc_string) {
 				continue;
 			}
-			let uploader = item.sender.clone();
-			images.push(Image { item: Some(item), uploader, mxc: mxc_string, mime, own });
+			let uploader = item.sender.to_string();
+			images.push(Image { item: Some(item), uploader, origin: "", mxc: mxc_string, mime, own });
 		}
 	}
 
@@ -828,44 +841,89 @@ pub fn notify_upload(
 	mime: Option<&str>,
 	size: usize,
 ) {
+	if !self.settings().check_uploads {
+		return;
+	}
+
+	self.check_arrival(uploader.as_str(), "Checked on upload", mxc, mime, size);
+}
+
+/// Checks a picture just fetched from another server, when the settings ask
+/// for that: people here asked for it, wherever it was posted, so it's
+/// checked whether or not anyone here posted it in a watched room.
+#[implement(Service)]
+pub fn notify_fetched(self: &Arc<Self>, mxc: &str, mime: Option<&str>, size: usize) {
+	if !self.settings().check_remote {
+		return;
+	}
+	let Ok(parts) = <Mxc<'_>>::try_from(mxc) else {
+		return;
+	};
+	if self.server_blocked(parts.server_name) {
+		return;
+	}
+
+	let server = parts.server_name.to_string();
+	self.check_arrival(&server, "Fetched from another server", mxc, mime, size);
+}
+
+/// Queues a picture that just arrived, uploaded or fetched, for the AI. The
+/// type is whatever was declared; the bytes decide, and anything that
+/// doesn't decode as a picture, such as an encrypted attachment, is left
+/// alone.
+#[implement(Service)]
+fn check_arrival(
+	self: &Arc<Self>,
+	from: &str,
+	origin: &'static str,
+	mxc: &str,
+	mime: Option<&str>,
+	size: usize,
+) {
 	let settings = self.settings();
-	// The type is whatever the app declared; the bytes decide. Anything that
-	// doesn't decode as a picture here, such as an encrypted attachment, is
-	// left alone.
-	let mime = mime.unwrap_or_default().to_owned();
 	if !settings.enabled
 		|| !settings.check_images
-		|| !settings.check_uploads
 		|| u64::try_from(size).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES
+		|| self.checked_upload(mxc)
 	{
 		return;
+	}
+
+	// Past this many waiting, new arrivals are skipped rather than piling up
+	// behind a slow or failing Venice.
+	if self.arrivals_waiting.fetch_add(1, Ordering::Relaxed) >= ARRIVALS_WAITING_MAX {
+		self.arrivals_waiting.fetch_sub(1, Ordering::Relaxed);
+		self.dropped.fetch_add(1, Ordering::Relaxed);
+		return;
+	}
+	{
+		let mut checked = self.checked_uploads.lock().expect("locked");
+		checked.push_back(mxc.to_owned());
+		while checked.len() > CHECKED_UPLOADS_KEPT {
+			checked.pop_front();
+		}
 	}
 
 	let this = Arc::clone(self);
 	let image = Image {
 		item: None,
-		uploader: uploader.to_owned(),
+		uploader: from.to_owned(),
+		origin,
 		mxc: mxc.to_owned(),
-		mime,
+		mime: mime.unwrap_or_default().to_owned(),
 		own: true,
 	};
 	self.services.server.runtime().spawn(async move {
+		defer! {{ this.arrivals_waiting.fetch_sub(1, Ordering::Relaxed); }}
 		let Ok(_permit) = this.upload_checks.acquire().await else {
 			return;
 		};
 		let Some(key) = this.key() else {
 			return;
 		};
-		{
-			let mut checked = this.checked_uploads.lock().expect("locked");
-			checked.push_back(image.mxc.clone());
-			while checked.len() > CHECKED_UPLOADS_KEPT {
-				checked.pop_front();
-			}
-		}
 		let settings = this.settings();
 		if let Err(e) = this.check_image(&settings, &key, &image).await {
-			warn!("Couldn't check an upload: {e}");
+			warn!("Couldn't check a picture as it arrived: {e}");
 		}
 	});
 }
@@ -882,7 +940,7 @@ fn checked_upload(&self, mxc: &str) -> bool {
 
 /// A report about an upload not seen in any room.
 #[implement(Service)]
-fn upload_report(&self, uploader: &UserId) -> Report {
+fn upload_report(&self, from: &str, origin: &str) -> Report {
 	let now = now_millis();
 	let id = {
 		let mut last = self.last_id.lock().expect("locked");
@@ -895,9 +953,9 @@ fn upload_report(&self, uploader: &UserId) -> Report {
 		ts: now,
 		kind: "image".into(),
 		room_id: String::new(),
-		room_name: Some("Checked on upload".into()),
+		room_name: Some(origin.into()),
 		event_id: String::new(),
-		sender: uploader.to_string(),
+		sender: from.to_owned(),
 		mxc: None,
 		excerpt: String::new(),
 		category: String::new(),
@@ -989,7 +1047,7 @@ async fn check_image(&self, settings: &Settings, key: &str, image: &Image) -> Re
 			report.excerpt = excerpt(item.content["body"].as_str().unwrap_or_default());
 			report
 		},
-		| None => self.upload_report(&image.uploader),
+		| None => self.upload_report(&image.uploader, image.origin),
 	};
 	report.mxc = Some(image.mxc.clone());
 	report.category = text_field(&answer["category"], "other");

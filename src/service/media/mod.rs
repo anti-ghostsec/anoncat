@@ -219,6 +219,26 @@ impl Service {
 		Ok(())
 	}
 
+	/// Without video support built in there are no frames to show.
+	#[cfg(not(feature = "media_thumbnail"))]
+	pub async fn video_sheet(&self, _content: &[u8]) -> Result<Vec<u8>> {
+		Err!("This build can't read videos.")
+	}
+
+	/// Everything swapped for the stand-in for good, by mxc:// link. Their
+	/// files are gone, so nothing else lists them.
+	pub async fn swapped(&self) -> Vec<String> {
+		self.hidden
+			.raw_stream()
+			.ready_filter_map(Result::ok)
+			.ready_filter_map(|(key, note)| {
+				note.starts_with(SWAPPED.as_bytes())
+					.then(|| String::from_utf8_lossy(key).into_owned())
+			})
+			.collect()
+			.await
+	}
+
 	/// Whether this media was swapped for the stand-in for good.
 	#[must_use]
 	pub fn is_swapped(&self, mxc: &Mxc<'_>) -> bool { self.is_swapped_key(&mxc.to_string()) }

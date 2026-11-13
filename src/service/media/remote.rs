@@ -263,6 +263,12 @@ async fn handle_content_file(&self, mxc: &Mxc<'_>, content: Content) -> Result<F
 		.await
 		.map(Some)?;
 
+	self.services.moderation.notify_fetched(
+		&mxc.to_string(),
+		content.content_type.as_deref(),
+		content.file.len(),
+	);
+
 	let media = fetched_media(content, content_disposition);
 
 	Ok(Fetched { media, animates })
@@ -497,6 +503,12 @@ pub async fn fetch_remote_content_legacy(
 		&response.file,
 	)
 	.await?;
+
+	self.services.moderation.notify_fetched(
+		&mxc.to_string(),
+		response.content_type.as_deref(),
+		response.file.len(),
+	);
 
 	Ok(response)
 }

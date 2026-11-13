@@ -387,3 +387,60 @@ fn kill_group(group: u32) {
 
 #[cfg(not(unix))]
 fn kill_group(_group: u32) {}
+
+/// Frames from across a whole video, made from the file itself, for an
+/// admin judging it: six stills spread over its length, tiled three by two.
+/// A video's own thumbnail is the sender's or its server's choice, and one
+/// frame says nothing about the rest. Runs in the same slots, under the same
+/// timeout and size limit, as thumbnail frames.
+#[implement(super::Service)]
+pub async fn video_sheet(&self, content: &[u8]) -> Result<Vec<u8>> {
+	let config = &self.services.config;
+	if config.media_video_thumbnail_command.is_empty() {
+		return Err!("Video frames aren't set up.");
+	}
+	if content.len() > config.media_video_thumbnail_max_size {
+		return Err!("Too big to take frames from.");
+	}
+
+	let timeout = Duration::from_secs(config.media_video_thumbnail_timeout);
+	let deadline = Instant::now()
+		.checked_add(timeout)
+		.ok_or_else(|| err!("Timeout is out of range."))?;
+
+	let Ok(Ok(_slot)) = timeout_at(deadline, self.video_thumbnail_slots.acquire()).await else {
+		return Err!("Timed out waiting for a video slot.");
+	};
+
+	let path = staging_dir(config).join(format!("{STAGED}{}", random_string(NAME_LENGTH)));
+	defer! {{ remove_file(&path).ok(); }}
+	timeout_at(deadline, stage(&path, content))
+		.await
+		.map_err(|_| err!("Timed out staging the video."))??;
+	let input = path.to_string_lossy().into_owned();
+
+	let probe = [
+		"-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", input.as_str(),
+	];
+	let seconds = run("ffprobe", probe.iter().copied(), 4096, deadline)
+		.await
+		.ok()
+		.and_then(|out| String::from_utf8_lossy(&out).trim().parse::<f64>().ok())
+		.filter(|s| s.is_finite() && *s > 0.0);
+
+	// Six frames evenly over the length; without one, a representative frame
+	// from each stretch of 30.
+	let pick = seconds.map_or_else(
+		|| "thumbnail=30".to_owned(),
+		|s| format!("fps={:.6}", 6.0 / s),
+	);
+	let filter = format!("{pick},scale=320:-2,tile=3x2:padding=4");
+	let args = [
+		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "1", "-i",
+		input.as_str(), "-vf", filter.as_str(), "-frames:v", "1", "-f", "image2pipe", "-c:v",
+		"png", "pipe:1",
+	];
+	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
+
+	run("nice", args.iter().copied(), limit, deadline).await
+}
