@@ -761,7 +761,7 @@ function mediaThumb(mxc, type, { still = mxc, cls = "", held = false } = {}) {
 	const label = h("span", { class: "thumb-label" }, { image: type || "media", video: "video", audio: "audio" }[kind] || type);
 	const el = h("div", { class: `media-thumb ${kind}${cls ? ` ${cls}` : ""}`, title: "Click to reveal", "data-mxc": mxc }, label);
 	el.addEventListener("click", (e) => {
-		if (!e.target.closest("video, audio, .play")) el.classList.toggle("revealed");
+		if (!e.target.closest("video, audio, .play, .vbox")) el.classList.toggle("revealed");
 	});
 	// Hidden media isn't loaded until asked for: it was hidden for a reason.
 	if (held) {
@@ -840,7 +840,19 @@ async function loadPreview(el, mxc) {
 	if (!RASTER.has(got.blob.type) || !el.isConnected) return;
 	const url = URL.createObjectURL(got.blob);
 	el.querySelector(".thumb-label")?.replaceWith(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
-	if (got.sheet) el.append(h("span", { class: "thumb-badge", title: "Six frames from across the whole video, taken from the file itself. Play it to see all of it." }, "frames from across it"));
+	if (got.sheet) {
+		el.append(h("span", { class: "thumb-badge", title: "Six frames from across the whole video, taken from the file itself. Play it to see all of it." }, "frames from across it"));
+		// The server found a video in it even where its stated type is
+		// missing or wrong (a report on a remote file, an upload sent as
+		// application/octet-stream): it can be played all the same.
+		if (!el.querySelector(".play")) {
+			el.classList.add("video");
+			el.append(h("button", { class: "play", type: "button", title: "Play the video here", "aria-label": "Play the video",
+				onclick: () => playInline(el, mxc, "video") }, "▶"));
+			el.append(h("button", { class: "full", type: "button", title: "Play it full size", "aria-label": "Play full size",
+				onclick: (e) => { e.stopPropagation(); openFullVideo(mxc); } }, "⤢"));
+		}
+	}
 	if (got.width && got.height) {
 		const long = Math.max(got.width, got.height) >= 2 * Math.min(got.width, got.height);
 		const badges = [`${got.width}\u00D7${got.height}`];
@@ -848,7 +860,7 @@ async function loadPreview(el, mxc) {
 		if (long) badges.push(got.height > got.width ? "very tall" : "very wide");
 		el.append(h("span", { class: `thumb-badge${got.frames > 1 || long ? " warn" : ""}`,
 			title: got.frames > 1 || long ? "The small preview can't show all of this. Open it full size before deciding." : "" }, badges.join(" \u00B7 ")));
-		el.append(h("button", { class: "full", type: "button", title: "Open the whole file, full size", "aria-label": "Open full size",
+		if (!got.sheet) el.append(h("button", { class: "full", type: "button", title: "Open the whole file, full size", "aria-label": "Open full size",
 			onclick: (e) => { e.stopPropagation(); openFull(mxc); } }, "\u2922"));
 	}
 }
@@ -884,9 +896,66 @@ async function playableVideo(server, mediaId, converted = false) {
 // A player that starts silent: what a video is shows before anything plays
 // out loud. The controls turn the sound on.
 function videoPlayer(url) {
-	const player = h("video", { src: url, controls: true, autoplay: true, playsinline: true, preload: "auto" });
+	const player = h("video", { src: url, autoplay: true, playsinline: true, preload: "auto" });
 	player.muted = player.defaultMuted = true;
 	return player;
+}
+
+// The panel's own controls round a video, not the browser's: WebKitGTK's
+// full screen button puts the <video> itself full screen, where its picture
+// stops at that frame for good. Full screen here is the box holding the video
+// and these controls, which keeps playing.
+function videoBox(player) {
+	const time = (t) => Number.isFinite(t) ? `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}` : "0:00";
+	const play = h("button", { class: "vbtn", type: "button", title: "Play or pause (space)" }, "▶");
+	const seek = h("input", { class: "vseek", type: "range", min: "0", max: "1000", value: "0", step: "1", "aria-label": "Position" });
+	const clock = h("span", { class: "vtime mono" }, "0:00 / 0:00");
+	const sound = h("button", { class: "vbtn", type: "button", title: "Sound on or off" }, "\u{1F507}");
+	const volume = h("input", { class: "vvol", type: "range", min: "0", max: "1", step: "0.05", value: "1", "aria-label": "Volume" });
+	const full = h("button", { class: "vbtn", type: "button", title: "Full screen (f)" }, "\u2922");
+	const box = h("div", { class: "vbox", tabindex: "0" }, player, h("div", { class: "vbar" }, play, seek, clock, sound, volume, full));
+	let dragging = false;
+	const toggle = () => player.paused || player.ended ? player.play().catch(() => {}) : player.pause();
+	const fullscreen = () => {
+		const open = document.fullscreenElement || document.webkitFullscreenElement;
+		if (open) return void (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+		const ask = box.requestFullscreen || box.webkitRequestFullscreen;
+		Promise.resolve(ask?.call(box)).catch((e) => toast(`Couldn't go full screen: ${e.message}`));
+	};
+	const show = () => {
+		play.textContent = player.paused || player.ended ? "▶" : "⏸";
+		sound.textContent = player.muted || player.volume === 0 ? "\u{1F507}" : "\u{1F50A}";
+		clock.textContent = `${time(player.currentTime)} / ${time(player.duration)}`;
+		if (!dragging && Number.isFinite(player.duration) && player.duration > 0) seek.value = String(Math.round(player.currentTime / player.duration * 1000));
+	};
+	play.addEventListener("click", toggle);
+	player.addEventListener("click", toggle);
+	player.addEventListener("dblclick", fullscreen);
+	full.addEventListener("click", fullscreen);
+	sound.addEventListener("click", () => { player.muted = !player.muted; if (!player.muted && player.volume === 0) player.volume = volume.value = 1; });
+	volume.addEventListener("input", () => { player.volume = Number(volume.value); player.muted = player.volume === 0; });
+	seek.addEventListener("input", () => {
+		dragging = true;
+		if (Number.isFinite(player.duration)) clock.textContent = `${time(seek.value / 1000 * player.duration)} / ${time(player.duration)}`;
+	});
+	seek.addEventListener("change", () => {
+		dragging = false;
+		if (Number.isFinite(player.duration)) player.currentTime = seek.value / 1000 * player.duration;
+	});
+	box.addEventListener("keydown", (e) => {
+		if (e.target.closest("input")) return;
+		if (e.key === " " || e.key === "k") toggle();
+		else if (e.key === "f") fullscreen();
+		else if (e.key === "m") player.muted = !player.muted;
+		else if (e.key === "ArrowRight") player.currentTime = Math.min(player.duration || 0, player.currentTime + 5);
+		else if (e.key === "ArrowLeft") player.currentTime = Math.max(0, player.currentTime - 5);
+		else return;
+		e.preventDefault();
+		e.stopPropagation();
+	});
+	for (const ev of ["play", "pause", "ended", "timeupdate", "durationchange", "loadedmetadata", "volumechange"]) player.addEventListener(ev, show);
+	show();
+	return box;
 }
 
 // Swaps a player's file for the converted copy, keeping it muted.
@@ -915,8 +984,9 @@ async function playInline(el, mxc, kind) {
 		let note = null;
 		if (kind === "video") {
 			const got = await playableVideo(server, mediaId);
-			player = videoPlayer(got.url);
-			note = playerStatus(player, got, server, mediaId);
+			const video = videoPlayer(got.url);
+			note = playerStatus(video, got, server, mediaId);
+			player = videoBox(video);
 		} else {
 			const got = await playableVideo(server, mediaId);
 			player = h(kind, { src: got.url, controls: true, autoplay: true, preload: "metadata" });
@@ -970,7 +1040,7 @@ async function openFullVideo(mxc) {
 		return toast(`Couldn't play it: ${e.message}`);
 	}
 	const player = videoPlayer(got.url);
-	const shown = ask("Full size", { content: h("div", { class: "full-view" }, player, playerStatus(player, got, server, mediaId)), confirm: "Close", cancel: false });
+	const shown = ask("Full size", { content: h("div", { class: "full-view" }, videoBox(player), playerStatus(player, got, server, mediaId)), confirm: "Close", cancel: false });
 	$("#dialog").dataset.mxc = mxc;
 	await shown;
 	player.pause();

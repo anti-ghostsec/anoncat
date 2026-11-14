@@ -453,6 +453,21 @@ dialog::backdrop { background: rgba(4, 6, 10, 0.6); backdrop-filter: blur(4px); 
 .full-view { max-height: 75vh; overflow: auto; text-align: center; }
 .full-view img { max-width: 100%; height: auto; }
 .full-view video { max-width: 100%; max-height: 72vh; background: #000; }
+
+/* The panel's own video controls (see videoBox in panel.js). */
+.vbox { position: relative; display: flex; flex-direction: column; width: 100%; background: #000; outline: none; }
+.vbox video { display: block; width: 100%; max-height: 72vh; background: #000; cursor: pointer; }
+.media-thumb .vbox video { max-height: 60vh; }
+.vbar { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: rgba(10, 12, 18, 0.9); }
+.vbar .vbtn { padding: 2px 8px; font-size: 14px; line-height: 1.2; background: transparent; border: 1px solid var(--line); color: #fff; }
+.vbar .vseek { flex: 1; min-width: 60px; }
+.vbar .vvol { width: 70px; }
+.vbar .vtime { font-size: 11px; color: #d6dbe4; white-space: nowrap; }
+.vbox:fullscreen { width: 100vw; height: 100vh; }
+.vbox:fullscreen video { flex: 1; min-height: 0; max-height: none; height: 100%; object-fit: contain; }
+.vbox:-webkit-full-screen { width: 100vw; height: 100vh; }
+.vbox:-webkit-full-screen video { flex: 1; min-height: 0; max-height: none; height: 100%; object-fit: contain; }
+.media-thumb.video.playing { aspect-ratio: auto; display: block; }
 .stat.warn { border-color: #b26a00; }
 .stat.warn .value { color: #f0a020; }
 .reporters { margin: 6px 0; padding-left: 1.2rem; }
