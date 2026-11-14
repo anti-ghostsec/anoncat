@@ -1699,9 +1699,9 @@ pages.settings = async (main) => {
 	};
 	const modelSelect = (name, vision) => {
 		const select = h("select", { name },
-			h("option", { value: "auto" }, vision ? "Auto (the service's default for images)" : "Auto (the service's default)"),
+			h("option", { value: "auto" }, vision ? "Auto (the service's default for images, if it's private)" : "Auto (the service's default, if it's private)"),
 			models.filter((m) => !vision || m.vision).map((m) => h("option", { value: m.id },
-				`${m.id}${m.traits.length ? ` — ${m.traits.join(", ")}` : ""}${m.price_in ? ` — $${m.price_in}/M in` : ""}`)));
+				`${m.private ? "" : "\u26A0 passed on \u2014 "}${m.id}${m.traits.length ? ` — ${m.traits.join(", ")}` : ""}${m.price_in ? ` — $${m.price_in}/M in` : ""}`)));
 		if (s[name] !== "auto" && !models.some((m) => m.id === s[name])) select.append(h("option", { value: s[name] }, s[name]));
 		select.value = s[name];
 		return select;

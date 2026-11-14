@@ -24,6 +24,25 @@ pub struct Model {
 	pub traits: Vec<String>,
 	/// USD per million input tokens.
 	pub price_in: Option<f64>,
+	/// Run by the service itself, which keeps nothing. The others are
+	/// passed on to the company that makes them, which scans what it gets
+	/// and keeps it by its own rules.
+	pub private: bool,
+}
+
+/// Makers whose models the service only passes requests on to.
+const PASSED_ON: [&str; 6] = ["claude", "gpt", "openai", "gemini", "grok", "anthropic"];
+
+/// Whether a model runs on the service itself: by the privacy it states, or,
+/// where it states none, by not being one of the passed-on makers' models.
+fn is_private(id: &str, spec: &Value) -> bool {
+	match spec["privacy"].as_str() {
+		| Some(privacy) => privacy.eq_ignore_ascii_case("private"),
+		| None => {
+			let id = id.to_ascii_lowercase();
+			!PASSED_ON.iter().any(|maker| id.contains(maker))
+		},
+	}
 }
 
 /// Venice's model list. Needs no key.
@@ -59,6 +78,7 @@ pub(super) async fn models(client: &reqwest::Client) -> Result<Vec<Model>> {
 					.filter_map(|t| t.as_str().map(ToOwned::to_owned))
 					.collect(),
 				price_in: spec["pricing"]["input"]["usd"].as_f64(),
+				private: is_private(m["id"].as_str()?, spec),
 			})
 		})
 		.collect();
@@ -177,5 +197,22 @@ mod tests {
 		let reply = strip_thinking("<think>hmm {no}</think>\n```json\n{\"flags\": []}\n```");
 		assert_eq!(json_in(&reply), Some(serde_json::json!({ "flags": [] })));
 		assert_eq!(json_in("nothing here"), None);
+	}
+}
+
+#[cfg(test)]
+mod privacy_tests {
+	use serde_json::json;
+
+	use super::is_private;
+
+	#[test]
+	fn passed_on_models_are_never_private() {
+		assert!(is_private("qwen-2.5-vl", &json!({})));
+		assert!(is_private("mistral-31-24b", &json!({ "privacy": "private" })));
+		assert!(!is_private("openai-gpt-52", &json!({})));
+		assert!(!is_private("gemini-3-pro-preview", &json!({})));
+		assert!(!is_private("grok-41-fast", &json!({})));
+		assert!(!is_private("some-new-model", &json!({ "privacy": "anonymized" })));
 	}
 }

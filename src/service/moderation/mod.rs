@@ -564,7 +564,11 @@ pub async fn models(&self) -> Result<Vec<Model>> {
 	Ok(models)
 }
 
-/// The model to use: the configured one, or Venice's pick for "auto".
+/// The model to use: the configured one, or for "auto" the service's own
+/// pick, but only ever a private one. The service can change its default
+/// at any time, and a passed-on model would hand what's checked, pictures
+/// included, to another company; so a passed-on default is skipped for a
+/// private model that can do the job.
 #[implement(Service)]
 async fn model(&self, configured: &str, vision: bool) -> Result<String> {
 	if configured != "auto" {
@@ -572,12 +576,15 @@ async fn model(&self, configured: &str, vision: bool) -> Result<String> {
 	}
 
 	let wanted = if vision { "default_vision" } else { "default" };
-	self.models()
-		.await?
-		.into_iter()
+	let models = self.models().await?;
+	let usable = |m: &&Model| m.private && (!vision || m.vision);
+	models
+		.iter()
+		.filter(usable)
 		.find(|m| m.traits.iter().any(|t| t == wanted))
-		.map(|m| m.id)
-		.ok_or_else(|| err!("The AI service names no {wanted} model; pick one in Settings"))
+		.or_else(|| models.iter().find(usable))
+		.map(|m| m.id.clone())
+		.ok_or_else(|| err!("The AI service offers no private {wanted} model; pick one in Settings"))
 }
 
 /// Queues a new event if it may need a look. Cheap; the work happens in the
