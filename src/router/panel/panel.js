@@ -837,7 +837,8 @@ async function loadPreview(el, mxc) {
 	}
 	// Only raster images become blob: URLs; an SVG or HTML one would be a
 	// document on the panel's own origin.
-	if (!RASTER.has(got.blob.type) || !el.isConnected) return;
+	// Nor once the video plays in its place: its buttons would sit on it.
+	if (!RASTER.has(got.blob.type) || !el.isConnected || el.classList.contains("playing")) return;
 	const url = URL.createObjectURL(got.blob);
 	el.querySelector(".thumb-label")?.replaceWith(h("img", { src: url, alt: "", onload: () => URL.revokeObjectURL(url) }));
 	if (got.sheet) {
@@ -1241,7 +1242,7 @@ pages.badfiles = async (main) => {
 		setTimeout(() => URL.revokeObjectURL(url), 1000);
 	};
 
-	const text = h("textarea", { rows: 6, placeholder: "pdq,<64 hex digits>,note\nsha256,<64 hex digits>,note\n<64 hex digits>   (taken as PDQ)", spellcheck: "false" });
+	const text = h("textarea", { rows: 6, placeholder: "pdq,<64 hex digits>,note\npdq-frame,<64 hex digits>,note   (a video frame)\nsha256,<64 hex digits>,note\n<64 hex digits>   (taken as PDQ)", spellcheck: "false" });
 	const note = h("input", { placeholder: "Where the list came from (optional)" });
 	const file = h("input", { type: "file", accept: ".csv,.txt,text/plain", onchange: async () => {
 		const f = file.files?.[0];
@@ -1572,6 +1573,17 @@ async function copyText(text) {
 	}
 }
 
+// Adds a server to the media-only block in Settings: its media isn't
+// fetched or shown here, but people here still talk with it.
+async function blockMediaFrom(server) {
+	const text = `Pictures, videos and files from ${server} stop being fetched, and people here see the stand-in instead, copies already stored included. People here can still talk with ${server}'s users. Undo it in Settings, What to check.`;
+	if (!(await ask(`No media from ${server}?`, { text, confirm: "Stop its media" }))) return false;
+	const current = await attempt(null, () => api("GET", `${MOD}/settings`));
+	if (!current) return false;
+	const list = [...new Set([...(current.settings.media_blocked_servers || []), server])];
+	return Boolean(await attempt(`No more media from ${server}`, () => api("PUT", `${MOD}/settings`, { media_blocked_servers: list })));
+}
+
 // What can be done to one media item, wherever it shows: copy its link,
 // swap it for the stand-in (hide), delete it, block its server or uploader.
 // `info` skips the lookup when the caller already knows it.
@@ -1615,6 +1627,9 @@ function mediaActions(mxc, { info, compact = false, onDeleted, onChanged, onSwap
 				if (!(await ask("Delete this media?", { text, confirm: "Delete", danger: true }))) return;
 				if (await attempt("Deleted", () => api("DELETE", path))) { blankMedia(mxc, "Deleted"); i.stored = false; draw(i); onDeleted?.(); }
 			}) }, "Delete") : null,
+			!i.local && !i.server_blocked && !i.media_blocked ? h("button", { class: cls, type: "button", title: `Stop fetching and showing media from ${server}; people here still talk with it`, onclick: thenAsk(async () => {
+				if (await blockMediaFrom(server)) { i.media_blocked = true; draw(i); onChanged?.(); }
+			}) }, `No media from ${server}`) : null,
 			!i.local && !i.server_blocked ? h("button", { class: cls, type: "button", onclick: thenAsk(async () => {
 				if (await blockTarget(server)) { i.server_blocked = true; draw(i); onChanged?.(); }
 			}) }, `Block ${server}`) : null,
@@ -1770,6 +1785,10 @@ pages.settings = async (main) => {
 			mode),
 		standInCard(s),
 		h("section", { class: "card" },
+			h("h2", {}, "Media from other servers"),
+			h("p", { class: "muted small" }, "Servers whose pictures, videos and files aren't fetched or shown here, while people here still talk with theirs: a softer step than blocking a server. People see the stand-in picture in their place. Copies already stored stay for your review, but aren't served."),
+			field("Don't fetch media from", h("textarea", { name: "media_blocked_servers", rows: 3, placeholder: "matrix.org\nexample.org", spellcheck: "false" }, (s.media_blocked_servers || []).join("\n")), "One server name per line.")),
+		h("section", { class: "card" },
 			h("h2", {}, "Uploads"),
 			check("upload_guard", "Don't let this server be used as file storage", "Refuses pieces of split-up files (chunk_0.enc and so on), and uploads from an account that has uploaded more files today than it posted messages, plus the allowance below. Real attachments are always posted, encrypted rooms included. Admins aren't limited. See Media, Storage check."),
 			field("Extra uploads a day", h("input", { type: "number", name: "upload_allowance", min: 1, max: 10000, value: s.upload_allowance ?? 100 }), "Files an account may upload in a day beyond the messages it posted. Apps upload every file of a message before posting it, so this must cover the biggest batch of pictures someone sends at once. Room and profile pictures count here.")),
@@ -1817,6 +1836,7 @@ pages.settings = async (main) => {
 			trusted_rooms: trusted,
 			upload_guard: f.has("upload_guard"),
 			upload_allowance: Number(f.get("upload_allowance") || 100),
+			media_blocked_servers: String(f.get("media_blocked_servers") || "").split(/[\s,]+/).filter(Boolean),
 		};
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});
@@ -1825,7 +1845,7 @@ pages.settings = async (main) => {
 	// sends them all.
 	const TABS = [
 		["general", "General", ["AI moderation", "Which rooms"]],
-		["checks", "What to check", ["What to check", "Images the AI judges clearly bad", "Uploads"]],
+		["checks", "What to check", ["What to check", "Images the AI judges clearly bad", "Media from other servers", "Uploads"]],
 		["standin", "Stand-in picture", ["Hidden and blocked media"]],
 		["ai", "Models and rules", ["Models and rules"]],
 		["trusted", "Trusted rooms", []],

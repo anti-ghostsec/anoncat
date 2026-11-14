@@ -244,6 +244,74 @@ pub fn fingerprint(&self, bytes: &[u8]) -> Fingerprint {
 	Fingerprint { sha256: Sha256::digest(bytes).into(), pdq }
 }
 
+/// The PDQ hashes of a video's frames, with their quality: the six stills of
+/// its preview sheet, spread over its whole length. A copy re-encoded,
+/// resized or re-muxed gives much the same frames at the same points, so it
+/// is recognised where its SHA-256 isn't. Empty for anything that isn't a
+/// video, or that the video worker can't read; made in the same single slot
+/// as every other video job, so it adds no load beside them.
+#[cfg(feature = "media_thumbnail")]
+#[implement(super::super::Service)]
+pub async fn video_frame_prints(&self, content: &[u8]) -> Vec<([u8; 32], u8)> {
+	if !looks_like_video(content) {
+		return Vec::new();
+	}
+	let Ok(sheet) = self.video_sheet(content).await else {
+		return Vec::new();
+	};
+	let Ok(sheet) = self.decode(&sheet) else {
+		return Vec::new();
+	};
+
+	sheet_tiles(&sheet)
+		.iter()
+		.map(|frame| {
+			let hashed = super::pdq::pdq(frame);
+			(hashed.hash, hashed.quality)
+		})
+		.collect()
+}
+
+#[cfg(not(feature = "media_thumbnail"))]
+#[implement(super::super::Service)]
+pub async fn video_frame_prints(&self, _content: &[u8]) -> Vec<([u8; 32], u8)> { Vec::new() }
+
+/// The six stills of a preview sheet: three across, two down, with four
+/// pixels between them (`tile=3x2:padding=4`).
+#[cfg(feature = "media_thumbnail")]
+fn sheet_tiles(sheet: &DynamicImage) -> Vec<DynamicImage> {
+	const PADDING: u32 = 4;
+	let width = sheet.width().saturating_sub(2 * PADDING) / 3;
+	let height = sheet.height().saturating_sub(PADDING) / 2;
+	if width == 0 || height == 0 {
+		return Vec::new();
+	}
+
+	(0..2_u32)
+		.flat_map(|row| (0..3_u32).map(move |column| (row, column)))
+		.map(|(row, column)| {
+			sheet.crop_imm(column * (width + PADDING), row * (height + PADDING), width, height)
+		})
+		.collect()
+}
+
+/// Whether the bytes start like a video container ffmpeg reads: MP4, MOV and
+/// 3GP (but not the AVIF and HEIC pictures that share their box format),
+/// Matroska and WebM, AVI, FLV and MPEG-TS. A cheap look, so pictures and
+/// other files never cost a video slot.
+#[cfg(feature = "media_thumbnail")]
+fn looks_like_video(bytes: &[u8]) -> bool {
+	const PICTURE_BRANDS: [&[u8; 4]; 6] = [b"avif", b"avis", b"heic", b"heix", b"mif1", b"msf1"];
+	match bytes {
+		| [_, _, _, _, b'f', b't', b'y', b'p', brand @ ..] if brand.len() >= 4 =>
+			!PICTURE_BRANDS.iter().any(|picture| &brand[..4] == picture.as_slice()),
+		| [0x1A, 0x45, 0xDF, 0xA3, ..] | [b'F', b'L', b'V', ..] => true,
+		| [b'R', b'I', b'F', b'F', _, _, _, _, b'A', b'V', b'I', b' ', ..] => true,
+		| [0x47, ..] => bytes.get(188) == Some(&0x47),
+		| _ => false,
+	}
+}
+
 /// [`fingerprint`](super::super::Service::fingerprint), off the async threads.
 #[implement(super::super::Service)]
 pub async fn fingerprint_owned(self: &Arc<Self>, bytes: Vec<u8>) -> Result<Fingerprint> {
@@ -262,4 +330,35 @@ pub fn pdq_distance(a: &[u8; 32], b: &[u8; 32]) -> u32 { super::pdq::distance(a,
 #[must_use]
 pub fn pdq_distance(a: &[u8; 32], b: &[u8; 32]) -> u32 {
 	a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum()
+}
+
+#[cfg(all(test, feature = "media_thumbnail"))]
+mod frame_tests {
+	use super::{looks_like_video, sheet_tiles};
+
+	#[test]
+	fn videos_are_told_from_pictures() {
+		let boxed = |brand: &[u8; 4]| [&[0, 0, 0, 0x20][..], b"ftyp", brand, &[0; 8]].concat();
+		assert!(looks_like_video(&boxed(b"isom")));
+		assert!(looks_like_video(&boxed(b"qt  ")));
+		assert!(!looks_like_video(&boxed(b"avif")));
+		assert!(!looks_like_video(&boxed(b"heic")));
+		assert!(looks_like_video(&[0x1A, 0x45, 0xDF, 0xA3, 1, 2]));
+		assert!(looks_like_video(b"RIFF\0\0\0\0AVI LIST"));
+		assert!(!looks_like_video(b"RIFF\0\0\0\0WEBPVP8 "));
+		assert!(!looks_like_video(b"\x89PNG\r\n\x1a\n"));
+		assert!(!looks_like_video(&[0x47; 10]));
+		let mut ts = vec![0_u8; 400];
+		ts[0] = 0x47;
+		ts[188] = 0x47;
+		assert!(looks_like_video(&ts));
+	}
+
+	#[test]
+	fn a_sheet_splits_into_its_six_frames() {
+		let sheet = image::DynamicImage::new_rgb8(968, 484);
+		let tiles = sheet_tiles(&sheet);
+		assert_eq!(tiles.len(), 6);
+		assert!(tiles.iter().all(|t| t.width() == 320 && t.height() == 240));
+	}
 }

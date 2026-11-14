@@ -9,6 +9,12 @@
 //! for countless images, which is why such lists are what services share in
 //! place of the files.
 //!
+//! A video is recognised by its frames too: the PDQ hashes of six stills
+//! from across its length, stored as `pdq-frame`. One frame isn't enough to
+//! call a video the same, since many share an intro or an app's end screen;
+//! [`FRAMES_MATCH`] of them are (or every frame, for a video with fewer good
+//! ones). A frame that matches a picture on the list (`pdq`) is enough.
+//!
 //! A local upload that matches is refused. A file from another server that
 //! matches is swapped for the stand-in before anyone here sees it, and
 //! reported. Swapping media adds its fingerprints here on its own.
@@ -40,13 +46,15 @@ const PDQ_MATCH: u32 = 31;
 /// PDQ hashes below this quality (flat or tiny pictures) match too much to
 /// be trusted, and are neither added nor matched.
 const PDQ_MIN_QUALITY: u8 = 50;
+/// Frames of a video that must match frames of one on the list.
+const FRAMES_MATCH: usize = 2;
 /// Longest note kept.
 const NOTE_CHARS: usize = 200;
 
 /// One fingerprint on the list.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BadFile {
-	/// "pdq" or "sha256".
+	/// "pdq", "pdq-frame" (one frame of a video) or "sha256".
 	pub kind: String,
 	/// 64 hex digits.
 	pub hash: String,
@@ -61,6 +69,7 @@ pub struct BadFile {
 pub(super) struct List {
 	sha256: HashSet<[u8; 32]>,
 	pdq: Vec<[u8; 32]>,
+	frames: Vec<[u8; 32]>,
 }
 
 pub(super) type State = RwLock<List>;
@@ -114,6 +123,7 @@ fn remember(list: &mut List, entry: &BadFile) {
 			list.sha256.insert(hash);
 		},
 		| "pdq" if !list.pdq.contains(&hash) => list.pdq.push(hash),
+		| "pdq-frame" if !list.frames.contains(&hash) => list.frames.push(hash),
 		| _ => {},
 	}
 }
@@ -123,7 +133,10 @@ fn remember(list: &mut List, entry: &BadFile) {
 #[must_use]
 pub fn bad_file_count(&self) -> usize {
 	let list = self.bad_files.read().expect("locked");
-	list.sha256.len().saturating_add(list.pdq.len())
+	list.sha256
+		.len()
+		.saturating_add(list.pdq.len())
+		.saturating_add(list.frames.len())
 }
 
 /// What on the list this file matches, if anything.
@@ -147,7 +160,40 @@ pub fn bad_match(&self, print: &Fingerprint) -> Option<String> {
 		.map(|d| format!("the same picture (PDQ distance {d})"))
 }
 
+/// What on the list a video matches by its frames, if anything.
+#[implement(Service)]
+#[must_use]
+pub fn bad_frames_match(&self, frames: &[([u8; 32], u8)]) -> Option<String> {
+	let good: Vec<&[u8; 32]> = frames
+		.iter()
+		.filter(|(_, quality)| *quality >= PDQ_MIN_QUALITY)
+		.map(|(hash, _)| hash)
+		.collect();
+	if good.is_empty() {
+		return None;
+	}
+
+	let list = self.bad_files.read().expect("locked");
+	let near = |known: &[[u8; 32]], frame: &[u8; 32]| {
+		known
+			.iter()
+			.any(|k| pdq_distance(k, frame) <= PDQ_MATCH)
+	};
+	if good.iter().any(|frame| near(&list.pdq, frame)) {
+		return Some("a known picture, as a frame of this video".into());
+	}
+
+	let matched = good
+		.iter()
+		.filter(|frame| near(&list.frames, frame))
+		.count();
+	(matched >= FRAMES_MATCH.min(good.len()))
+		.then(|| format!("the same video ({matched} of {} frames)", good.len()))
+}
+
 /// Whether these bytes are a known bad file; cheap when the list is empty.
+/// A video's frames are only taken when the list has PDQ hashes to compare
+/// them with.
 #[implement(Service)]
 pub async fn known_bad(&self, bytes: &[u8]) -> Option<String> {
 	if self.bad_file_count() == 0 {
@@ -161,7 +207,37 @@ pub async fn known_bad(&self, bytes: &[u8]) -> Option<String> {
 		.await
 		.ok()?;
 
-	self.bad_match(&print)
+	if let Some(why) = self.bad_match(&print) {
+		return Some(why);
+	}
+	if print.pdq.is_some() || !self.has_pdq() {
+		return None;
+	}
+
+	let frames = self
+		.services
+		.media
+		.video_frame_prints(bytes)
+		.await;
+
+	self.bad_frames_match(&frames)
+}
+
+/// Whether the list has any PDQ hashes, of pictures or of video frames.
+#[implement(Service)]
+fn has_pdq(&self) -> bool {
+	let list = self.bad_files.read().expect("locked");
+	!list.pdq.is_empty() || !list.frames.is_empty()
+}
+
+/// Puts a video's frames on the list. Returns how many were new.
+#[implement(Service)]
+pub fn add_bad_frames(&self, frames: &[([u8; 32], u8)], note: &str, source: &str) -> usize {
+	frames
+		.iter()
+		.filter(|(_, quality)| *quality >= PDQ_MIN_QUALITY)
+		.filter(|(hash, _)| self.store_bad("pdq-frame", &hex(hash), note, source))
+		.count()
 }
 
 /// Puts a file's fingerprints on the list. Returns how many were new.
@@ -187,7 +263,7 @@ pub fn add_bad_file(&self, print: &Fingerprint, note: &str, source: &str) -> usi
 #[implement(Service)]
 fn store_bad(&self, kind: &str, hash: &str, note: &str, source: &str) -> bool {
 	let hash = hash.trim().to_ascii_lowercase();
-	if !matches!(kind, "pdq" | "sha256") || unhex(&hash).is_none() {
+	if !matches!(kind, "pdq" | "pdq-frame" | "sha256") || unhex(&hash).is_none() {
 		return false;
 	}
 	let key = key(kind, &hash);
@@ -214,6 +290,7 @@ fn store_bad(&self, kind: &str, hash: &str, note: &str, source: &str) -> bool {
 /// Takes the lines of a shared list: `kind,hash[,note]`, where kind is
 /// `pdq` or `sha256`; a line of only a hash is taken as PDQ, the usual
 /// shared format, and anything after it (such as a quality) is ignored.
+/// `pdq-frame` lines are a video's frames, as this server exports them.
 /// Lines starting with `#` are comments. Returns (added, skipped).
 #[implement(Service)]
 pub fn import_bad_files(&self, text: &str, source_note: &str) -> (usize, usize) {
@@ -225,7 +302,7 @@ pub fn import_bad_files(&self, text: &str, source_note: &str) -> (usize, usize) 
 		let mut fields = line.splitn(3, [',', '\t', ' ']).map(str::trim);
 		let first = fields.next().unwrap_or_default().to_ascii_lowercase();
 		let (kind, hash, note) = match first.as_str() {
-			| "pdq" | "sha256" => (
+			| "pdq" | "pdq-frame" | "sha256" => (
 				first.clone(),
 				fields.next().unwrap_or_default().to_owned(),
 				fields.next().unwrap_or_default().to_owned(),
@@ -261,8 +338,8 @@ pub async fn bad_files(&self) -> Vec<BadFile> {
 #[implement(Service)]
 pub async fn export_bad_files(&self) -> String {
 	let mut out = String::from(
-		"# anoncat known bad files: kind,hash,note\n# Fingerprints only (SHA-256 and PDQ); no \
-		 picture can be rebuilt from them.\nkind,hash,note\n",
+		"# anoncat known bad files: kind,hash,note\n# Fingerprints only (SHA-256, and PDQ of \
+		 pictures and video frames); no picture can be rebuilt from them.\nkind,hash,note\n",
 	);
 	for entry in self.bad_files().await {
 		let note = entry.note.replace([',', '\n', '\r'], " ");
@@ -287,6 +364,7 @@ pub fn remove_bad_file(&self, kind: &str, hash: &str) -> Result {
 			list.sha256.remove(&bytes);
 		},
 		| "pdq" => list.pdq.retain(|known| known != &bytes),
+		| "pdq-frame" => list.frames.retain(|known| known != &bytes),
 		| _ => {},
 	}
 

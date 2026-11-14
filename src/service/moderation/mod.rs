@@ -42,7 +42,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use regex::Regex;
 use ruma::{
-	Mxc, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, UserId,
+	Mxc, OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, RoomOrAliasId, ServerName, UserId,
 	events::{TimelineEventType, room::join_rules::JoinRule},
 };
 use serde::{Deserialize, Serialize};
@@ -209,6 +209,11 @@ pub struct Settings {
 	/// Apps upload every file of a message before posting any, so this must
 	/// cover the biggest album someone sends at once.
 	pub upload_allowance: u64,
+	/// Servers whose media isn't fetched or shown here, though people here
+	/// still talk with theirs: a softer step than blocking a server. People
+	/// see the stand-in in its place; copies already stored are kept for
+	/// review but not served.
+	pub media_blocked_servers: Vec<String>,
 }
 
 impl Default for Settings {
@@ -236,6 +241,7 @@ impl Default for Settings {
 			stand_in_image: "orange".into(),
 			upload_guard: true,
 			upload_allowance: UPLOAD_ALLOWANCE,
+			media_blocked_servers: Vec::new(),
 		}
 	}
 }
@@ -498,6 +504,22 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	settings.trusted_rooms.dedup();
 	settings.trusted_rooms.truncate(1000);
 	settings.upload_allowance = settings.upload_allowance.clamp(1, 10_000);
+	let mut servers = Vec::new();
+	for server in &settings.media_blocked_servers {
+		let server = server.trim().trim_end_matches('.').to_ascii_lowercase();
+		if server.is_empty() || servers.contains(&server) {
+			continue;
+		}
+		let Ok(name) = <&ServerName>::try_from(server.as_str()) else {
+			return Err!(Request(InvalidParam("\"{server}\" isn't a server name.")));
+		};
+		if self.services.globals.server_is_ours(name) {
+			return Err!(Request(InvalidParam("{server} is this server.")));
+		}
+		servers.push(server);
+	}
+	servers.truncate(1000);
+	settings.media_blocked_servers = servers;
 	if settings.stand_in_image != "custom"
 		&& !stand_in::BUILT_IN.contains(&settings.stand_in_image.as_str())
 	{

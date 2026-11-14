@@ -150,6 +150,8 @@ pub(crate) struct ItemInfo {
 	/// Swapped for the stand-in for good; the file is gone.
 	swapped: bool,
 	server_blocked: bool,
+	/// Its server's media isn't fetched or shown here (Settings).
+	media_blocked: bool,
 	uploader: Option<String>,
 	media_type: Option<String>,
 	bytes: Option<u64>,
@@ -208,6 +210,10 @@ pub(crate) async fn item_route(
 		hidden: services.media.is_hidden(&parts),
 		swapped: services.media.is_swapped(&parts),
 		server_blocked: !local && services.moderation.server_blocked(parts.server_name),
+		media_blocked: !local
+			&& services
+				.moderation
+				.media_server_blocked(parts.server_name),
 		uploader: entry
 			.as_ref()
 			.and_then(|e| e.user_id.as_ref())

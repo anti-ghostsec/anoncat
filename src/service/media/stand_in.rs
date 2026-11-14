@@ -34,6 +34,10 @@ pub fn stand_in(&self, mxc: &Mxc<'_>) -> Option<Media> {
 				.services
 				.moderation
 				.server_blocked(mxc.server_name)
+				|| self
+					.services
+					.moderation
+					.media_server_blocked(mxc.server_name)
 				|| config.is_forbidden_remote_server_name(mxc.server_name)
 				|| config
 					.prevent_media_downloads_from

@@ -87,6 +87,19 @@ pub fn server_blocked(&self, server: &ServerName) -> bool {
 		.contains_key(server.as_str())
 }
 
+/// Whether media from this server is neither fetched nor shown here, by
+/// the settings' softer, media-only block.
+#[implement(super::Service)]
+#[must_use]
+pub fn media_server_blocked(&self, server: &ServerName) -> bool {
+	self.settings
+		.read()
+		.expect("locked")
+		.media_blocked_servers
+		.iter()
+		.any(|blocked| blocked.eq_ignore_ascii_case(server.as_str()))
+}
+
 /// Everything blocked, newest first.
 #[implement(super::Service)]
 #[must_use]

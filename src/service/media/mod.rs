@@ -217,9 +217,17 @@ impl Service {
 			// same picture is caught wherever it turns up again.
 			if let Ok(file) = self.get_stored(&parts).await {
 				let print = self.fingerprint(&file.content);
+				let note = format!("swapped: {mxc}");
 				self.services
 					.moderation
-					.add_bad_file(&print, &format!("swapped: {mxc}"), "swap");
+					.add_bad_file(&print, &note, "swap");
+				// Not a picture: a video's frames catch its re-encoded copies.
+				if print.pdq.is_none() {
+					let frames = self.video_frame_prints(&file.content).await;
+					self.services
+						.moderation
+						.add_bad_frames(&frames, &note, "swap");
+				}
 			}
 			self.delete(&parts).await?;
 		}
