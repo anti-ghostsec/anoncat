@@ -235,6 +235,35 @@ impl Service {
 		Ok(())
 	}
 
+	/// [`swap`](Self::swap), and the same for the thumbnails the messages
+	/// carrying it show with it (a video's still is a file of its own),
+	/// closing the open reports of each. How many thumbnails were swapped,
+	/// and how many reports closed.
+	pub async fn swap_with_thumbnails(&self, mxc: &str, note: &str) -> Result<(usize, usize)> {
+		self.swap(mxc, note).await?;
+		let moderation = &self.services.moderation;
+		let mut closed = moderation.resolve_media(mxc).await;
+		let mut swapped = 0;
+		for thumb in moderation.thumbnails_of(mxc).await {
+			let Ok(parts) = Mxc::try_from(thumb.as_str()) else {
+				continue;
+			};
+			if self.is_swapped(&parts) {
+				continue;
+			}
+			if self
+				.swap(&thumb, &format!("{note}; the thumbnail of {mxc}"))
+				.await
+				.is_ok()
+			{
+				swapped += 1;
+				closed += moderation.resolve_media(&thumb).await;
+			}
+		}
+
+		Ok((swapped, closed))
+	}
+
 	/// Without video support built in there are no frames to show.
 	#[cfg(not(feature = "media_thumbnail"))]
 	pub async fn video_sheet(&self, _content: &[u8]) -> Result<Vec<u8>> {

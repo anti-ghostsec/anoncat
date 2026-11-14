@@ -1423,8 +1423,10 @@ pages.reports = async (main, params) => {
 				.then((info) => fill(preview,
 					mediaThumb(r.mxc, info?.media_type || null, { cls: "report-thumb", held: r.hidden }),
 					mediaActions(r.mxc, { info: info || undefined, onChanged: refresh,
-						// The server closed its open reports; they go from the list.
-						onSwapped: all ? refresh : () => drop(onFile(r.mxc)) })));
+						// The server closed its open reports, and its thumbnails'
+						// if it swapped those too; they go from the list.
+						onSwapped: (done) => all || done?.thumbnails ? refresh() : drop(onFile(r.mxc)),
+						onDeleted: all ? refresh : () => drop(onFile(r.mxc)) })));
 		}
 		card = h("div", { class: `card report${r.severity === "high" ? " loud" : ""}`, tabindex: "-1", "data-mxc": r.mxc || "",
 			"data-group-sender": r.sender || "", "data-group-server": r.sender ? serverOf(r.sender) || r.sender : "", "data-group-room": r.room_name || r.room_id || "" },
@@ -1620,12 +1622,14 @@ function mediaActions(mxc, { info, compact = false, onDeleted, onChanged, onSwap
 		if (swap) swap.onclick = thenAsk(async () => {
 			const text = `${mxc}\nThe file is deleted for good and can't be swapped back. People here, and other servers that ask for it, get the stand-in picture instead.`;
 			if (!(await ask("Swap it for the stand-in?", { text, confirm: "Swap and delete", danger: true }))) return;
-			const done = await attempt("Swapped; the file is deleted", () => api("POST", `${path}/hide`));
+			const done = await attempt(null, () => api("POST", `${path}/hide`));
 			if (!done) return;
+			const thumbs = done.thumbnails || 0;
+			toast(thumbs ? `Swapped, with the ${thumbs === 1 ? "thumbnail" : `${thumbs} thumbnails`} posted with it` : "Swapped; the file is deleted");
 			blankMedia(mxc, "Swapped for the stand-in");
 			Object.assign(i, { hidden: true, swapped: true, stored: false });
 			draw(i);
-			(onSwapped || onChanged)?.();
+			(onSwapped || onChanged)?.(done);
 		});
 		const show = i.hidden && !i.swapped ? h("button", { class: cls, type: "button", title: "Serve the real file again", onclick: async () => {
 			if (!(await attempt("Shown again", () => api("DELETE", `${path}/hide`)))) return;

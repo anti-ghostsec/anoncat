@@ -217,6 +217,52 @@ pub async fn in_any_room(&self, mxc: &str) -> bool {
 	keys.next().await.is_some()
 }
 
+/// The thumbnails the messages carrying a file show with it, from rooms that
+/// aren't encrypted. A video's still, or a picture's small copy, is a file of
+/// its own, and stays when only the file is swapped.
+#[implement(super::Service)]
+pub async fn thumbnails_of(&self, mxc: &str) -> Vec<String> {
+	let mut found: Vec<String> = Vec::new();
+	for room in self.rooms_of(mxc).await {
+		let posts: Vec<_> = self
+			.services
+			.timeline
+			.pdus_rev(None, &room, None)
+			.ignore_err()
+			.take(THUMBS_EVENTS_READ)
+			.filter(|(_, pdu)| std::future::ready(pdu.content().get().contains(mxc)))
+			.take(THUMBS_POSTS)
+			.collect()
+			.await;
+		for (_, pdu) in posts {
+			let Ok(content) = serde_json::from_str::<Value>(pdu.content().get()) else {
+				continue;
+			};
+			// Only a message that is this file: one that merely uses it as
+			// its own thumbnail doesn't make its file a thumbnail.
+			if content.get("url").and_then(Value::as_str) != Some(mxc) {
+				continue;
+			}
+			let info = content.get("info");
+			let thumbs = [
+				info.and_then(|i| i.get("thumbnail_url")),
+				info.and_then(|i| i.get("thumbnail_file"))
+					.and_then(|f| f.get("url")),
+			];
+			for thumb in thumbs.into_iter().flatten().filter_map(Value::as_str) {
+				if thumb != mxc
+					&& Mxc::try_from(thumb).is_ok()
+					&& !found.iter().any(|f| f == thumb)
+				{
+					found.push(thumb.to_owned());
+				}
+			}
+		}
+	}
+
+	found
+}
+
 /// Messages a local account has posted, as far as this server knows.
 #[implement(super::Service)]
 pub async fn posts_by(&self, user: &UserId) -> u64 {
@@ -442,6 +488,11 @@ fn is_post(kind: &TimelineEventType) -> bool {
 			| TimelineEventType::Sticker
 	)
 }
+
+/// Messages read back per room looking for the ones that carry a file.
+const THUMBS_EVENTS_READ: usize = 50_000;
+/// Messages carrying the file looked at per room.
+const THUMBS_POSTS: usize = 20;
 
 fn mxc_prefix(mxc: &str) -> Vec<u8> {
 	let mut key = mxc.as_bytes().to_vec();

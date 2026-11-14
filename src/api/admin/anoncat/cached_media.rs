@@ -278,8 +278,8 @@ pub(crate) async fn delete_route(
 	Path((server, media_id)): Path<(String, String)>,
 ) -> Result<Json<DeletedResponse>> {
 	super::require_admin_token(&services, &headers).await?;
-	let mxc = item_mxc(&server, &media_id)?;
-	let mxc: Mxc<'_> = mxc.as_str().try_into()?;
+	let link = item_mxc(&server, &media_id)?;
+	let mxc: Mxc<'_> = link.as_str().try_into()?;
 	if services.media.media_entry(&mxc).await.is_none() {
 		return Err!(Request(NotFound("This server has no copy of it.")));
 	}
@@ -288,6 +288,8 @@ pub(crate) async fn delete_route(
 	} else {
 		services.media.delete_cached(&mxc).await?;
 	}
+	// It's been dealt with; its reports go from the list.
+	services.moderation.resolve_media(&link).await;
 
 	Ok(Json(DeletedResponse { items: 1, bytes: 0 }))
 }
@@ -295,6 +297,13 @@ pub(crate) async fn delete_route(
 #[derive(Serialize)]
 pub(crate) struct HiddenResponse {
 	hidden: bool,
+}
+
+#[derive(Serialize)]
+pub(crate) struct SwappedResponse {
+	hidden: bool,
+	/// Thumbnails posted with it that were swapped too.
+	thumbnails: usize,
 }
 
 /// `POST /_anoncat/admin/v1/media/item/{server}/{media_id}/hide`: swapped
@@ -305,16 +314,15 @@ pub(crate) async fn hide_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
 	Path((server, media_id)): Path<(String, String)>,
-) -> Result<Json<HiddenResponse>> {
+) -> Result<Json<SwappedResponse>> {
 	let admin = super::require_admin_token(&services, &headers).await?;
 	let mxc = item_mxc(&server, &media_id)?;
-	services
+	let (thumbnails, _) = services
 		.media
-		.swap(&mxc, &format!("by {admin}"))
+		.swap_with_thumbnails(&mxc, &format!("by {admin}"))
 		.await?;
-	services.moderation.resolve_media(&mxc).await;
 
-	Ok(Json(HiddenResponse { hidden: true }))
+	Ok(Json(SwappedResponse { hidden: true, thumbnails }))
 }
 
 /// `DELETE /_anoncat/admin/v1/media/item/{server}/{media_id}/hide`
