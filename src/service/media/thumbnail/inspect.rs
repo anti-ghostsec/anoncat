@@ -299,8 +299,8 @@ fn sheet_tiles(sheet: &DynamicImage) -> Vec<DynamicImage> {
 /// 3GP (but not the AVIF and HEIC pictures that share their box format),
 /// Matroska and WebM, AVI, FLV and MPEG-TS. A cheap look, so pictures and
 /// other files never cost a video slot.
-#[cfg(feature = "media_thumbnail")]
-fn looks_like_video(bytes: &[u8]) -> bool {
+#[must_use]
+pub fn looks_like_video(bytes: &[u8]) -> bool {
 	const PICTURE_BRANDS: [&[u8; 4]; 6] = [b"avif", b"avis", b"heic", b"heix", b"mif1", b"msf1"];
 	match bytes {
 		| [_, _, _, _, b'f', b't', b'y', b'p', brand @ ..] if brand.len() >= 4 =>

@@ -21,7 +21,7 @@ mod tests;
 pub(super) use animate::ANIMATED_TYPES;
 pub use animate::Animate;
 pub use dimension::Dim;
-pub use inspect::{Fingerprint, Inspected, pdq_distance};
+pub use inspect::{Fingerprint, Inspected, looks_like_video, pdq_distance};
 #[cfg(all(test, feature = "media_thumbnail"))]
 pub(super) use encode::encode_frames;
 #[cfg(all(test, feature = "media_thumbnail"))]

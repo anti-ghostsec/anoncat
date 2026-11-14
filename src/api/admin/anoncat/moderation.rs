@@ -515,6 +515,20 @@ pub(crate) async fn play_route(
 	if !playable {
 		return Err!(Request(Unrecognized("Not a video or sound file.")));
 	}
+	// An attachment sent in an encrypted room keeps the type its app gave
+	// it, but its bytes are scrambled: no player or converter can read it,
+	// and the browser would only say "error 4".
+	let content = &original.content;
+	let video_bytes = tuwunel_service::media::looks_like_video(content)
+		|| content.starts_with(b"OggS")
+		|| content.starts_with(&[0, 0, 1, 0xBA]);
+	if kind.starts_with("video/") && !video_bytes {
+		return Err!(Request(Unrecognized(
+			"It's labelled a video, but it doesn't start like any video file: most likely an \
+			 encrypted attachment from an encrypted room. Only the people in that room can open \
+			 it; nobody can play or check it here."
+		)));
+	}
 
 	let (converted, kind, bytes) = if body.convert {
 		if !kind.starts_with("video/") {

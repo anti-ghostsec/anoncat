@@ -50,7 +50,7 @@ pub use self::{
 	preview::UrlPreviewData,
 	thumbnail::{Animate, Dim},
 };
-pub use self::thumbnail::{Fingerprint, Inspected, pdq_distance};
+pub use self::thumbnail::{Fingerprint, Inspected, looks_like_video, pdq_distance};
 pub use self::{cached::CachedMedia, stand_in::CACHE_CONTROL_NO_STORE};
 use crate::storage::Provider;
 
