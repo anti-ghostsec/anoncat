@@ -458,11 +458,14 @@ dialog::backdrop { background: rgba(4, 6, 10, 0.6); backdrop-filter: blur(4px); 
 .vbox { position: relative; display: flex; flex-direction: column; width: 100%; background: #000; outline: none; }
 .vbox video { display: block; width: 100%; max-height: 72vh; background: #000; cursor: pointer; }
 .media-thumb .vbox video { max-height: 60vh; }
-.vbar { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: rgba(10, 12, 18, 0.9); }
-.vbar .vbtn { padding: 2px 8px; font-size: 14px; line-height: 1.2; background: transparent; border: 1px solid var(--line); color: #fff; }
-.vbar .vseek { flex: 1; min-width: 60px; }
-.vbar .vvol { width: 70px; }
-.vbar .vtime { font-size: 11px; color: #d6dbe4; white-space: nowrap; }
+.vbox { container-type: inline-size; }
+.vbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 6px; background: rgba(10, 12, 18, 0.9); }
+.vbar .vbtn { flex: none; padding: 2px 8px; font-size: 14px; line-height: 1.2; background: transparent; border: 1px solid var(--line); color: #fff; }
+/* The position bar gets a row of its own, so the buttons fit even in a small preview. */
+.vbar .vseek { order: -1; flex: 1 1 100%; min-width: 0; margin: 0; }
+.vbar .vvol { flex: none; width: 70px; min-width: 0; margin: 0; }
+.vbar .vtime { flex: 1; font-size: 11px; color: #d6dbe4; white-space: nowrap; }
+@container (max-width: 300px) { .vbar .vvol { display: none; } }
 .vbox:fullscreen { width: 100vw; height: 100vh; }
 .vbox:fullscreen video { flex: 1; min-height: 0; max-height: none; height: 100%; object-fit: contain; }
 .vbox:-webkit-full-screen { width: 100vw; height: 100vh; }
