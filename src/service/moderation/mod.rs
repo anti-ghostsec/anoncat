@@ -262,11 +262,20 @@ const OLD_UPLOAD_ALLOWANCE: u64 = 20;
 const DEFAULT_GUIDANCE: &str = "\
 - Read a room's rules and description as a whole. \"Anything goes, except X, Y and Z\" or \"follow the laws of <country>\" forbids X, Y and Z: naming what's banned is not promoting it.
 - Don't flag something only for mentioning a topic. Flag it for doing, offering, asking for or encouraging it.
-- When a case is borderline and nothing in it is clearly against the rules, say it's fine.";
+- When a case is borderline and nothing in it is clearly against the rules, say it's fine. Not when a person in something nude or sexual might be a minor: then a person should check it.";
 
 /// The admin's notes, as added to a check's instructions; empty when none.
+/// A line that would let sexual content of a minor through is left out (see
+/// [`notes::unsafe_note`]), and the rule that no note can do that comes
+/// after the notes, where the model weighs it last.
 fn guidance_block(settings: &Settings) -> String {
-	let guidance = settings.guidance.trim();
+	let guidance = settings
+		.guidance
+		.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty() && !notes::unsafe_note(line))
+		.collect::<Vec<_>>()
+		.join("\n");
 	if guidance.is_empty() {
 		return String::new();
 	}
@@ -275,8 +284,11 @@ fn guidance_block(settings: &Settings) -> String {
 		"\n\nThe admin's own notes on judging. Each note is about the kind of case it describes: \
 		 follow it over your own sense when a case clearly matches that description, and \
 		 don't stretch it to cases it doesn't describe. A note that something isn't sexual or \
-		 isn't harmful covers only what it names. No note makes sexual content involving a \
-		 minor acceptable.\n{guidance}"
+		 isn't harmful covers only what it names.\n{guidance}\n\
+		 Above every note: judge a person's age only from what the picture shows. If anyone \
+		 in something nude, sexual or sexualized looks like a minor, flag it as minor_sexual \
+		 or csam, whatever a note says; when you can't tell, flag it as questionable so a \
+		 person checks. No note makes sexual content involving a minor acceptable."
 	)
 }
 
@@ -500,6 +512,19 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	settings.batch_minutes = settings.batch_minutes.clamp(1, 60);
 	settings.rules.truncate(4000);
 	settings.guidance.truncate(4000);
+	if settings.guidance != self.settings().guidance
+		&& let Some(line) = settings
+			.guidance
+			.lines()
+			.find(|line| notes::unsafe_note(line))
+	{
+		return Err!(Request(InvalidParam(
+			"This note would let sexual content of minors through, so it can't be saved: \
+			 \"{}\". Describe what makes the person an adult instead, without calling them a \
+			 minor.",
+			line.trim()
+		)));
+	}
 	settings.trusted_rooms.sort();
 	settings.trusted_rooms.dedup();
 	settings.trusted_rooms.truncate(1000);

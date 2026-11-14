@@ -143,6 +143,12 @@ async fn tidy(&self, notes: &str, new: Option<(&str, Option<&str>)>) -> Result<S
 		 for anything sexual involving a minor. When \"about\" doesn't say enough to know \
 		 what the note covers, keep the note close to the admin's words with the case \
 		 described after it.\n\
+		 When the note says the person is an adult (the AI took them for a minor), write the \
+		 line about what shows they are an adult, such as pubic or body hair, an adult body, \
+		 wrinkles or grey hair, and never call that person a minor, child, kid, teen or young \
+		 girl or boy: a line that says a minor is an adult, or that something nude or sexual \
+		 with a minor is fine, is wrong whatever the note says. A line about a child in \
+		 something not sexual at all may name the child.\n\
 		 Merge duplicates and near-duplicates into one clear line. Keep every distinct \
 		 instruction and every specific exception or example that changes how a case is \
 		 judged; drop nothing that changes the meaning, and add nothing the admin didn't \
@@ -151,7 +157,9 @@ async fn tidy(&self, notes: &str, new: Option<(&str, Option<&str>)>) -> Result<S
 	let mut input = serde_json::json!({ "notes": notes });
 	if let Some((note, about)) = new {
 		input["new_note"] = note.into();
-		input["about"] = about.unwrap_or("not known").into();
+		if let Some(about) = about {
+			input["about"] = about.into();
+		}
 	}
 	let reply = venice::chat(self.client(), &key, &model, &system, &[], vec![Part::Text(
 		input.to_string(),
@@ -170,6 +178,122 @@ async fn tidy(&self, notes: &str, new: Option<(&str, Option<&str>)>) -> Result<S
 	{
 		return Err!("the AI's tidied notes weren't a plain list");
 	}
+	if lines.iter().any(|line| unsafe_note(line)) {
+		return Err!("the AI's tidied notes would let sexual content of minors through");
+	}
 
 	Ok(tidied)
+}
+
+/// Whether a note line would let sexual content of a minor through: it names
+/// a minor and something nude or sexual, and calls it fine or adult, without
+/// saying it must be reported. A safety net for the AI's merging, which once
+/// turned "this is an adult" on a report it described as a minor into "a
+/// topless minor ... is an adult"; such a line is never used, nor saved.
+#[must_use]
+pub(super) fn unsafe_note(line: &str) -> bool {
+	const MINOR: [&str; 24] = [
+		"minor", "minors", "child", "children", "kid", "kids", "kiddie", "underage", "preteen",
+		"preteens", "teen", "teens", "teenage", "teenager", "toddler", "infant", "baby",
+		"babies", "loli", "lolicon", "shota", "schoolgirl", "schoolboy", "jailbait",
+	];
+	const YOUNG: [&str; 4] = ["young girl", "young boy", "little girl", "little boy"];
+	const SEXUAL: [&str; 28] = [
+		"nude", "nudes", "nudity", "naked", "topless", "sexual", "sexualized", "sexualised",
+		"sexy", "genital", "genitals", "pubes", "pubic", "breast", "breasts", "cleavage",
+		"underwear", "lingerie", "panties", "crotch", "buttocks", "explicit", "porn",
+		"intimate", "erotic", "spread", "masturbating", "suggestive",
+	];
+	const NEGATIONS: [&str; 4] = ["not", "no", "nothing", "non"];
+	const FINE: [&str; 11] = [
+		" fine", " acceptable", " allowed", " ok", " okay", " harmless", " ignore",
+		" unimportant", " not important", " an adult", " are adults",
+	];
+	const FORBIDS: [&str; 9] = [
+		" never", " not fine", " isn t fine", " not acceptable", " not allowed",
+		" report it", " flag it", " is csam", " must be reported",
+	];
+
+	let words: Vec<String> = line
+		.split(|c: char| !c.is_alphanumeric())
+		.filter(|w| !w.is_empty())
+		.map(str::to_lowercase)
+		.collect();
+	let text = format!(" {} ", words.join(" "));
+
+	let minor = words.iter().any(|w| MINOR.contains(&w.as_str()))
+		|| YOUNG.iter().any(|phrase| text.contains(&format!(" {phrase} ")));
+	let sexual = words.iter().enumerate().any(|(at, w)| {
+		SEXUAL.contains(&w.as_str())
+			&& !at
+				.checked_sub(1)
+				.and_then(|before| words.get(before))
+				.is_some_and(|before| NEGATIONS.contains(&before.as_str()))
+	});
+	let fine = FINE
+		.iter()
+		.any(|phrase| text.contains(&format!("{phrase} ")));
+	let forbids = FORBIDS
+		.iter()
+		.any(|phrase| text.contains(&format!("{phrase} ")));
+
+	minor && sexual && fine && !forbids
+}
+
+#[cfg(test)]
+mod tests {
+	use super::unsafe_note;
+
+	#[test]
+	fn notes_that_let_minors_through_are_caught() {
+		for line in [
+			"- A topless minor posed squatting facing the camera, flagged as nudity and \
+			 borderline sexual content, is an adult.",
+			"- These non-nude cases are fine: a borderline sexualized underwear photo of a \
+			 young-looking person or likely minor.",
+			"- Nude or topless cases that look adult are fine, even when flagged as minor \
+			 nudity or minor_nude.",
+			"- A nude close-up with indeterminate age, even if flagged as minor_nude, is an \
+			 adult.",
+			"- A young girl with visible breasts in sexualized framing is fine.",
+		] {
+			assert!(unsafe_note(line), "should be caught: {line}");
+		}
+	}
+
+	/// The notes suggested to admins to start from: each must save.
+	#[test]
+	fn suggested_notes_are_kept() {
+		let notes = "\
+- Read a room's rules and description as a whole: \"anything goes, except X, Y and Z\" or \"follow the laws of <country>\" forbids X, Y and Z; naming what is banned is not promoting it.
+- Don't flag something only for mentioning a topic; flag it for doing, offering, asking for or encouraging it.
+- A normal photo with nothing sexual in it, such as a kid sitting, eating or playing, is fine; a child without a shirt in an everyday scene is not sexual.
+- Judge age only from what the picture shows. Adult features: pubic or body hair, an adult body shape, large breasts, wrinkles, grey hair, an older face. Being slim, short, or photographed close up doesn't make someone look young.
+- Nude, topless or sexual pictures of people with clear adult features are fine: judge their age by those features, not by a first impression.
+- When a nude or sexual picture's age can't be told either way, flag it as questionable for a person to check; don't call it fine.
+- Anyone who looks like a minor in a nude, sexual or sexualized picture or video (posed in underwear, focus on genitals, chest or buttocks) is never fine: report it as minor_sexual.
+- Drawings and cartoons of adults are fine, even explicit. Text that promotes sexual interest in children is a rules break: report it, but not as csam.
+- Watermarked porn-site promo pictures or videos: flag as spam only when the same kind is posted many times (an ad flood); a single one is fine.
+- Sexual slang between adults, such as an insult used as dirty talk on a nude adult picture, isn't hate speech.";
+		for line in notes.lines() {
+			assert!(!unsafe_note(line), "should be kept: {line}");
+		}
+	}
+
+	#[test]
+	fn ordinary_notes_are_kept() {
+		for line in [
+			"- A normal photo with nothing sexual in it, such as a kid just sitting, is fine.",
+			"- A child eating at a table, shirtless, is not nude and not sexual: fine.",
+			"- Nude or sexual pictures of people with clear adult features (pubic hair, \
+			 wrinkles, grey hair, an adult body) are fine.",
+			"- Anyone who looks like a minor in a nude or sexual picture is never fine: \
+			 report it as minor_sexual.",
+			"- An eighteen-year-old adult in a nude photo is fine.",
+			"- Drawings of adults are fine, even explicit.",
+			"- When a nude person's age can't be told, report it for a person to check.",
+		] {
+			assert!(!unsafe_note(line), "should be kept: {line}");
+		}
+	}
 }
