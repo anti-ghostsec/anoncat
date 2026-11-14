@@ -12,7 +12,7 @@ use axum::{
 use ruma::Mxc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tuwunel_core::{Err, Result};
+use tuwunel_core::{Err, Result, err};
 use tuwunel_service::{
 	moderation::{Blocked, Model, Report, Said, Settings, Turn},
 };
@@ -219,17 +219,33 @@ pub(crate) async fn media_route(
 			.unwrap_or_else(|| "orange".into());
 		services.media.stand_in_picture(&choice)
 	} else {
-		services.media.get_stored(&mxc).await?
+		services
+			.media
+			.get_stored(&mxc)
+			.await
+			.map_err(|_| {
+				err!(Request(NotFound(
+					"Not stored here: this server only has the small copy people were shown, or \
+					 nothing."
+				)))
+			})?
 	};
+	// Why there's no preview, in words: an attachment from an encrypted room
+	// keeps the type its app gave it, but its bytes are scrambled.
+	const ENCRYPTED: &str = "Encrypted attachment: only the people in its room can open it.";
 	let is_picture = original
 		.content_type
 		.as_deref()
 		.is_some_and(|t| PREVIEW_TYPES.contains(&t));
 	if thumb && is_picture {
+		if !picture_header(&original.content) {
+			return Err!(Request(Unrecognized("{ENCRYPTED}")));
+		}
 		let preview = services
 			.media
 			.admin_preview_owned(original.content)
-			.await?;
+			.await
+			.map_err(|_| err!(Request(Unrecognized("A picture this server can't read."))))?;
 		let mut response = preview
 			.views
 			.into_iter()
@@ -248,12 +264,22 @@ pub(crate) async fn media_route(
 
 	// A video's preview is frames from across it, taken here from the file:
 	// its stored thumbnail may be the sender's or another server's choice.
-	let is_video = original
+	let labelled_video = original
 		.content_type
 		.as_deref()
 		.is_some_and(|t| t.starts_with("video/"));
+	let video_bytes = tuwunel_service::media::looks_like_video(&original.content);
+	// A video sent as "any file" gets its frames too.
+	let is_video = labelled_video || video_bytes;
+	if thumb && labelled_video && !video_bytes {
+		return Err!(Request(Unrecognized("{ENCRYPTED}")));
+	}
 	if thumb && is_video {
-		let sheet = services.media.video_sheet(&original.content).await?;
+		let sheet = services
+			.media
+			.video_sheet(&original.content)
+			.await
+			.map_err(|e| err!(Request(Unrecognized("The video worker couldn't take frames: {e}"))))?;
 		let mut response = sheet.into_response();
 		let headers = response.headers_mut();
 		headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
@@ -281,7 +307,7 @@ pub(crate) async fn media_route(
 	// Anything else has no preview made from the file, and a stored
 	// thumbnail isn't trusted to show what the file is.
 	if thumb {
-		return Err!(Request(Unrecognized("No preview for this kind of file.")));
+		return Err!(Request(Unrecognized("Not a picture or video.")));
 	}
 	let media = original;
 
@@ -568,6 +594,22 @@ pub(crate) async fn play_route(
 		media_type: kind,
 		bytes,
 	}))
+}
+
+/// Whether bytes start like a picture format: JPEG, PNG, GIF, WebP, BMP,
+/// TIFF, or the box formats AVIF and HEIC.
+fn picture_header(bytes: &[u8]) -> bool {
+	matches!(
+		bytes,
+		[0xFF, 0xD8, 0xFF, ..]
+			| [0x89, b'P', b'N', b'G', ..]
+			| [b'G', b'I', b'F', b'8', ..]
+			| [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..]
+			| [b'B', b'M', ..]
+			| [b'I', b'I', 0x2A, 0, ..]
+			| [b'M', b'M', 0, 0x2A, ..]
+			| [_, _, _, _, b'f', b't', b'y', b'p', ..]
+	)
 }
 
 /// `GET .../moderation/play/{key}`: the file a play key opens, with byte

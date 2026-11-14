@@ -826,13 +826,17 @@ async function loadPreview(el, mxc) {
 	const got = await queued(async () => {
 		if (!el.isConnected) return null;
 		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?thumb=1`, authed());
-		if (!res.ok) return null;
+		// Why there's none, as the server says it: encrypted, not stored...
+		if (!res.ok) return { why: await res.json().then((b) => b.error).catch(() => null) };
 		const num = (name) => Number(res.headers.get(name)) || 0;
 		return { blob: await res.blob(), width: num("x-anoncat-width"), height: num("x-anoncat-height"), frames: num("x-anoncat-frames"), sheet: res.headers.get("x-anoncat-sheet") === "1" };
 	});
-	if (!got) {
+	if (!got || got.why !== undefined) {
 		const label = el.querySelector(".thumb-label");
-		if (label) label.textContent = "No preview";
+		if (label) {
+			label.textContent = got?.why ? `No preview: ${got.why}` : "No preview";
+			label.title = label.textContent;
+		}
 		return;
 	}
 	// Only raster images become blob: URLs; an SVG or HTML one would be a
