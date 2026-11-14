@@ -505,7 +505,7 @@ function blankMedia(mxc, label) {
 // Ticking several files and acting on them at once, and filters for the
 // grid. Swapping deletes each file for good and serves the stand-in; deleting
 // a copy from another server only frees the space here.
-function bulkBar(grid, { remote, onDone }) {
+function bulkBar(grid, { remote, onDone, show, onShow }) {
 	const items = () => [...grid.querySelectorAll(".media-item[data-mxc]")];
 	const picked = () => items().filter((el) => !el.hidden && el.querySelector(".pick")?.checked);
 	const count = h("span", { class: "muted small" });
@@ -546,9 +546,10 @@ function bulkBar(grid, { remote, onDone }) {
 	const FILTERS = [["", "All"], ["image", "Pictures"], ["video", "Videos"], ["notinroom", "Not seen in a room"], ["hidden", "Hidden"], ["swapped", "Swapped"]];
 	const filter = h("select", { "aria-label": "Show", onchange: () => {
 		const want = filter.value;
+		if (onShow) return void onShow(want);
 		for (const el of items()) el.hidden = Boolean(want) && !(el.dataset.flags || "").split(" ").includes(want);
 		update();
-	} }, FILTERS.filter(([key]) => remote || !["notinroom", "hidden", "swapped"].includes(key)).map(([key, label]) => h("option", { value: key }, label)));
+	} }, FILTERS.filter(([key]) => remote || !["notinroom", "hidden", "swapped"].includes(key)).map(([key, label]) => h("option", { value: key, selected: key === (show || "") }, label)));
 	const all = h("button", { type: "button", class: "ghost small", onclick: () => {
 		const shown = items().filter((el) => !el.hidden);
 		const on = !shown.every((el) => el.querySelector(".pick").checked);
@@ -644,7 +645,19 @@ async function storageCheck(main, params) {
 // Copies of other servers' media, kept here because someone here viewed it.
 async function remoteMedia(main, params) {
 	const only = params.get("server") || "";
-	const res = await api("GET", `/_anoncat/admin/v1/media/cached${only ? `?server=${enc(only)}` : ""}`);
+	const from = Math.max(0, Number(params.get("from")) || 0);
+	const show = params.get("show") || "";
+	const query = [only ? `server=${enc(only)}` : "", from ? `from=${from}` : "", show ? `show=${enc(show)}` : ""].filter(Boolean).join("&");
+	const res = await api("GET", `/_anoncat/admin/v1/media/cached${query ? `?${query}` : ""}`);
+	// The list comes a page at a time, biggest first.
+	const listed = res.listed ?? res.items;
+	const shown = res.media.filter((m) => m.bytes).length;
+	const turn = (to, kind = show) => navigate("media", { view: "remote", ...(only ? { server: only } : {}), ...(to ? { from: String(to) } : {}), ...(kind ? { show: kind } : {}) });
+	const SHOWN = { image: "pictures", video: "videos", notinroom: "files not seen in a room", hidden: "hidden files", swapped: "swapped files" };
+	const paging = listed > shown || from ? h("div", { class: "toolbar" },
+		h("button", { class: "ghost small", disabled: from === 0, onclick: () => turn(Math.max(0, from - 300)) }, "Bigger ones"),
+		h("span", { class: "muted small" }, `${from + 1}\u2013${from + shown} of ${listed} ${SHOWN[show] || "files"}, biggest first`),
+		h("button", { class: "ghost small", disabled: from + shown >= listed, onclick: () => turn(from + 300) }, "Next 300")) : null;
 	const reload = () => remoteMedia(main, params);
 
 	const serverRows = res.servers.map((s) => h("tr", { "data-server": s.server },
@@ -665,7 +678,8 @@ async function remoteMedia(main, params) {
 	const grid = res.media.length
 		? h("div", { class: "media-grid" }, res.media.map((m) => cachedItem(m, res.servers.some((s) => s.server === m.server && s.blocked))))
 		: h("p", { class: "muted" }, only ? "Nothing cached from this server." : "Nothing cached from other servers.");
-	const bulk = res.media.length ? bulkBar(grid, { remote: true, onDone: reload }) : null;
+	// The filter picks pages from everything the server has, not only this page.
+	const bulk = res.media.length || show ? bulkBar(grid, { remote: true, onDone: reload, show, onShow: (kind) => turn(0, kind) }) : null;
 
 	// The AI's pass over what's already stored: this server's, or everyone's.
 	const aiLine = h("span", { class: "muted small" });
@@ -706,9 +720,11 @@ async function remoteMedia(main, params) {
 				for (const row of serverRows) row.hidden = !words.every((w) => row.dataset.server.toLowerCase().includes(w));
 			} })),
 		only ? null : table(["Server", "Files", "Size", ""], serverRows, "Nothing cached."),
-		h("h2", {}, only ? "Files" : res.media.length < res.items ? `Biggest ${res.media.length} files` : "Files"),
+		h("h2", {}, "Files"),
+		paging,
 		bulk,
-		grid);
+		grid,
+		paging && from + shown < listed ? h("div", { class: "toolbar" }, h("button", { class: "ghost small", onclick: () => turn(from + 300) }, "Next 300")) : null);
 }
 
 function cachedItem(m, blocked) {

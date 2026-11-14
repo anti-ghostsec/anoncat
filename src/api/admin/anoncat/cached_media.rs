@@ -46,11 +46,16 @@ pub(crate) struct ListResponse {
 	items: usize,
 	bytes: u64,
 	servers: Vec<ServerTotal>,
-	/// Biggest first, at most [`LIMIT`]; only `?server=`'s when given.
+	/// Biggest first, at most [`LIMIT`] from `?from=`; only `?server=`'s
+	/// when given.
 	media: Vec<Item>,
+	/// How many files the list has in all, of which `media` is one page.
+	listed: usize,
 }
 
-/// `GET /_anoncat/admin/v1/media/cached[?server=name]`
+/// `GET /_anoncat/admin/v1/media/cached[?server=name][&from=n][&show=kind]`,
+/// where `show` is image, video, notinroom, hidden or swapped: the pages
+/// are then of those alone, across everything the server has.
 pub(crate) async fn list_route(
 	State(services): State<crate::State>,
 	headers: HeaderMap,
@@ -61,8 +66,42 @@ pub(crate) async fn list_route(
 		.query()
 		.and_then(|q| q.split('&').find_map(|p| p.strip_prefix("server=")))
 		.map(|s| urlencoding_decode(s));
+	let from: usize = uri
+		.query()
+		.and_then(|q| q.split('&').find_map(|p| p.strip_prefix("from=")))
+		.and_then(|n| n.parse().ok())
+		.unwrap_or(0);
+
+	let show = uri
+		.query()
+		.and_then(|q| q.split('&').find_map(|p| p.strip_prefix("show=")))
+		.unwrap_or_default()
+		.to_owned();
 
 	let cached = services.media.cached_remote().await;
+	let mut wanted = Vec::new();
+	for item in cached
+		.iter()
+		.filter(|item| only.as_deref().is_none_or(|s| item.server.as_str() == s))
+	{
+		let kind = item.media_type.as_deref().unwrap_or_default();
+		let keep = match show.as_str() {
+			| "image" => kind.starts_with("image/"),
+			| "video" => kind.starts_with("video/"),
+			| "hidden" => item
+				.mxc
+				.parts()
+				.is_ok_and(|parts| services.media.is_hidden(&parts)),
+			| "notinroom" => !services.moderation.in_any_room(item.mxc.as_str()).await,
+			// Swapped files are gone; they're added below, on the first page.
+			| "swapped" => false,
+			| _ => true,
+		};
+		if keep {
+			wanted.push(item);
+		}
+	}
+	let listed = wanted.len();
 
 	let mut servers: Vec<ServerTotal> = Vec::new();
 	for item in &cached {
@@ -82,11 +121,7 @@ pub(crate) async fn list_route(
 	servers.sort_by(|a, b| b.bytes.cmp(&a.bytes));
 
 	let mut media = Vec::new();
-	for item in cached
-		.iter()
-		.filter(|item| only.as_deref().is_none_or(|s| item.server.as_str() == s))
-		.take(LIMIT)
-	{
+	for item in wanted.into_iter().skip(from).take(LIMIT) {
 		media.push(Item {
 			mxc: item.mxc.to_string(),
 			server: item.server.to_string(),
@@ -102,7 +137,14 @@ pub(crate) async fn list_route(
 	// Swapped items' files are gone, so they're not among the cached ones;
 	// they're listed anyway, showing the stand-in, so a swap doesn't look
 	// like the item vanished.
-	for mxc in services.media.swapped().await {
+	let with_swapped = from == 0 && matches!(show.as_str(), "" | "swapped" | "hidden");
+	for mxc in services
+		.media
+		.swapped()
+		.await
+		.into_iter()
+		.filter(|_| with_swapped)
+	{
 		let Ok(parts) = Mxc::try_from(mxc.as_str()) else {
 			continue;
 		};
@@ -130,6 +172,7 @@ pub(crate) async fn list_route(
 		bytes: cached.iter().map(|i| i.bytes).sum(),
 		servers,
 		media,
+		listed,
 	}))
 }
 
