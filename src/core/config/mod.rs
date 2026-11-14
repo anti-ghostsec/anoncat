@@ -5846,6 +5846,12 @@ impl Config {
 	#[must_use]
 	pub fn upload_limit(&self) -> usize { self.max_upload_size.max(self.max_request_size) }
 
+	/// The biggest file fetched from another server: as big as an upload
+	/// here may be, so a file someone could post here can also be fetched
+	/// from elsewhere, and never less than `max_response_size`.
+	#[must_use]
+	pub fn media_fetch_limit(&self) -> usize { self.upload_limit().max(self.max_response_size) }
+
 	/// Loads raw configuration from ordered file and environment sources.
 	///
 	/// Explicit paths follow config files selected through the supported

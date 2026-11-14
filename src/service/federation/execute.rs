@@ -235,6 +235,13 @@ fn validate_request_destination(&self, dest: &ServerName) -> Result {
 		.require_remote_permitted(dest)
 }
 
+/// Whether a federation request fetches a file: `/_matrix/federation/v1/
+/// media/download/...`, or the older `/_matrix/media/*/download/...`.
+fn is_media_download(path: &str) -> bool {
+	path.starts_with("/_matrix/federation/v1/media/download/")
+		|| (path.starts_with("/_matrix/media/") && path.contains("/download/"))
+}
+
 #[implement(super::Service)]
 async fn perform<T>(
 	&self,
@@ -252,7 +259,14 @@ where
 	let method = request.method().clone();
 
 	debug!(?method, ?url, "Sending request");
-	let limit = self.services.server.config.max_response_size;
+	let config = &self.services.server.config;
+	// A file download may be as big as an upload; everything else is held
+	// to max_response_size.
+	let limit = if is_media_download(url.path()) {
+		config.media_fetch_limit()
+	} else {
+		config.max_response_size
+	};
 
 	match client.for_srv(actual.srv).execute(request).await {
 		| Ok(response) => handle_response::<T>(actual, dest, &method, &url, response, limit)
