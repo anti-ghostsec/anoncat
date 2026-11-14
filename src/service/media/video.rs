@@ -451,6 +451,79 @@ pub async fn video_sheet(&self, content: &[u8]) -> Result<Vec<u8>> {
 	run("nice", args.iter().copied(), limit, deadline).await
 }
 
+/// Longest a survey may take; it reads the whole video, like a sheet, but
+/// whatever the thumbnail timeout, a long video needs more than its 30s.
+const SURVEY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Stills a survey takes at most, and how far apart (see the worker).
+const SURVEY_MAX: f64 = 48.0;
+const SURVEY_GAP: f64 = 5.0;
+
+/// Stills from all through a video, for the AI's check: one every few
+/// seconds, at most 48, six to a sheet (3x2), as PNGs one after another.
+/// Six stills across a whole video miss a scene that starts partway
+/// through; this is what a person would see skimming it. Same slots and
+/// size limit as every video job.
+#[implement(super::Service)]
+pub async fn video_survey(&self, content: &[u8]) -> Result<Vec<u8>> {
+	let config = &self.services.config;
+	if config.media_video_thumbnail_command.is_empty() {
+		return Err!("Video frames aren't set up.");
+	}
+	if content.len() > config.media_video_thumbnail_max_size {
+		return Err!("Too big to take frames from.");
+	}
+
+	let timeout = SURVEY_TIMEOUT.max(Duration::from_secs(config.media_video_thumbnail_timeout));
+	let deadline = Instant::now()
+		.checked_add(timeout)
+		.ok_or_else(|| err!("Timeout is out of range."))?;
+
+	let Ok(Ok(_slot)) = timeout_at(deadline, self.video_thumbnail_slots.acquire()).await else {
+		return Err!("Timed out waiting for a video slot.");
+	};
+
+	let path = staging_dir(config).join(format!("{STAGED}{}", random_string(NAME_LENGTH)));
+	defer! {{ remove_file(&path).ok(); }}
+	timeout_at(deadline, stage(&path, content))
+		.await
+		.map_err(|_| err!("Timed out staging the video."))??;
+	let input = path.to_string_lossy().into_owned();
+
+	let limit = u64_from_usize_saturating(config.media_video_thumbnail_max_size);
+	if !config.media_video_worker.is_empty() {
+		return run(&config.media_video_worker, ["survey", input.as_str()], limit, deadline).await;
+	}
+
+	let [protocols, protocol_list, formats, format_list] = FFMPEG_INPUT_LIMITS;
+	let probe = [
+		"-v", "error", protocols, protocol_list, formats, format_list, "-show_entries",
+		"format=duration", "-of", "csv=p=0", input.as_str(),
+	];
+	let seconds = run("ffprobe", probe.iter().copied(), 4096, deadline)
+		.await
+		.ok()
+		.and_then(|out| String::from_utf8_lossy(&out).trim().parse::<f64>().ok())
+		.filter(|s| s.is_finite() && *s > 0.0);
+
+	let pick = seconds.map_or_else(
+		|| format!("fps={:.6}", 1.0 / SURVEY_GAP),
+		|s| {
+			let count = ((s / SURVEY_GAP / 6.0).ceil() * 6.0).clamp(6.0, SURVEY_MAX);
+			format!("fps={:.6}", count / s)
+		},
+	);
+	let filter =
+		format!("{pick},scale='if(gt(iw,ih),480,-2)':'if(gt(iw,ih),-2,480)',tile=3x2:padding=4");
+	let sheets = format!("{}", SURVEY_MAX as u32 / 6);
+	let args = [
+		"-n", "19", "ffmpeg", "-nostdin", "-loglevel", "error", "-threads", "1", protocols,
+		protocol_list, formats, format_list, "-i", input.as_str(), "-vf", filter.as_str(),
+		"-frames:v", sheets.as_str(), "-f", "image2pipe", "-c:v", "png", "pipe:1",
+	];
+
+	run("nice", args.iter().copied(), limit, deadline).await
+}
+
 /// ffmpeg's options limiting what it will open to the one staged file, read
 /// as a common video container. It probes the real format whatever the
 /// upload claims, and playlist formats (HLS, concat, SDP) would open other

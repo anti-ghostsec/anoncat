@@ -1086,7 +1086,7 @@ async fn image_verdict(
 	let mxc: Mxc<'_> = mxc_str.try_into()?;
 	// Media from another server may be stored only as the thumbnails people
 	// here were shown; then the biggest of those is what's judged.
-	let mut media = match self.services.media.get_stored(&mxc).await {
+	let media = match self.services.media.get_stored(&mxc).await {
 		| Ok(media) => media,
 		// Boxed: the thumbnail path is deep, and this sits inside the
 		// moderation worker's own future.
@@ -1098,17 +1098,17 @@ async fn image_verdict(
 		.await?,
 	};
 
-	// A video is judged by six frames from across it, tiled into one
-	// picture: the same view the admin's preview gives.
+	// A video, by its type or by its bytes (some come labelled as any file),
+	// is judged by stills from all through it.
 	let is_video = media
 		.content_type
 		.as_deref()
-		.is_some_and(|t| t.starts_with("video/"));
+		.is_some_and(|t| t.starts_with("video/"))
+		|| crate::media::looks_like_video(&media.content);
 	if is_video {
-		let Ok(sheet) = self.services.media.video_sheet(&media.content).await else {
-			return Ok(None);
-		};
-		media.content = sheet;
+		return self
+			.video_verdict(settings, key, &media.content)
+			.await;
 	}
 
 	if u64::try_from(media.content.len()).unwrap_or(u64::MAX) > IMAGE_MAX_BYTES {
@@ -1157,23 +1157,8 @@ async fn image_verdict(
 		| None => (vec![Part::Image { mime: mime.to_owned(), data: content }], "Check this image.".into()),
 	};
 
-	let note = if is_video {
-		"This picture is six frames taken from across one video, tiled three by two. Judge \
-		 the video as a whole; if any frame breaks the rules, the video does."
-			.to_owned()
-	} else {
-		note
-	};
-
 	let model = self.model(&settings.vision_model, true).await?;
-	let system = format!(
-		"You check images posted in the public rooms of a chat server. Its rules:\n{rules}\n\n\
-		 Reply with only JSON: {{\"verdict\":\"ok|questionable|bad\",\"category\":\"<short \
-		 word>\",\"reason\":\"<one short sentence>\"}}. Say \"bad\" only when the image clearly \
-		 breaks the rules or the law; \"questionable\" when a person should look.{guidance}",
-		rules = settings.rules,
-		guidance = guidance_block(&settings),
-	);
+	let system = image_system(settings);
 
 	let mut parts = vec![Part::Text(note)];
 	parts.extend(views);
@@ -1184,6 +1169,90 @@ async fn image_verdict(
 
 	Ok(Some(answer))
 
+}
+
+/// What the vision model is told, for pictures and videos alike.
+fn image_system(settings: &Settings) -> String {
+	format!(
+		"You check images posted in the public rooms of a chat server. Its rules:\n{rules}\n\n\
+		 Reply with only JSON: {{\"verdict\":\"ok|questionable|bad\",\"category\":\"<short \
+		 word>\",\"reason\":\"<one short sentence>\"}}. Say \"bad\" only when the image clearly \
+		 breaks the rules or the law; \"questionable\" when a person should look.{guidance}",
+		rules = settings.rules,
+		guidance = guidance_block(settings),
+	)
+}
+
+/// Sheets of stills the AI is shown at once; a video's survey is up to 8.
+const VIDEO_SHEETS_PER_ASK: usize = 4;
+
+/// The AI's verdict on a video, from stills taken every few seconds all
+/// through it, six to a sheet, a few sheets at a time; the worst answer
+/// stands. A scene can start well into a video, past where six stills from
+/// across it would ever land. A video whose stills can't be taken is
+/// reported as unchecked, for a person to look at, never passed in
+/// silence. An attachment from an encrypted room is labelled a video but is
+/// scrambled bytes nobody can see into; it's left alone.
+#[implement(Service)]
+async fn video_verdict(&self, settings: &Settings, key: &str, content: &[u8]) -> Result<Option<Value>> {
+	if !crate::media::looks_like_video(content) {
+		return Ok(None);
+	}
+
+	let sheets = match self
+		.services
+		.media
+		.video_survey_sheets(content)
+		.await
+	{
+		| Ok(sheets) => sheets,
+		| Err(e) => {
+			return Ok(Some(serde_json::json!({
+				"verdict": "questionable",
+				"category": "unchecked video",
+				"reason": format!("The AI couldn't check this video ({e}); a person should look."),
+			})));
+		},
+	};
+
+	let model = self.model(&settings.vision_model, true).await?;
+	let system = image_system(settings);
+	let total = sheets.len();
+	let rank = |answer: &Value| match answer["verdict"].as_str() {
+		| Some("bad") => 2,
+		| Some("questionable") => 1,
+		| _ => 0,
+	};
+
+	let mut worst: Option<Value> = None;
+	for (batch, sheets) in sheets.chunks(VIDEO_SHEETS_PER_ASK).enumerate() {
+		let first = batch * VIDEO_SHEETS_PER_ASK + 1;
+		let last = first + sheets.len() - 1;
+		let note = format!(
+			"These pictures are {first} to {last} of {total} from one video. Each is six stills \
+			 taken a few seconds apart, read left to right, then top to bottom; the {total} \
+			 pictures run through the whole video in order. What happens can change partway \
+			 through, so look at every still. If any still breaks the rules, the video does."
+		);
+		let mut parts = vec![Part::Text(note)];
+		parts.extend(sheets.iter().map(|data| Part::Image {
+			mime: "image/jpeg".into(),
+			data: data.clone(),
+		}));
+
+		let reply = venice::chat(self.client(), key, &model, &system, &[], parts).await?;
+		let Some(answer) = json_in(&reply) else {
+			return Err!("the AI's answer wasn't the expected JSON");
+		};
+		if worst.as_ref().is_none_or(|w| rank(&answer) > rank(w)) {
+			worst = Some(answer);
+		}
+		if worst.as_ref().is_some_and(|w| rank(w) == 2) {
+			break;
+		}
+	}
+
+	Ok(worst)
 }
 
 #[implement(Service)]

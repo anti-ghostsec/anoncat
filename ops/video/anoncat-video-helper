@@ -9,10 +9,13 @@ with the server's access to the whole vault. Here it has no network, no view
 of the vault or home directories, a throwaway user and a memory cap.
 
 The request names a job, never ffmpeg's arguments, so even a compromised
-server can only ask for these three:
+server can only ask for these four:
 
   frame     one representative still, as JPEG (clients' video thumbnails)
   sheet     six stills from across the video, tiled 3x2, as PNG (the panel)
+  survey    a still every few seconds through the whole video (at most 48),
+            six to a 3x2 sheet, as PNGs one after another (the AI check: a
+            scene that starts partway through falls between six stills)
   playable  a WebM copy (VP8 and Opus) any browser can play (the panel):
             open codecs, which need no extra codec packages, unlike H.264
 
@@ -29,7 +32,12 @@ import tempfile
 
 MAX_INPUT = 128 * 1024 * 1024
 MAX_OUTPUT = 128 * 1024 * 1024
-TIMEOUTS = {"frame": 30, "sheet": 30, "playable": 180}
+TIMEOUTS = {"frame": 30, "sheet": 30, "survey": 120, "playable": 180}
+# The survey: a still every SURVEY_GAP seconds, between 6 and SURVEY_MAX,
+# each SURVEY_SIDE pixels on its longer side.
+SURVEY_GAP = 5.0
+SURVEY_MAX = 48
+SURVEY_SIDE = 480
 
 # Only the staged file, read as a common video container: no playlist
 # formats (HLS, concat, SDP) that would open other files or URLs.
@@ -78,6 +86,18 @@ def command(job, path, timeout, out):
         return [*FFMPEG, "-threads", "1", *LIMITS, "-i", path,
                 "-vf", f"{pick},scale=320:-2,tile=3x2:padding=4",
                 "-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "pipe:1"]
+    if job == "survey":
+        seconds = duration(path, timeout)
+        if seconds:
+            count = min(SURVEY_MAX, max(6, -(-int(seconds // SURVEY_GAP) // 6) * 6))
+            pick = f"fps={count / seconds:.6f}"
+        else:
+            pick = f"fps={1 / SURVEY_GAP:.6f}"
+        side = SURVEY_SIDE
+        scale = f"scale='if(gt(iw,ih),{side},-2)':'if(gt(iw,ih),-2,{side})'"
+        return [*FFMPEG, "-threads", "1", *LIMITS, "-i", path,
+                "-vf", f"{pick},{scale},tile=3x2:padding=4",
+                "-frames:v", str(SURVEY_MAX // 6), "-f", "image2pipe", "-c:v", "png", "pipe:1"]
     if job == "playable":
         return [*FFMPEG, "-threads", "2", *LIMITS, "-i", path, "-map", "0:v:0",
                 "-map", "0:a:0?", "-sn", "-dn", "-vf", "scale=-2:'min(480,ih)'",

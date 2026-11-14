@@ -3,7 +3,7 @@
 it makes. The server runs this in place of ffmpeg, so ffmpeg itself never
 runs inside the server (see anoncat-video-helper):
 
-  anoncat-video frame|sheet|playable /path/to/staged/video
+  anoncat-video frame|sheet|survey|playable /path/to/staged/video
 
 Output on stdout; on failure, the reason on stderr and exit status 1.
 """
@@ -14,7 +14,7 @@ import struct
 import sys
 
 SOCKET = os.environ.get("ANONCAT_VIDEO_SOCKET", "/run/anoncat-video.sock")
-JOBS = {"frame", "sheet", "playable"}
+JOBS = {"frame", "sheet", "survey", "playable"}
 
 
 def read_exact(conn, n):
@@ -29,7 +29,7 @@ def read_exact(conn, n):
 
 def main():
     if len(sys.argv) != 3 or sys.argv[1] not in JOBS:
-        sys.exit("usage: anoncat-video frame|sheet|playable FILE")
+        sys.exit("usage: anoncat-video frame|sheet|survey|playable FILE")
     job, path = sys.argv[1], sys.argv[2]
     with open(path, "rb") as f:
         video = f.read()

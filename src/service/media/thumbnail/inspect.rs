@@ -16,7 +16,6 @@ use std::io::Cursor;
 
 #[cfg(feature = "media_thumbnail")]
 use image::{DynamicImage, ImageFormat};
-#[cfg(not(feature = "media_thumbnail"))]
 use tuwunel_core::Err;
 #[cfg(feature = "media_thumbnail")]
 use tuwunel_core::err;
@@ -276,6 +275,53 @@ pub async fn video_frame_prints(&self, content: &[u8]) -> Vec<([u8; 32], u8)> {
 #[implement(super::super::Service)]
 pub async fn video_frame_prints(&self, _content: &[u8]) -> Vec<([u8; 32], u8)> { Vec::new() }
 
+/// A video's survey (see `video_survey`) as the AI gets it: each sheet of six
+/// stills as a JPEG, in order. Empty for anything that isn't a video, or
+/// that the video worker can't read.
+#[cfg(feature = "media_thumbnail")]
+#[implement(super::super::Service)]
+pub async fn video_survey_sheets(&self, content: &[u8]) -> Result<Vec<Vec<u8>>> {
+	let pngs = self.video_survey(content).await?;
+	let sheets: Vec<Vec<u8>> = split_pngs(&pngs)
+		.into_iter()
+		.filter_map(|png| self.decode(png).ok())
+		.filter_map(|sheet| {
+			let mut out = Vec::new();
+			DynamicImage::ImageRgb8(sheet.to_rgb8())
+				.write_to(&mut Cursor::new(&mut out), ImageFormat::Jpeg)
+				.ok()
+				.map(|()| out)
+		})
+		.collect();
+	if sheets.is_empty() {
+		return Err!("no frames came out of it");
+	}
+
+	Ok(sheets)
+}
+
+#[cfg(not(feature = "media_thumbnail"))]
+#[implement(super::super::Service)]
+pub async fn video_survey_sheets(&self, _content: &[u8]) -> Result<Vec<Vec<u8>>> {
+	Err!("This build can't read videos.")
+}
+
+/// PNGs written one after another, as ffmpeg's image2pipe does, apart: each
+/// ends with its IEND chunk.
+#[cfg(feature = "media_thumbnail")]
+fn split_pngs(bytes: &[u8]) -> Vec<&[u8]> {
+	const END: &[u8] = b"IEND\xaeB`\x82";
+	let mut out = Vec::new();
+	let mut rest = bytes;
+	while let Some(at) = rest.windows(END.len()).position(|w| w == END) {
+		let (png, after) = rest.split_at(at.saturating_add(END.len()));
+		out.push(png);
+		rest = after;
+	}
+
+	out
+}
+
 /// The six stills of a preview sheet: three across, two down, with four
 /// pixels between them (`tile=3x2:padding=4`).
 #[cfg(feature = "media_thumbnail")]
@@ -352,6 +398,21 @@ mod frame_tests {
 		ts[0] = 0x47;
 		ts[188] = 0x47;
 		assert!(looks_like_video(&ts));
+	}
+
+	#[test]
+	fn pngs_one_after_another_come_apart() {
+		let png = |w| {
+			let mut out = Vec::new();
+			image::DynamicImage::new_rgb8(w, 2)
+				.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+				.unwrap();
+			out
+		};
+		let joined = [png(3), png(5), png(7)].concat();
+		let apart = super::split_pngs(&joined);
+		assert_eq!(apart.len(), 3);
+		assert_eq!(image::load_from_memory(apart[2]).unwrap().width(), 7);
 	}
 
 	#[test]

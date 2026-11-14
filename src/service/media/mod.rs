@@ -241,6 +241,12 @@ impl Service {
 		Err!("This build can't read videos.")
 	}
 
+	/// Without video support built in there are no frames to check.
+	#[cfg(not(feature = "media_thumbnail"))]
+	pub async fn video_survey(&self, _content: &[u8]) -> Result<Vec<u8>> {
+		Err!("This build can't read videos.")
+	}
+
 	/// Without video support built in nothing can be converted.
 	#[cfg(not(feature = "media_thumbnail"))]
 	pub async fn video_playable(&self, _content: &[u8]) -> Result<Vec<u8>> {
