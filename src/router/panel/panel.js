@@ -1305,12 +1305,50 @@ pages.badfiles = async (main) => {
 pages.reports = async (main, params) => {
 	const all = params.get("all") === "1";
 	const res = await api("GET", `${MOD}/reports${all ? "?all=true" : ""}`);
-	const refresh = () => render();
+	// Reloads the list where you were: the same spot on the page, and the
+	// report at the same place in the list (the next one, if yours closed).
+	const refresh = async () => {
+		const at = Math.max(0, [...main.querySelectorAll(".report")].indexOf(document.activeElement?.closest?.(".report")));
+		const y = window.scrollY;
+		await render();
+		window.scrollTo(0, y);
+		const after = main.querySelectorAll(".report");
+		after[Math.min(at, after.length - 1)]?.focus({ preventScroll: true });
+	};
+	// Takes closed reports off the list where they are, without reloading
+	// it: the one below takes their place, and the next key acts on it.
+	const drop = (gone) => {
+		const shown = [...list.querySelectorAll(".report")];
+		const last = Math.max(...gone.map((c) => shown.indexOf(c)));
+		const next = shown.slice(last + 1).find((c) => !gone.includes(c))
+			|| shown.slice(0, Math.max(0, last)).reverse().find((c) => !gone.includes(c));
+		for (const card of gone) {
+			let head = card.previousElementSibling;
+			while (head && !head.matches(".group-head")) head = head.previousElementSibling;
+			card.remove();
+			if (head) {
+				const left = Number(head.dataset.count) - 1;
+				head.dataset.count = String(left);
+				if (left <= 0) head.remove();
+				else head.textContent = `${head.dataset.key} \u00B7 ${left}`;
+			}
+		}
+		items = items.filter((c) => !gone.includes(c));
+		refreshBadges();
+		if (!next) return void refresh();
+		next.focus({ preventScroll: true });
+	};
+	// Every report on one file in the list: swapping it closes them all.
+	const onFile = (mxc) => [...list.querySelectorAll(".report")].filter((c) => c.dataset.mxc === mxc);
+	const CLOSES = new Set(["dismiss", "resolve", "trust_room"]);
 	const sevTag = (s) => h("span", { class: `tag ${s === "high" ? "bad" : s === "medium" ? "warn" : ""}` }, s);
-	const items = res.reports.map((r) => {
+	let items = res.reports.map((r) => {
+		let card;
 		const act = (action, done) => attempt(done, () => api("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => {
 			if (x && action === "hide" && r.mxc) blankMedia(r.mxc, "Hidden");
-			return x && refresh();
+			if (!x) return;
+			if (CLOSES.has(action) && !all) return drop([card]);
+			return refresh();
 		});
 		// A picture checked as it arrived, uploaded or fetched, has no room or
 		// message; its sender is the uploader, or the server it came from.
@@ -1363,9 +1401,11 @@ pages.reports = async (main, params) => {
 				.catch(() => null)
 				.then((info) => fill(preview,
 					mediaThumb(r.mxc, info?.media_type || null, { cls: "report-thumb", held: r.hidden }),
-					mediaActions(r.mxc, { info: info || undefined, onChanged: refresh })));
+					mediaActions(r.mxc, { info: info || undefined, onChanged: refresh,
+						// The server closed its open reports; they go from the list.
+						onSwapped: all ? refresh : () => drop(onFile(r.mxc)) })));
 		}
-		return h("div", { class: `card report${r.severity === "high" ? " loud" : ""}`, tabindex: "-1",
+		card = h("div", { class: `card report${r.severity === "high" ? " loud" : ""}`, tabindex: "-1", "data-mxc": r.mxc || "",
 			"data-group-sender": r.sender || "", "data-group-server": r.sender ? serverOf(r.sender) || r.sender : "", "data-group-room": r.room_name || r.room_id || "" },
 			h("div", { class: "report-head" },
 				sevTag(r.severity),
@@ -1383,6 +1423,7 @@ pages.reports = async (main, params) => {
 				: roomless ? `${r.room_name || "Checked as it arrived"}: ${fromServer ? "from" : "by"} ${r.sender}`
 				: `${r.sender} in ${r.room_name || r.room_id}`),
 			h("div", { class: "toolbar" }, buttons));
+		return card;
 	});
 	// Grouping: reports from one sender, server or room together, under a
 	// heading with their count, biggest group first.
@@ -1397,7 +1438,7 @@ pages.reports = async (main, params) => {
 			groups.get(key).push(el);
 		}
 		const sorted = [...groups.entries()].sort((a, b) => b[1].length - a[1].length);
-		fill(list, ...sorted.flatMap(([key, els]) => [h("h3", { class: "group-head" }, `${key} \u00B7 ${els.length}`), ...els]));
+		fill(list, ...sorted.flatMap(([key, els]) => [h("h3", { class: "group-head", "data-key": key, "data-count": String(els.length) }, `${key} \u00B7 ${els.length}`), ...els]));
 	};
 	draw(groupBy);
 	const groupSelect = h("select", { "aria-label": "Group reports", onchange: () => {
@@ -1534,7 +1575,7 @@ async function copyText(text) {
 // What can be done to one media item, wherever it shows: copy its link,
 // swap it for the stand-in (hide), delete it, block its server or uploader.
 // `info` skips the lookup when the caller already knows it.
-function mediaActions(mxc, { info, compact = false, onDeleted, onChanged } = {}) {
+function mediaActions(mxc, { info, compact = false, onDeleted, onChanged, onSwapped } = {}) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
 	const path = `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`;
 	const cls = compact ? "ghost tiny" : "ghost small";
@@ -1552,7 +1593,7 @@ function mediaActions(mxc, { info, compact = false, onDeleted, onChanged } = {})
 			blankMedia(mxc, "Swapped for the stand-in");
 			Object.assign(i, { hidden: true, swapped: true, stored: false });
 			draw(i);
-			onChanged?.();
+			(onSwapped || onChanged)?.();
 		});
 		const show = i.hidden && !i.swapped ? h("button", { class: cls, type: "button", title: "Serve the real file again", onclick: async () => {
 			if (!(await attempt("Shown again", () => api("DELETE", `${path}/hide`)))) return;

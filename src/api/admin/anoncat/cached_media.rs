@@ -258,10 +258,12 @@ pub(crate) async fn hide_route(
 	Path((server, media_id)): Path<(String, String)>,
 ) -> Result<Json<HiddenResponse>> {
 	let admin = super::require_admin_token(&services, &headers).await?;
+	let mxc = item_mxc(&server, &media_id)?;
 	services
 		.media
-		.swap(&item_mxc(&server, &media_id)?, &format!("by {admin}"))
+		.swap(&mxc, &format!("by {admin}"))
 		.await?;
+	services.moderation.resolve_media(&mxc).await;
 
 	Ok(Json(HiddenResponse { hidden: true }))
 }

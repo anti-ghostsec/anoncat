@@ -10,9 +10,21 @@ pub(super) async fn swap(&self, mxc: OwnedMxcUri, reason: Vec<String>) -> Result
 		.media
 		.swap(mxc.as_str(), &reason.join(" "))
 		.await?;
+	let closed = self
+		.services
+		.moderation
+		.resolve_media(mxc.as_str())
+		.await;
 
-	self.write_str("Swapped for the stand-in: the file is deleted, and everyone now sees the stand-in in its place. This can't be undone.")
-		.await
+	let reports = match closed {
+		| 0 => String::new(),
+		| 1 => " Its open report is closed.".to_owned(),
+		| n => format!(" Its {n} open reports are closed."),
+	};
+	self.write_str(&format!(
+		"Swapped for the stand-in: the file is deleted, and everyone now sees the stand-in in its place. This can't be undone.{reports}"
+	))
+	.await
 }
 
 /// Hides a file until review: it's kept, but served to nobody.

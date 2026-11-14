@@ -1365,6 +1365,27 @@ pub async fn act(&self, id: u64, action: &str) -> Result<Report> {
 	Ok(report)
 }
 
+/// Closes the open reports on a file that was just swapped for the stand-in:
+/// it's dealt with, and a list of reports on stand-ins would only bury the
+/// rest. Returns how many were closed.
+#[implement(Service)]
+pub async fn resolve_media(&self, mxc: &str) -> usize {
+	let open = self
+		.reports(false, usize::MAX)
+		.await
+		.into_iter()
+		.filter(|r| r.mxc.as_deref() == Some(mxc));
+
+	let mut closed = 0;
+	for mut report in open {
+		report.status = "resolved".into();
+		self.save_report(&report);
+		closed += 1;
+	}
+
+	closed
+}
+
 /// Stops checking a room's name and topic: the admin judged them fine.
 #[implement(Service)]
 fn trust_room(&self, room_id: &str) -> Result {
