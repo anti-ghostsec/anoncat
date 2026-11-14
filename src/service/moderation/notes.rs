@@ -144,8 +144,8 @@ async fn tidy(&self, notes: &str, new: Option<(&str, Option<&str>)>) -> Result<S
 		 what the note covers, keep the note close to the admin's words with the case \
 		 described after it.\n\
 		 When the note says the person is an adult (the AI took them for a minor), write the \
-		 line about what shows they are an adult, such as pubic or body hair, an adult body, \
-		 wrinkles or grey hair, and never call that person a minor, child, kid, teen or young \
+		 line about what shows they are an adult, such as pubic or body hair or an adult \
+		 body, not the face alone, and never call that person a minor, child, kid, teen or young \
 		 girl or boy: a line that says a minor is an adult, or that something nude or sexual \
 		 with a minor is fine, is wrong whatever the note says. A line about a child in \
 		 something not sexual at all may name the child.\n\
@@ -268,7 +268,8 @@ mod tests {
 - Read a room's rules and description as a whole: \"anything goes, except X, Y and Z\" or \"follow the laws of <country>\" forbids X, Y and Z; naming what is banned is not promoting it.
 - Don't flag something only for mentioning a topic; flag it for doing, offering, asking for or encouraging it.
 - A normal photo with nothing sexual in it, such as a kid sitting, eating or playing, is fine; a child without a shirt in an everyday scene is not sexual.
-- Judge age only from what the picture shows. Adult features: pubic or body hair, an adult body shape, large breasts, wrinkles, grey hair, an older face. Being slim, short, or photographed close up doesn't make someone look young.
+- Judge age only from what the picture shows, by the body first: pubic or body hair, an adult body shape and proportions, large breasts. Being slim, short, or photographed close up doesn't make someone look young.
+- An adult face on a body that looks like a child's is a face swap or an edited picture of a child: report it as csam.
 - Nude, topless or sexual pictures of people with clear adult features are fine: judge their age by those features, not by a first impression.
 - When a nude or sexual picture's age can't be told either way, flag it as questionable for a person to check; don't call it fine.
 - Anyone who looks like a minor in a nude, sexual or sexualized picture or video (posed in underwear, focus on genitals, chest or buttocks) is never fine: report it as minor_sexual.

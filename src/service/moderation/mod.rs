@@ -285,10 +285,13 @@ fn guidance_block(settings: &Settings) -> String {
 		 follow it over your own sense when a case clearly matches that description, and \
 		 don't stretch it to cases it doesn't describe. A note that something isn't sexual or \
 		 isn't harmful covers only what it names.\n{guidance}\n\
-		 Above every note: judge a person's age only from what the picture shows. If anyone \
-		 in something nude, sexual or sexualized looks like a minor, flag it as minor_sexual \
-		 or csam, whatever a note says; when you can't tell, flag it as questionable so a \
-		 person checks. No note makes sexual content involving a minor acceptable."
+		 Above every note: judge a person's age only from what the picture shows, and from \
+		 the body before the face. A face can be swapped in or edited: an adult face on a \
+		 body that looks like a child's is an edited picture of a child. If anyone in \
+		 something nude, sexual or sexualized looks like a minor, by the body or the face, \
+		 flag it as minor_sexual or csam, whatever a note says; when you can't tell, flag it \
+		 as questionable so a person checks. No note makes sexual content involving a minor \
+		 acceptable."
 	)
 }
 
