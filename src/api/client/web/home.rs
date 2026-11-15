@@ -54,7 +54,7 @@ pub(super) async fn index_route(State(services): State<crate::State>) -> Respons
 <h2>How to join</h2>
 <ol class="steps">
 <li>Create an account above.</li>
-<li>Get a Matrix app, like <a href="https://element.io/download" rel="noopener noreferrer">Element</a>.</li>
+<li>Get a Matrix app: <a href="https://element.io/download" rel="noopener noreferrer">Element</a>, or <a href="https://github.com/anti-ghostsec/whisker" rel="noopener noreferrer">Whisker</a>, our own. Whisker is built for privacy first, but it's early in development, so expect rough edges.</li>
 <li>Sign in, choose another homeserver, and enter <strong>{server}</strong>.</li>
 </ol>
 </section>
