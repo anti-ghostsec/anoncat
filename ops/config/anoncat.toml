@@ -68,6 +68,11 @@ client_request_timeout = 1800
 allow_registration = true
 registration_token = "@REGISTRATION_TOKEN@"
 
+# Names nobody can sign up with, in an app or on the web page, so no one
+# looks like they speak for the server. Accounts that already have one are
+# only named in the log at start.
+forbidden_usernames = ["^admin", "^mod(erator)?s?$", "^staff", "^support", "^official", "^anoncat", "^root$", "^system", "^security", "^abuse", "^postmaster$", "^server", "^matrix$", "^help$"]
+
 # Or anyone can sign up at https://anoncat.gleeze.com/register (the front page
 # sends it on to this server's /register): a picture captcha drawn here, no
 # token, at most web_signups_per_hour accounts an hour. Matrix apps signing up

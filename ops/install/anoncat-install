@@ -167,6 +167,15 @@ cleanup_local_media_max_age = "90d"' "$DATA/anoncat.toml"
 client_request_timeout = 1800' "$DATA/anoncat.toml"
 		echo "config: added client_request_timeout"
 	fi
+	if ! grep -q '^forbidden_usernames' "$DATA/anoncat.toml"; then
+		sed -i '/^registration_token/a\
+\
+# Names nobody can sign up with, in an app or on the web page, so no one\
+# looks like they speak for the server. Accounts that already have one are\
+# only named in the log at start.\
+forbidden_usernames = ["^admin", "^mod(erator)?s?$", "^staff", "^support", "^official", "^anoncat", "^root$", "^system", "^security", "^abuse", "^postmaster$", "^server", "^matrix$", "^help$"]' "$DATA/anoncat.toml"
+		echo "config: staff names like admin can't be signed up with"
+	fi
 fi
 chown -R "$USER_:$USER_" "$DATA"
 
