@@ -280,18 +280,47 @@ async fn ask(&self, key: &str, model: &str, system: &str, history: &[Turn]) -> R
 	};
 
 	let reply = venice::chat(self.client(), key, model, &system, &turns, Vec::new()).await?;
+	let (text, cut) = from_dsml(&self.masks.lock().expect("locked").unmask(&reply));
+	if !cut {
+		return Ok(text);
+	}
 
-	let reply = self.masks.lock().expect("locked").unmask(&reply);
+	// The service stopped the reply partway through a tool call, which it
+	// does when a model writes one with no tools offered. Asked once more,
+	// with what it wrote, for the command as a block.
+	let mut again = turns;
+	again.push(Turn { role: "assistant".into(), content: reply });
+	again.push(Turn { role: "user".into(), content: CUT_OFF_ASK.into() });
+	let retry = venice::chat(self.client(), key, model, &system, &again, Vec::new()).await?;
+	let (retried, cut) = from_dsml(&self.masks.lock().expect("locked").unmask(&retry));
+	if !cut && !retried.is_empty() {
+		return Ok(retried);
+	}
 
-	Ok(from_dsml(&reply))
+	Ok(format!("{text}\n\n{CUT_OFF_NOTE}").trim().to_owned())
 }
 
-/// A tag of DeepSeek's tool-call markup (DSML), with either bar it's
-/// written with: `<｜DSML｜name` or `</｜DSML｜name`.
-const DSML: &str = r"<\s*/?\s*[｜|]\s*DSML\s*[｜|]\s*";
+/// Asked when a reply stopped in a tool call.
+const CUT_OFF_ASK: &str = "Your reply was cut off in the middle of a tool call, so nothing ran. \
+	 Write the command again as a ```command block, as the instructions say, not as a tool or \
+	 function call.";
+
+/// Shown when it stopped there twice.
+const CUT_OFF_NOTE: &str = "(The AI started a command but its reply was cut off before it \
+	 finished, so there's nothing to run. Ask again, or ask it for the command as a command block.)";
+
+/// A DSML prefix on a tag, with either bar it's written with: the
+/// `<｜DSML｜` of `<｜DSML｜invoke`, or the `</｜DSML｜` of a closing one.
+const DSML: &str = r"<\s*(/?)\s*[｜|]\s*DSML\s*[｜|]\s*";
+
+/// The admin command groups: an invoke named starting with one is named
+/// for the command itself, not for a tool that carries it.
+const COMMAND_GROUPS: &[&str] =
+	&["appservices", "users", "rooms", "federation", "server", "media", "debug", "query", "token", "plugins"];
 
 /// DeepSeek models were trained to call tools in their own markup, and
-/// write it even when told to use ```command blocks:
+/// write it even when told to use ```command blocks. It comes in many shapes,
+/// often half of it without the DSML prefix:
 ///
 /// ```text
 /// <｜DSML｜function_calls>
@@ -299,47 +328,90 @@ const DSML: &str = r"<\s*/?\s*[｜|]\s*DSML\s*[｜|]\s*";
 /// <｜DSML｜parameter name="command" string="true">users list-users</｜DSML｜parameter>
 /// </｜DSML｜invoke>
 /// </｜DSML｜function_calls>
+///
+/// <｜DSML｜ calls>
+/// <｜DSML｜ invoke name="users list-joined-rooms">@a:x</parameter>
+/// </invoke>
 /// ```
 ///
 /// Each invoke becomes a ```command block, so the panel, the chat history
 /// and the read-only check all see one form. The command is the parameter
-/// named like one, else the only one there is; an invoke without one is
-/// dropped rather than guessed at.
-fn from_dsml(reply: &str) -> String {
+/// named like one, else the only one there is; else, under an invoke named
+/// for a command, that name with what the invoke holds as its arguments. An
+/// invoke without one is dropped rather than guessed at.
+///
+/// The service often stops a reply partway through the markup. What's left
+/// of it is cut away, never shown, and the second value says so: a command
+/// cut short isn't run, even a read-only one.
+fn from_dsml(reply: &str) -> (String, bool) {
+	static PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(DSML).expect("valid regex"));
 	static INVOKE: LazyLock<Regex> = LazyLock::new(|| {
-		Regex::new(&format!(r#"(?s){DSML}invoke\s+name\s*=\s*"[^"]*"\s*>(.*?){DSML}invoke\s*>"#))
+		Regex::new(r#"(?s)<\s*invoke\s+name\s*=\s*"([^"]*)"\s*>(.*?)<\s*/\s*invoke\s*>"#)
 			.expect("valid regex")
 	});
 	static PARAM: LazyLock<Regex> = LazyLock::new(|| {
-		Regex::new(&format!(
-			r#"(?s){DSML}parameter\s+name\s*=\s*"([^"]*)"[^>]*>(.*?){DSML}parameter\s*>"#
-		))
-		.expect("valid regex")
+		Regex::new(r#"(?s)<\s*parameter\s+name\s*=\s*"([^"]*)"[^>]*>(.*?)<\s*/\s*parameter\s*>"#)
+			.expect("valid regex")
 	});
+	static TAG: LazyLock<Regex> = LazyLock::new(|| {
+		Regex::new(r"(?i)<\s*/?\s*(parameter|invoke)\b[^>]*>").expect("valid regex")
+	});
+	// `function_calls`, `tool_calls`, and the broken ` calls` it also writes.
 	static WRAPPER: LazyLock<Regex> = LazyLock::new(|| {
-		Regex::new(&format!(r"{DSML}(function_calls|tool_calls)\s*>")).expect("valid regex")
+		Regex::new(r"(?i)<\s*/?\s*[a-z_ ]*calls\s*>").expect("valid regex")
+	});
+	static LEFTOVER: LazyLock<Regex> = LazyLock::new(|| {
+		Regex::new(r"(?i)<\s*/?\s*(invoke|parameter|[a-z_]*calls)\b").expect("valid regex")
 	});
 
-	if !reply.contains("DSML") {
-		return reply.to_owned();
+	if !reply.contains("DSML") && !reply.contains("<invoke") {
+		return (reply.to_owned(), false);
 	}
 
-	let replaced = INVOKE.replace_all(reply, |invoke: &regex::Captures<'_>| {
+	let plain = PREFIX.replace_all(reply, "<$1");
+	let replaced = INVOKE.replace_all(&plain, |invoke: &regex::Captures<'_>| {
+		let name = invoke[1].trim();
+		let body = &invoke[2];
 		let params: Vec<(String, String)> = PARAM
-			.captures_iter(&invoke[1])
+			.captures_iter(body)
 			.map(|p| (p[1].to_lowercase(), p[2].trim().to_owned()))
 			.collect();
+		let first_line = |value: &str| value.lines().next().unwrap_or_default().trim().to_owned();
+		let named_for_command = name
+			.split_whitespace()
+			.next()
+			.is_some_and(|word| COMMAND_GROUPS.contains(&word.to_lowercase().as_str()));
+
 		let command = params
 			.iter()
 			.find(|(name, _)| ["command", "cmd", "admin_command", "input", "query"].contains(&name.as_str()))
-			.or_else(|| (params.len() == 1).then(|| &params[0]))
-			.map(|(_, value)| value.lines().next().unwrap_or_default().trim().to_owned())
+			.or_else(|| (params.len() == 1 && !named_for_command).then(|| &params[0]))
+			.map(|(_, value)| first_line(value))
+			.or_else(|| {
+				// The command is the invoke's name, with what it holds, tags
+				// and all, as the arguments.
+				named_for_command.then(|| {
+					let args: Vec<String> = if params.is_empty() {
+						vec![first_line(&TAG.replace_all(body, " "))]
+					} else {
+						params.iter().map(|(_, value)| first_line(value)).collect()
+					};
+					std::iter::once(name.to_owned())
+						.chain(args.into_iter().filter(|a| !a.is_empty()))
+						.collect::<Vec<_>>()
+						.join(" ")
+				})
+			})
 			.filter(|command| !command.is_empty());
 
 		command.map_or_else(String::new, |command| format!("\n```command\n{command}\n```\n"))
 	});
 
-	WRAPPER.replace_all(&replaced, "").trim().to_owned()
+	let text = WRAPPER.replace_all(&replaced, "");
+	match LEFTOVER.find(&text) {
+		| Some(rest) => (text[..rest.start()].trim().to_owned(), true),
+		| None => (text.trim().to_owned(), false),
+	}
 }
 
 #[implement(Service)]
@@ -584,10 +656,24 @@ mod tests {
 		let proposed = proposed_commands(reply);
 		assert_eq!(proposed, ["query room-timeline last !r:x", "users deactivate @a:x"]);
 		let dsml = "Checking.\n<｜DSML｜function_calls>\n<｜DSML｜invoke name=\"run_command\">\n<｜DSML｜parameter name=\"command\" string=\"true\">users list-users</｜DSML｜parameter>\n</｜DSML｜invoke>\n<|DSML|invoke name=\"x\"><|DSML|parameter name=\"text\">rooms info !r:x</|DSML|parameter></|DSML|invoke>\n</｜DSML｜function_calls>";
-		let normal = super::from_dsml(dsml);
+		let (normal, cut) = super::from_dsml(dsml);
 		assert_eq!(proposed_commands(&normal), ["users list-users", "rooms info !r:x"]);
-		assert!(!normal.contains("DSML"));
-		assert_eq!(super::from_dsml("no markup"), "no markup");
+		assert!(!normal.contains("DSML") && !cut);
+		assert_eq!(super::from_dsml("no markup"), ("no markup".to_owned(), false));
+
+		// Cut off by the service partway through: nothing shown, nothing run.
+		let (text, cut) = super::from_dsml("Let me check.\n<\u{ff5c}DSML\u{ff5c} calls>\n<\u{ff5c}DSML\u{ff5c} invoke name=\"debug");
+		assert_eq!((text.as_str(), cut), ("Let me check.", true));
+		// The command written as the invoke's name.
+		let (text, cut) = super::from_dsml("<|DSML| calls><|DSML|invoke name=\"rooms info !r:x\"></|DSML|invoke></|DSML| calls>");
+		assert_eq!((proposed_commands(&text), cut), (vec!["rooms info !r:x".to_owned()], false));
+		// Named for the command, its argument bare, closed without the prefix.
+		let (text, cut) = super::from_dsml("<\u{ff5c}DSML\u{ff5c} calls>\n<\u{ff5c}DSML\u{ff5c} invoke name=\"federation remote-user-in-rooms\">@tod:x.se</parameter>\n</invoke>\n<invoke name=\"users list-joined-rooms\">@tod:x.se</parameter>\n</invoke>");
+		assert_eq!(
+			(proposed_commands(&text), cut),
+			(vec!["federation remote-user-in-rooms @tod:x.se".to_owned(), "users list-joined-rooms @tod:x.se".to_owned()], false)
+		);
+		assert!(!text.contains('<'));
 
 		let ro = |c: &str| is_read_only(c, "x");
 		assert!(ro(&proposed[0]));
