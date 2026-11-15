@@ -1832,6 +1832,13 @@ pages.settings = async (main) => {
 					const r = await attempt("Earlier notes put back", () => api("POST", `${MOD}/notes`, { action: "undo" }));
 					if (r) guidance.value = r.guidance;
 				} }, "Undo last tidy"))),
+		h("section", { class: "card" },
+			h("h2", {}, "Public pages"),
+			h("p", { class: "muted small" }, "The words on the front page and the rules page people accept when they sign up. Plain text: web addresses and paths like /login become links. Leave a box empty to put the built-in words back."),
+			field("Front page heading", h("input", { name: "page_title", maxlength: 120, value: s.page_title || "" })),
+			field("Line under it", h("input", { name: "page_intro", maxlength: 400, value: s.page_intro || "" })),
+			field("Rules", h("textarea", { name: "page_rules", rows: 5 }, s.page_rules || ""), "One rule a line; they're numbered on the page."),
+			field("Privacy", h("textarea", { name: "page_privacy", rows: 10 }, s.page_privacy || ""), "One point a line.")),
 		trustedCard,
 		h("div", { class: "toolbar" }, h("button", { type: "submit" }, "Save settings")));
 
@@ -1861,6 +1868,10 @@ pages.settings = async (main) => {
 			upload_guard: f.has("upload_guard"),
 			upload_allowance: Number(f.get("upload_allowance") || 100),
 			media_blocked_servers: String(f.get("media_blocked_servers") || "").split(/[\s,]+/).filter(Boolean),
+			page_title: f.get("page_title") || "",
+			page_intro: f.get("page_intro") || "",
+			page_rules: f.get("page_rules") || "",
+			page_privacy: f.get("page_privacy") || "",
 		};
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});
@@ -1872,6 +1883,7 @@ pages.settings = async (main) => {
 		["checks", "What to check", ["What to check", "Images the AI judges clearly bad", "Media from other servers", "Uploads"]],
 		["standin", "Stand-in picture", ["Hidden and blocked media"]],
 		["ai", "Models and rules", ["Models and rules"]],
+		["pages", "Public pages", ["Public pages"]],
 		["trusted", "Trusted rooms", []],
 	];
 	const tabOf = (section) => {

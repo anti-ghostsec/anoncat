@@ -214,7 +214,30 @@ pub struct Settings {
 	/// see the stand-in in its place; copies already stored are kept for
 	/// review but not served.
 	pub media_blocked_servers: Vec<String>,
+	/// The public pages' words: the front page's heading and the line under
+	/// it, and the rules and privacy lists, an item a line. Left empty, the
+	/// built-in words.
+	pub page_title: String,
+	pub page_intro: String,
+	pub page_rules: String,
+	pub page_privacy: String,
 }
+
+pub const DEFAULT_PAGE_TITLE: &str = "A private Matrix chat server";
+pub const DEFAULT_PAGE_INTRO: &str = "No email, no tracking.";
+pub const DEFAULT_PAGE_RULES: &str = "\
+Nothing illegal.
+No spam, scams or malware.
+No threats or doxxing.";
+pub const DEFAULT_PAGE_PRIVACY: &str = "\
+No email or phone number is asked for. No tracking, no ads, no analytics.
+Your IP address is not stored or logged.
+Location and camera details are removed from photos you upload (not from videos).
+Admins can read rooms that aren't encrypted. Use encrypted chats for anything private.
+Other servers in your rooms keep copies of your messages and profile, and we can't delete those.
+Messages are deleted after 30 days, or 90 days if they have a picture or file.
+Delete your account any time at /login. Your uploads go with it, and backups keep it for up to 2 more days.
+There is no password reset. If you lose your password, the account is gone.";
 
 impl Default for Settings {
 	fn default() -> Self {
@@ -242,7 +265,26 @@ impl Default for Settings {
 			upload_guard: true,
 			upload_allowance: UPLOAD_ALLOWANCE,
 			media_blocked_servers: Vec::new(),
+			page_title: DEFAULT_PAGE_TITLE.into(),
+			page_intro: DEFAULT_PAGE_INTRO.into(),
+			page_rules: DEFAULT_PAGE_RULES.into(),
+			page_privacy: DEFAULT_PAGE_PRIVACY.into(),
 		}
+	}
+}
+
+/// Page words as saved: trimmed and kept to a size, or the built-in ones
+/// when left empty.
+fn page_words(text: &str, default: &str, max_chars: usize, max_lines: usize) -> String {
+	let lines: Vec<&str> = text
+		.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.take(max_lines)
+		.collect();
+	match lines.join("\n").chars().take(max_chars).collect::<String>() {
+		| words if words.is_empty() => default.to_owned(),
+		| words => words,
 	}
 }
 
@@ -548,6 +590,10 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	}
 	servers.truncate(1000);
 	settings.media_blocked_servers = servers;
+	settings.page_title = page_words(&settings.page_title, DEFAULT_PAGE_TITLE, 120, 1);
+	settings.page_intro = page_words(&settings.page_intro, DEFAULT_PAGE_INTRO, 400, 1);
+	settings.page_rules = page_words(&settings.page_rules, DEFAULT_PAGE_RULES, 4000, 40);
+	settings.page_privacy = page_words(&settings.page_privacy, DEFAULT_PAGE_PRIVACY, 6000, 40);
 	if settings.stand_in_image != "custom"
 		&& !stand_in::BUILT_IN.contains(&settings.stand_in_image.as_str())
 	{

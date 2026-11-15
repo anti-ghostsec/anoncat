@@ -8,34 +8,34 @@ use tuwunel_core::utils::html::escape as html_escape;
 
 use super::page;
 
-/// Change "Version" here and `registration_terms.rules.version` in the config
-/// together, so people are asked to accept the new rules.
-const RULES: &str = r#"<h1>Rules and privacy</h1>
-<p class="hint">Version 2</p>
-<section>
-<h2>Rules</h2>
-<ol>
-<li>Nothing illegal. Sexual content involving minors means an instant ban.</li>
-<li>No spam, scams, malware, or bots unless the admins agree.</li>
-<li>No threats, harassment, or posting other people's private details.</li>
-</ol>
-<p class="hint">Break them and your posts or account may be removed.</p>
-</section>
-<section>
-<h2>Privacy</h2>
-<ul>
-<li>No email or phone number is asked for. No tracking, no ads, no analytics.</li>
-<li>Your IP address is not stored or logged.</li>
-<li>Location and camera details are removed from photos you upload (not from videos).</li>
-<li>Admins can technically read rooms that are not encrypted. Use encrypted chats for anything private.</li>
-<li>When AI moderation is on, a third-party AI service that keeps nothing it's sent checks pictures and videos uploaded or opened here, messages in rooms anyone can join, room names and topics, and what people report. Usernames and room IDs are replaced before anything is sent. Encrypted messages and files can't be read, so they are never sent.</li>
-<li>Other servers in your rooms get copies of your messages and profile, and we can't delete those.</li>
-<li>Messages are deleted after 30 days, or 90 days if they have a picture or file.</li>
-<li>Delete your account any time at <a href="/login">/login</a>. Your uploads go with it, and backups keep it for up to 2 more days.</li>
-<li>There is no password reset. If you lose your password, the account is gone.</li>
-</ul>
-</section>
-<p class="foot"><a href="/">Back to the front page</a></p>"#;
+/// Text the admin wrote, safe in a page: escaped, with web addresses and
+/// this site's own paths (`/login`) made into links.
+fn words(text: &str) -> String {
+	text.split(' ')
+		.map(|word| {
+			let bare = word.trim_end_matches(['.', ',', ';', ':', ')', '!', '?']);
+			let rest = &word[bare.len()..];
+			let link = bare.starts_with("https://")
+				|| (bare.starts_with('/') && bare[1..].starts_with(|c: char| c.is_ascii_lowercase()));
+			if link && bare.len() > 1 {
+				let bare = html_escape(bare);
+				format!(r#"<a href="{bare}" rel="noopener noreferrer">{bare}</a>{}"#, html_escape(rest))
+			} else {
+				html_escape(word).to_string()
+			}
+		})
+		.collect::<Vec<_>>()
+		.join(" ")
+}
+
+/// An item a line.
+fn items(text: &str) -> String {
+	text.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.map(|line| format!("<li>{}</li>", words(line)))
+		.collect()
+}
 
 pub(super) async fn index_route(State(services): State<crate::State>) -> Response {
 	if let Some(off) = super::enabled(&services) {
@@ -43,13 +43,16 @@ pub(super) async fn index_route(State(services): State<crate::State>) -> Respons
 	}
 
 	let server = html_escape(services.config.server_name.as_str());
+	let settings = services.moderation.settings();
+	let title = words(&settings.page_title);
+	let intro = words(&settings.page_intro);
 	let body = format!(
-		r#"<h1>A private Matrix chat server</h1>
-<p>No email, no tracking.</p>
-<p><a class="button" href="/register">Create an account</a> <a href="/login">Manage your account</a></p>
+		r#"<h1 class="hero">{title}</h1>
+<p class="lead">{intro}</p>
+<div class="actions"><a class="button" href="/register">Create an account</a> <a class="button quiet" href="/login">Manage your account</a></div>
 <section>
 <h2>How to join</h2>
-<ol>
+<ol class="steps">
 <li>Create an account above.</li>
 <li>Get a Matrix app, like <a href="https://element.io/download" rel="noopener noreferrer">Element</a>.</li>
 <li>Sign in, choose another homeserver, and enter <strong>{server}</strong>.</li>
@@ -66,5 +69,39 @@ pub(super) async fn rules_route(State(services): State<crate::State>) -> Respons
 		return off;
 	}
 
-	page(&services, StatusCode::OK, "Rules and privacy", RULES)
+	let settings = services.moderation.settings();
+	let body = format!(
+		r#"<h1>Rules and privacy</h1>
+<section>
+<h2>Rules</h2>
+<ol class="rules">{rules}</ol>
+<p class="hint">Break them and your posts or account may be removed.</p>
+</section>
+<section>
+<h2>Privacy</h2>
+<ul>{privacy}</ul>
+</section>
+<p class="foot"><a href="/">Back to the front page</a></p>"#,
+		rules = items(&settings.page_rules),
+		privacy = items(&settings.page_privacy),
+	);
+
+	page(&services, StatusCode::OK, "Rules and privacy", &body)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{items, words};
+
+	#[test]
+	fn admin_words_are_escaped_and_linked() {
+		assert_eq!(words("<b>hi</b>"), "&lt;b&gt;hi&lt;/b&gt;");
+		assert_eq!(
+			words("Delete it at /login."),
+			r#"Delete it at <a href="/login" rel="noopener noreferrer">/login</a>."#
+		);
+		assert_eq!(words("a/b and / alone"), "a/b and / alone");
+		assert_eq!(items("one\n\n two "), "<li>one</li><li>two</li>");
+		assert!(!words(r#"https://x.org/"onmouseover="a"#).contains(r#"""onmouseover"#));
+	}
 }
