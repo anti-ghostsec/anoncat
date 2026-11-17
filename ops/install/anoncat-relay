@@ -50,13 +50,15 @@ PrivateKey = $(cat "/etc/wireguard/$IFACE.key")
 Address = $HOME_ADDR/32
 MTU = $MTU
 # Not this machine's way out: only anoncat's answers to connections that
-# came through the relay go back through it.
+# came through the relay go back through it. Priority 80 puts it ahead of
+# the rules a wg0 made by NetworkManager adds (88 and 89), which would
+# otherwise send those answers out through Proton, where they're lost.
 Table = off
 PostUp = ip route replace default dev %i table $TABLE
-PostUp = ip rule add from $HOME_ADDR lookup $TABLE priority 90
+PostUp = ip rule add from $HOME_ADDR lookup $TABLE priority 80
 # Proton or nothing: the tunnel's own packets to the VPS may only leave on wg0.
 PostUp = nft -f /etc/anoncat/relay-guard.nft
-PreDown = ip rule del from $HOME_ADDR lookup $TABLE priority 90 || true
+PreDown = ip rule del from $HOME_ADDR lookup $TABLE priority 80 || true
 PreDown = nft delete table inet anoncat-relay-guard || true
 
 [Peer]
