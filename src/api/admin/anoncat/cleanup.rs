@@ -53,6 +53,8 @@ pub(crate) struct PutRequest {
 	message_max_age: Value,
 	#[serde(default)]
 	media_message_max_age: Value,
+	#[serde(default)]
+	empty_room_max_age: Value,
 	disk_percent: Value,
 	min_free_ram: Value,
 }
@@ -73,6 +75,7 @@ pub(crate) async fn put_route(
 			"Messages with media",
 			&body.media_message_max_age,
 		)?,
+		empty_room_max_age_secs: duration("Empty rooms", &body.empty_room_max_age)?,
 		disk_percent: number("Disk guard", &body.disk_percent)?,
 		min_free_ram: size("Low-memory guard", &body.min_free_ram)?,
 	};

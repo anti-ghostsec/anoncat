@@ -79,6 +79,7 @@ pub struct Overrides {
 	pub local_media_max_size: Option<u64>,
 	pub message_max_age_secs: Option<u64>,
 	pub media_message_max_age_secs: Option<u64>,
+	pub empty_room_max_age_secs: Option<u64>,
 	pub disk_percent: Option<u64>,
 	pub min_free_ram: Option<u64>,
 }
@@ -92,6 +93,7 @@ pub struct Limits {
 	pub local_media_max_size: u64,
 	pub message_max_age_secs: u64,
 	pub media_message_max_age_secs: u64,
+	pub empty_room_max_age_secs: u64,
 	pub disk_percent: u64,
 	pub min_free_ram: u64,
 }
@@ -104,6 +106,8 @@ impl Limits {
 	fn local_media_max_age(&self) -> Duration { Duration::from_secs(self.local_media_max_age_secs) }
 
 	fn message_max_age(&self) -> Duration { Duration::from_secs(self.message_max_age_secs) }
+
+	fn empty_room_max_age(&self) -> Duration { Duration::from_secs(self.empty_room_max_age_secs) }
 
 	/// How long messages with media are kept: never less than other messages.
 	fn media_message_max_age(&self) -> Duration {
@@ -136,6 +140,7 @@ pub struct Report {
 	pub local_media_freed_mib: u64,
 	pub events_purged: usize,
 	pub rooms_purged: usize,
+	pub empty_rooms: usize,
 	pub disk_guard_media: usize,
 	pub disk_percent: Option<u64>,
 }
@@ -146,6 +151,7 @@ impl Report {
 			.saturating_add(self.local_media_expired)
 			.saturating_add(self.local_media_over_limit)
 			.saturating_add(self.events_purged)
+			.saturating_add(self.empty_rooms)
 			.saturating_add(self.disk_guard_media)
 			> 0
 	}
@@ -226,6 +232,7 @@ pub fn configured(&self) -> Limits {
 		local_media_max_size: config.cleanup_local_media_max_size,
 		message_max_age_secs: config.cleanup_message_max_age.as_secs(),
 		media_message_max_age_secs: config.cleanup_media_message_max_age.as_secs(),
+		empty_room_max_age_secs: config.cleanup_empty_room_max_age.as_secs(),
 		disk_percent: config.cleanup_disk_percent,
 		min_free_ram: config.cleanup_min_free_ram,
 	}
@@ -250,6 +257,9 @@ pub fn limits(&self) -> Limits {
 		media_message_max_age_secs: o
 			.media_message_max_age_secs
 			.unwrap_or(c.media_message_max_age_secs),
+		empty_room_max_age_secs: o
+			.empty_room_max_age_secs
+			.unwrap_or(c.empty_room_max_age_secs),
 		disk_percent: o.disk_percent.unwrap_or(c.disk_percent),
 		min_free_ram: o.min_free_ram.unwrap_or(c.min_free_ram),
 	}
@@ -373,6 +383,12 @@ async fn run_once(&self) -> Result<Report> {
 			.await;
 	}
 
+	if !limits.empty_room_max_age().is_zero() {
+		report.empty_rooms = self
+			.delete_empty_rooms(limits.empty_room_max_age())
+			.await;
+	}
+
 	(report.disk_guard_media, report.disk_percent) = self.guard_disk(&limits).await?;
 
 	if report.deleted_anything() {
@@ -396,6 +412,72 @@ async fn delete_remote_media_older_than(&self, max_age: Duration) -> Result<usiz
 		.media
 		.delete_range(cutoff, true, false, false)
 		.await
+}
+
+/// Deletes rooms with no members left and nobody here invited, whose last
+/// event is older than `max_age`. Rooms with no events at all are left: a
+/// join may be underway. Returns how many were deleted.
+#[implement(Service)]
+async fn delete_empty_rooms(&self, max_age: Duration) -> usize {
+	let cutoff = now_millis().saturating_sub(u64::try_from(max_age.as_millis()).unwrap_or(u64::MAX));
+	let rooms: Vec<OwnedRoomId> = self
+		.services
+		.metadata
+		.iter_ids()
+		.map(ToOwned::to_owned)
+		.collect()
+		.await;
+
+	let admin_room = self.services.admin.get_admin_room().await.ok();
+	let mut deleted = 0_usize;
+	for room_id in rooms {
+		if !self.services.server.is_running() {
+			break;
+		}
+
+		if admin_room.as_deref() == Some(&*room_id) || !self.empty_since(&room_id, cutoff).await {
+			continue;
+		}
+
+		// Someone may have joined while this waited for the lock.
+		let state_lock = self.services.state.mutex.lock(&room_id).await;
+		if !self.empty_since(&room_id, cutoff).await {
+			continue;
+		}
+
+		match self
+			.services
+			.delete
+			.delete_room(&room_id, false, state_lock)
+			.await
+		{
+			| Ok(_) => deleted = deleted.saturating_add(1),
+			| Err(e) => warn!(%room_id, "Couldn't delete an empty room: {e}"),
+		}
+	}
+
+	deleted
+}
+
+#[implement(Service)]
+async fn empty_since(&self, room_id: &RoomId, cutoff: u64) -> bool {
+	let cache = &self.services.state_cache;
+	if cache.room_members(room_id).boxed().next().await.is_some()
+		|| cache
+			.local_users_invited_to_room(room_id)
+			.boxed()
+			.next()
+			.await
+			.is_some()
+	{
+		return false;
+	}
+
+	self.services
+		.timeline
+		.latest_pdu_in_room(room_id)
+		.await
+		.is_ok_and(|pdu| u64::from(pdu.origin_server_ts) <= cutoff)
 }
 
 /// Purges events older than `max_age` from every room, keeping state, and
@@ -591,6 +673,7 @@ fn summarize(report: &Report) -> String {
 	add(report.local_media_expired, "local uploads expired");
 	add(report.local_media_over_limit, "oldest local uploads deleted to stay under the size limit");
 	add(report.disk_guard_media, "remote media files deleted because the disk was full");
+	add(report.empty_rooms, "empty rooms deleted");
 
 	if report.events_purged > 0 {
 		write!(out, " {} old events purged from {} rooms;", report.events_purged, report.rooms_purged)

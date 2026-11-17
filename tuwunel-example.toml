@@ -2097,6 +2097,12 @@
 #
 #cleanup_media_message_max_age = "0"
 
+# Delete rooms nobody is in any more (no members left and nobody here
+# invited) once nothing has happened in them for this long. A block on
+# a room stays. "0" keeps empty rooms.
+#
+#cleanup_empty_room_max_age = "1d"
+
 # When the disk holding the database is fuller than this percentage,
 # delete remote media older than 7 days, then 3, then 1, then all of it,
 # until it isn't, and alert the admin room if that is not enough. 0

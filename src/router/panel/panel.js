@@ -2137,6 +2137,7 @@ const CLEANUP_FIELDS = [
 	["local_media_max_size", "local_media_max_size", "Local uploads size cap", "size"],
 	["message_max_age", "message_max_age_secs", "Message history kept for", "duration"],
 	["media_message_max_age", "media_message_max_age_secs", "Messages with media kept for", "duration"],
+	["empty_room_max_age", "empty_room_max_age_secs", "Empty rooms deleted after", "duration"],
 	["disk_percent", "disk_percent", "Disk guard at (% used)", "percent"],
 	["min_free_ram", "min_free_ram", "Low-memory guard below", "size"],
 ];
@@ -2186,7 +2187,7 @@ pages.cleanup = async (main) => {
 		if (await attempt("Back to the config file", () => api("PUT", CLEANUP, body))) render();
 	};
 	const runNow = async () => {
-		if (!(await ask("Run cleanup now?", { text: "Deletes whatever the limits in force say should go: expired media and, if set, old message history. This can't be undone.", confirm: "Run cleanup", danger: true }))) return;
+		if (!(await ask("Run cleanup now?", { text: "Deletes whatever the limits in force say should go: expired media, empty rooms and, if set, old message history. This can't be undone.", confirm: "Run cleanup", danger: true }))) return;
 		if (await attempt("Cleanup started", () => api("POST", `${CLEANUP}/run`, {}))) render();
 	};
 
@@ -2197,6 +2198,7 @@ pages.cleanup = async (main) => {
 		if (rep.local_media_expired) parts.push(`${rep.local_media_expired} expired uploads`);
 		if (rep.local_media_over_limit) parts.push(`${rep.local_media_over_limit} uploads over the cap (${rep.local_media_freed_mib} MiB)`);
 		if (rep.events_purged) parts.push(`${rep.events_purged} events from ${rep.rooms_purged} rooms`);
+		if (rep.empty_rooms) parts.push(`${rep.empty_rooms} empty rooms`);
 		if (rep.disk_guard_media) parts.push(`${rep.disk_guard_media} media for the disk guard`);
 		return h("tr", {},
 			h("td", { class: "small" }, date(r.ts)),

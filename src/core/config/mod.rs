@@ -2513,6 +2513,17 @@ pub struct Config {
 	#[serde(default, deserialize_with = "utils::time::deserialize_duration")]
 	pub cleanup_media_message_max_age: Duration,
 
+	/// Delete rooms nobody is in any more (no members left and nobody here
+	/// invited) once nothing has happened in them for this long. A block on
+	/// a room stays. "0" keeps empty rooms.
+	///
+	/// default: "1d"
+	#[serde(
+		default = "default_cleanup_empty_room_max_age",
+		deserialize_with = "utils::time::deserialize_duration"
+	)]
+	pub cleanup_empty_room_max_age: Duration,
+
 	/// When the disk holding the database is fuller than this percentage,
 	/// delete remote media older than 7 days, then 3, then 1, then all of it,
 	/// until it isn't, and alert the admin room if that is not enough. 0
@@ -6130,6 +6141,8 @@ fn default_pushrules_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
 fn default_cleanup_interval() -> Duration { Duration::from_secs(60 * 60) }
 
 fn default_cleanup_remote_media_max_age() -> Duration { Duration::from_secs(30 * 24 * 60 * 60) }
+
+fn default_cleanup_empty_room_max_age() -> Duration { Duration::from_secs(24 * 60 * 60) }
 
 fn default_cleanup_disk_percent() -> u64 { 90 }
 
