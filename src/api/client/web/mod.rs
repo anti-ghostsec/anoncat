@@ -80,6 +80,9 @@ fn page(services: &Services, status: StatusCode, title: &str, body: &str) -> Res
 </head>
 <body>
 <main>
+<pre class="cat" aria-hidden="true"> /\_/\
+( o.o )
+ > ^ <</pre>
 <p class="brand">{server}</p>
 {body}
 </main>
