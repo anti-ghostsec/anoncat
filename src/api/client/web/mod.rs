@@ -7,6 +7,8 @@ mod account;
 mod home;
 mod register;
 
+use std::sync::LazyLock;
+
 use axum::{
 	Router,
 	response::{Html, IntoResponse, Redirect, Response},
@@ -16,24 +18,36 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use http::{
 	HeaderMap, HeaderValue, StatusCode, Uri,
 	header::{
-		CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, ORIGIN, REFERRER_POLICY,
+		CACHE_CONTROL, CONTENT_SECURITY_POLICY, HOST, ORIGIN, REFERRER_POLICY,
 		X_CONTENT_TYPE_OPTIONS, X_FRAME_OPTIONS,
 	},
 };
-use tuwunel_core::{Error, utils::html::escape as html_escape};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use tuwunel_core::{
+	Error,
+	utils::{hash::sha256, html::escape as html_escape},
+};
 use tuwunel_service::{Services, signup::Session};
 
 use crate::State;
 
-/// Pages are inert: their own stylesheet, the captcha as a data: picture, and
-/// forms that post only back here.
-const CSP: &str = "default-src 'none'; style-src 'self'; img-src data:; form-action 'self'; \
-                   frame-ancestors 'none'; base-uri 'none'";
+/// The stylesheet, inlined in every page so a page is one request: each one
+/// goes through the VPN and the relay, so a second costs a full round trip.
+static STYLE: &str = include_str!("web.css");
+
+/// Pages are inert: only their own stylesheet (by its hash), the captcha as a
+/// data: picture, and forms that post only back here.
+static CSP: LazyLock<HeaderValue> = LazyLock::new(|| {
+	let hash = STANDARD.encode(sha256::hash(STYLE));
+	HeaderValue::from_str(&format!(
+		"default-src 'none'; style-src 'sha256-{hash}'; img-src data:; form-action 'self'; \
+		 frame-ancestors 'none'; base-uri 'none'"
+	))
+	.expect("a valid header")
+});
 
 /// `__Host-` keeps the cookie to this exact host, over HTTPS, for every path.
 const COOKIE: &str = "__Host-anoncat";
-
-static STYLE: &str = include_str!("web.css");
 
 pub(crate) fn routes(router: Router<State>) -> Router<State> {
 	router
@@ -43,20 +57,6 @@ pub(crate) fn routes(router: Router<State>) -> Router<State> {
 		.route("/login", get(account::login_get_route).post(account::login_post_route))
 		.route("/account", get(account::get_route))
 		.route("/account/{action}", post(account::post_route))
-		.route("/style.css", get(style_route))
-}
-
-async fn style_route(axum::extract::State(services): axum::extract::State<State>) -> Response {
-	if !services.config.web_signup {
-		return StatusCode::NOT_FOUND.into_response();
-	}
-
-	let mut response = STYLE.into_response();
-	let headers = response.headers_mut();
-	headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/css; charset=utf-8"));
-	headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-	headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
-	response
 }
 
 /// The pages exist only while `web_signup` is on.
@@ -76,7 +76,7 @@ fn page(services: &Services, status: StatusCode, title: &str, body: &str) -> Res
 <meta name="referrer" content="same-origin">
 <meta name="robots" content="noindex">
 <title>{title} · {server}</title>
-<link rel="stylesheet" href="/style.css">
+<style>{STYLE}</style>
 </head>
 <body>
 <main>
@@ -89,7 +89,7 @@ fn page(services: &Services, status: StatusCode, title: &str, body: &str) -> Res
 
 	let mut response = (status, Html(html)).into_response();
 	let headers = response.headers_mut();
-	headers.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
+	headers.insert(CONTENT_SECURITY_POLICY, CSP.clone());
 	headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
 	headers.insert(REFERRER_POLICY, HeaderValue::from_static("same-origin"));
 	headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));

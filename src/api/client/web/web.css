@@ -1,18 +1,17 @@
 :root {
-	--bg: #0b0b10;
-	--card: rgb(22 22 30 / 0.72);
-	--card-solid: #16161e;
-	--field: rgb(255 255 255 / 0.04);
+	--bg: #0a0a0f;
+	--card: #121219;
+	--field: #181821;
+	--field-hover: #1e1e29;
 	--text: #ececf2;
 	--muted: #9696a6;
-	--line: rgb(255 255 255 / 0.08);
+	--line: #262631;
 	--accent: #9d8cff;
 	--accent-2: #4fd1c5;
-	--accent-soft: rgb(157 140 255 / 0.14);
-	--accent-text: #0b0b10;
-	--ok-bg: rgb(52 168 83 / 0.16);
+	--accent-text: #0a0a0f;
+	--ok-bg: #15281c;
 	--ok-text: #9fe0b2;
-	--err-bg: rgb(242 139 130 / 0.14);
+	--err-bg: #2c1817;
 	--err-text: #f5b4ad;
 	--danger: #f28b82;
 	color-scheme: dark;
@@ -27,55 +26,60 @@ body {
 	margin: 0;
 	min-height: 100vh;
 	overflow-x: hidden;
-	background: var(--bg);
+	/* No background here: html has it, and one here would cover the pattern. */
 	color: var(--text);
 	font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 	-webkit-font-smoothing: antialiased;
 }
 
-/* Two soft lights drifting behind the card. CSS only: the pages run no
-   scripts, and still work in Tor Browser on its safest setting. */
+/* The same pattern over the whole page: a faint grid with a dot where the
+   lines cross, and a sparser layer of teal dots on a diagonal. Each drifts
+   by exactly one tile and starts over, so the loop has no seam, and they
+   move at different speeds, which gives a little depth. Moving the layers
+   (not repainting them) keeps it light on the processor. CSS only: the
+   pages run no scripts, and still work in Tor Browser on its safest setting. */
 body::before,
 body::after {
 	content: "";
 	position: fixed;
 	z-index: -1;
-	width: 70vmax;
-	height: 70vmax;
-	border-radius: 50%;
-	filter: blur(90px);
-	opacity: 0.35;
+	top: -96px;
+	left: -96px;
+	width: calc(100% + 192px);
+	height: calc(100% + 192px);
 	pointer-events: none;
+	will-change: transform;
 }
 
 body::before {
-	top: -30vmax;
-	left: -20vmax;
-	background: radial-gradient(circle, var(--accent), transparent 65%);
-	animation: drift-a 26s ease-in-out infinite alternate;
+	background:
+		radial-gradient(circle, rgb(157 140 255 / 0.5) 1.1px, transparent 1.8px) 0 0 / 32px 32px,
+		linear-gradient(rgb(157 140 255 / 0.075) 1px, transparent 1px) 0 0 / 32px 32px,
+		linear-gradient(90deg, rgb(157 140 255 / 0.075) 1px, transparent 1px) 0 0 / 32px 32px;
+	background-position: -0.5px -0.5px, 0 0, 0 0;
+	animation: drift-grid 24s linear infinite;
 }
 
 body::after {
-	right: -25vmax;
-	bottom: -35vmax;
-	background: radial-gradient(circle, var(--accent-2), transparent 65%);
-	opacity: 0.22;
-	animation: drift-b 32s ease-in-out infinite alternate;
+	background:
+		radial-gradient(circle, rgb(79 209 197 / 0.7) 1.4px, transparent 2.4px) 0 0 / 96px 96px,
+		radial-gradient(circle, rgb(79 209 197 / 0.35) 1.1px, transparent 1.8px) 48px 48px / 96px 96px;
+	animation: drift-dots 40s linear infinite;
 }
 
-@keyframes drift-a {
-	from { transform: translate(0, 0) scale(1); }
-	to { transform: translate(18vmax, 14vmax) scale(1.15); }
+@keyframes drift-grid {
+	from { transform: translate(0, 0); }
+	to { transform: translate(32px, 32px); }
 }
 
-@keyframes drift-b {
-	from { transform: translate(0, 0) scale(1.1); }
-	to { transform: translate(-16vmax, -12vmax) scale(0.95); }
+@keyframes drift-dots {
+	from { transform: translate(0, 0); }
+	to { transform: translate(96px, -96px); }
 }
 
 @media (prefers-reduced-motion: reduce) {
 	body::before, body::after { animation: none; }
-	* { transition: none !important; }
+	* { transition: none !important; animation: none !important; }
 }
 
 main {
@@ -85,31 +89,25 @@ main {
 	padding: 2rem 1.75rem 2.25rem;
 	background: var(--card);
 	border: 1px solid var(--line);
-	border-radius: 1.5rem;
-	box-shadow: 0 24px 60px rgb(0 0 0 / 0.45), inset 0 1px 0 rgb(255 255 255 / 0.04);
-	-webkit-backdrop-filter: blur(18px);
-	backdrop-filter: blur(18px);
-	animation: rise 0.5s ease-out both;
-}
-
-@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-	main { background: var(--card-solid); }
+	border-radius: 1.25rem;
+	box-shadow: 0 0 0 6px rgb(10 10 15 / 0.6), 0 24px 60px rgb(0 0 0 / 0.5);
+	animation: rise 0.25s ease-out both;
 }
 
 @keyframes rise {
-	from { opacity: 0; transform: translateY(10px); }
+	from { opacity: 0; transform: translateY(8px); }
 	to { opacity: 1; transform: none; }
 }
 
 @media (max-width: 38rem) {
-	main { margin: 0; border: 0; border-radius: 0; min-height: 100vh; padding: 1.5rem 1rem 2rem; }
+	main { margin: 0.75rem; border-radius: 1rem; padding: 1.5rem 1.1rem 1.75rem; }
 }
 
 .brand {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.45rem;
-	margin: 0 0 1.25rem;
+	gap: 0.5rem;
+	margin: 0 0 1.5rem;
 	padding: 0.2rem 0.75rem;
 	border: 1px solid var(--line);
 	border-radius: 99px;
@@ -119,23 +117,34 @@ main {
 	letter-spacing: 0.02em;
 }
 
+/* A live light: the server is up. */
 .brand::before {
 	content: "";
 	width: 0.5rem;
 	height: 0.5rem;
 	border-radius: 50%;
 	background: var(--accent-2);
-	box-shadow: 0 0 10px var(--accent-2);
+	animation: pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+	0%, 100% { box-shadow: 0 0 0 0 rgb(79 209 197 / 0.55); }
+	50% { box-shadow: 0 0 0 5px rgb(79 209 197 / 0); }
 }
 
 h1 { margin: 0 0 0.75rem; font-size: 1.9rem; line-height: 1.15; letter-spacing: -0.025em; font-weight: 700; }
 
-h1.hero {
-	font-size: clamp(2rem, 6vw, 2.6rem);
-	background: linear-gradient(120deg, var(--text) 30%, var(--accent) 70%, var(--accent-2));
-	-webkit-background-clip: text;
-	background-clip: text;
-	color: transparent;
+h1.hero { font-size: clamp(2rem, 6vw, 2.5rem); }
+
+/* A short accent bar under the main heading. */
+h1.hero::after {
+	content: "";
+	display: block;
+	width: 3rem;
+	height: 3px;
+	margin-top: 0.9rem;
+	border-radius: 3px;
+	background: var(--accent);
 }
 
 h2 { margin: 0 0 0.6rem; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
@@ -155,13 +164,13 @@ input:not([type]), input[type="password"], input[type="text"] {
 	color: var(--text);
 	background: var(--field);
 	border: 1px solid var(--line);
-	border-radius: 0.8rem;
+	border-radius: 0.75rem;
 	transition: border-color 0.15s, background 0.15s;
 }
 
 input:not([type]):focus, input[type="password"]:focus, input[type="text"]:focus {
 	border-color: var(--accent);
-	background: rgb(157 140 255 / 0.06);
+	background: var(--field-hover);
 	outline: none;
 }
 
@@ -194,29 +203,27 @@ button, a.button {
 	font: inherit;
 	font-weight: 600;
 	color: var(--accent-text);
-	background: linear-gradient(135deg, var(--accent), #7f9cff);
+	background: var(--accent);
 	border: 0;
-	border-radius: 0.85rem;
+	border-radius: 0.75rem;
 	text-decoration: none;
 	cursor: pointer;
-	box-shadow: 0 6px 20px rgb(157 140 255 / 0.25);
-	transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+	transition: transform 0.15s, filter 0.15s, background 0.15s;
 }
 
-button:hover, a.button:hover { transform: translateY(-1px); filter: brightness(1.08); box-shadow: 0 10px 26px rgb(157 140 255 / 0.35); }
+button:hover, a.button:hover { transform: translateY(-1px); filter: brightness(1.1); }
 button:active, a.button:active { transform: none; }
 
 button.quiet, a.button.quiet {
 	color: var(--text);
 	background: var(--field);
 	border: 1px solid var(--line);
-	box-shadow: none;
 	font-weight: 500;
 }
 
 button.quiet { margin-top: 0; padding: 0.35rem 0.8rem; }
-button.quiet:hover, a.button.quiet:hover { background: rgb(255 255 255 / 0.08); box-shadow: none; }
-button.danger { background: var(--danger); color: var(--accent-text); box-shadow: 0 6px 20px rgb(242 139 130 / 0.2); }
+button.quiet:hover, a.button.quiet:hover { background: var(--field-hover); filter: none; }
+button.danger { background: var(--danger); color: var(--accent-text); }
 form.inline { margin: 0 0 0.5rem; }
 
 a { color: var(--accent); text-decoration-color: rgb(157 140 255 / 0.4); text-underline-offset: 3px; }
@@ -224,7 +231,7 @@ a:hover { text-decoration-color: currentColor; }
 .hint { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.9rem; }
 .foot { margin: 2rem 0 0; color: var(--muted); font-size: 0.95rem; }
 
-.ok, .err { margin: 1rem 0; padding: 0.7rem 0.9rem; border-radius: 0.8rem; }
+.ok, .err { margin: 1rem 0; padding: 0.7rem 0.9rem; border-radius: 0.75rem; }
 .ok { background: var(--ok-bg); color: var(--ok-text); }
 .err { background: var(--err-bg); color: var(--err-text); }
 
@@ -245,10 +252,12 @@ ol.steps li, ol.rules li {
 	margin: 0.6rem 0;
 	padding: 0.65rem 0.9rem 0.65rem 3rem;
 	border: 1px solid var(--line);
-	border-radius: 0.9rem;
+	border-radius: 0.85rem;
 	background: var(--field);
 	counter-increment: item;
+	transition: border-color 0.15s, background 0.15s;
 }
+ol.steps li:hover, ol.rules li:hover { border-color: rgb(157 140 255 / 0.45); background: var(--field-hover); }
 ol.steps li::before, ol.rules li::before {
 	content: counter(item);
 	position: absolute;
@@ -261,7 +270,7 @@ ol.steps li::before, ol.rules li::before {
 	margin-top: -0.8rem;
 	border-radius: 50%;
 	color: var(--accent-text);
-	background: linear-gradient(135deg, var(--accent), var(--accent-2));
+	background: var(--accent);
 	font-size: 0.8rem;
 	font-weight: 700;
 }
