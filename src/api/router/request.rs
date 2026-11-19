@@ -2,10 +2,17 @@ use std::str;
 
 use axum::{RequestPartsExt, extract::Path};
 use axum_extra::extract::cookie::CookieJar;
-use bytes::Bytes;
-use http::request::Parts;
+use std::time::Duration;
+
+use bytes::{Bytes, BytesMut};
+use futures::StreamExt;
+use http::{StatusCode, request::Parts};
+use ruma::api::error::{ErrorKind, LimitExceededErrorData, RetryAfter};
 use serde::Deserialize;
-use tuwunel_core::{Result, err, smallstr::SmallString, smallvec::SmallVec};
+use tuwunel_core::{
+	Error, Result, err, smallstr::SmallString, smallvec::SmallVec,
+	utils::memory_budget::Reservation,
+};
 use tuwunel_service::Services;
 
 #[derive(Debug, Deserialize)]
@@ -38,6 +45,8 @@ pub(super) struct Request {
 	pub(super) query: QueryParams,
 	pub(super) body: Bytes,
 	pub(super) parts: Parts,
+	/// Room held in the budget for big files, while the upload is handled.
+	pub(super) reservation: Option<Reservation>,
 }
 
 pub(super) type PathParams = SmallVec<[PathParam; 8]>;
@@ -65,22 +74,87 @@ pub(super) async fn from(
 	// Bodies are held in memory, and read before the request's
 	// authentication is checked. So the bigger upload limit is only for an
 	// upload whose access token is valid, checked first: nobody without an
-	// account can make the server hold more than `max_request_size`.
+	// account can make the server hold more than `max_request_size`. Such an
+	// upload also takes room in the server's budget for big files as it
+	// arrives, so many at once can't run the server out of memory.
 	let config = &services.server.config;
-	let max_body_size = if config.upload_limit() > config.max_request_size
-		&& is_upload(parts.uri.path())
-		&& has_valid_token(services, &parts, &query).await
+	let owner = if config.upload_limit() > config.max_request_size && is_upload(parts.uri.path())
 	{
-		config.upload_limit()
+		token_owner(services, &parts, &query).await
 	} else {
-		config.max_request_size
+		None
 	};
-	let body = axum::body::to_bytes(body, max_body_size)
-		.await
-		.map_err(|e| err!(Request(TooLarge("Request body too large: {e}"))))?;
 
-	Ok(Request { cookie, path, query, body, parts })
+	let (body, reservation) = match owner {
+		| Some(owner) => {
+			let reservation = services.server.big_bodies.reserve(&owner);
+			read_reserved(body, &parts, config.upload_limit(), reservation).await?
+		},
+		| None => {
+			let body = axum::body::to_bytes(body, config.max_request_size)
+				.await
+				.map_err(|e| err!(Request(TooLarge("Request body too large: {e}"))))?;
+
+			(body, None)
+		},
+	};
+
+	Ok(Request { cookie, path, query, body, parts, reservation })
 }
+
+/// Reads an upload, growing its reservation as the bytes arrive. Refused at
+/// once when the budget, or this account's share of it, is used up.
+async fn read_reserved(
+	body: axum::body::Body,
+	parts: &Parts,
+	limit: usize,
+	mut reservation: Reservation,
+) -> Result<(Bytes, Option<Reservation>)> {
+	let too_large = || err!(Request(TooLarge("Request body too large")));
+
+	let declared = parts
+		.headers
+		.get(http::header::CONTENT_LENGTH)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.parse::<usize>().ok());
+
+	if declared.is_some_and(|len| len > limit) {
+		return Err(too_large());
+	}
+
+	if !reservation.grow_to(declared.unwrap_or(0)) {
+		return Err(busy());
+	}
+
+	let mut buf = BytesMut::with_capacity(declared.unwrap_or(0));
+	let mut stream = body.into_data_stream();
+	while let Some(chunk) = stream.next().await {
+		let chunk = chunk.map_err(|e| err!(Request(Unknown("Failed to read the body: {e}"))))?;
+		let len = buf.len().saturating_add(chunk.len());
+		if len > limit {
+			return Err(too_large());
+		}
+
+		if !reservation.grow_to(len) {
+			return Err(busy());
+		}
+
+		buf.extend_from_slice(&chunk);
+	}
+
+	Ok((buf.freeze(), Some(reservation)))
+}
+
+fn busy() -> Error {
+	Error::Request(
+		ErrorKind::LimitExceeded(LimitExceededErrorData {
+			retry_after: Some(RetryAfter::Delay(Duration::from_secs(30))),
+		}),
+		"The server is busy with other big files. Try again shortly.".into(),
+		StatusCode::TOO_MANY_REQUESTS,
+	)
+}
+
 
 /// Media upload routes: `/_matrix/media/{version}/upload[/{server}/{id}]`.
 fn is_upload(path: &str) -> bool {
@@ -91,26 +165,27 @@ fn is_upload(path: &str) -> bool {
 		&& segments.next() == Some("upload")
 }
 
-/// Whether the request carries an access token of an account or appservice
-/// here, by header or query, that hasn't expired.
-async fn has_valid_token(services: &Services, parts: &Parts, query: &QueryParams) -> bool {
+/// Who an upload belongs to, when it carries an access token of an account or
+/// appservice here, by header or query, that hasn't expired.
+async fn token_owner(services: &Services, parts: &Parts, query: &QueryParams) -> Option<String> {
 	let header = parts
 		.headers
 		.get(http::header::AUTHORIZATION)
 		.and_then(|value| value.to_str().ok())
 		.and_then(|value| value.strip_prefix("Bearer "))
 		.map(str::trim);
-	let Some(token) = header.or(query.access_token.as_deref()) else {
-		return false;
-	};
+	let token = header.or(query.access_token.as_deref())?;
 
-	if let Ok((_, _, expires_at)) = services.users.find_from_token(token).await {
-		return expires_at.is_none_or(|at| at > std::time::SystemTime::now());
+	if let Ok((user, _, expires_at)) = services.users.find_from_token(token).await {
+		return expires_at
+			.is_none_or(|at| at > std::time::SystemTime::now())
+			.then(|| user.to_string());
 	}
 
 	services
 		.appservice
 		.find_from_access_token(token)
 		.await
-		.is_ok()
+		.ok()
+		.map(|info| format!("appservice {}", info.registration.id))
 }

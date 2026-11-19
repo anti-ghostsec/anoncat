@@ -16,7 +16,10 @@ use ruma::{
 	},
 };
 use serde_json::{Value as JsonValue, from_slice};
-use tuwunel_core::{Error, Result, err, implement, utils::string::EMPTY};
+use tuwunel_core::{
+	Error, Result, err, implement,
+	utils::{memory_budget::Reservation, string::EMPTY},
+};
 use tuwunel_service::{Services, appservice::RegistrationInfo};
 
 use super::{
@@ -51,6 +54,9 @@ pub struct Args<T, const ADMIN: bool = false> {
 
 	/// Parsed canonical JSON, absent for raw or noncanonical request bodies.
 	pub json_body: Option<CanonicalJsonValue>,
+
+	/// Memory held for a big upload until the request is done with.
+	pub reservation: Option<Reservation>,
 }
 
 /// Requires administrator authorization before returning request body errors.
@@ -269,6 +275,7 @@ where
 		sender_device: auth.sender_device,
 		appservice_info: auth.appservice_info,
 		json_body,
+		reservation: request.reservation,
 	})
 }
 

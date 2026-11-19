@@ -23,7 +23,7 @@ use tuwunel_core::{
 use tuwunel_service::{Services, signup::Session, users::is_password_hash};
 
 use super::{
-	enabled, forbidden, notice, page, reason, removal_cookie, same_origin, see_other, session,
+	enabled, forbidden, notice, page, password_mark, reason, removal_cookie, same_origin, see_other, session,
 	session_cookie,
 };
 use crate::session::password_login;
@@ -72,7 +72,7 @@ pub(super) async fn login_get_route(
 		return off;
 	}
 
-	if session(&services, &jar).is_some() {
+	if session(&services, &jar).await.is_some() {
 		return see_other("/account");
 	}
 
@@ -96,7 +96,9 @@ pub(super) async fn login_post_route(
 
 	match login(&services, &body).await {
 		| Ok(user_id) => {
-			let token = services.signup.start_session(&user_id);
+			let token = services
+				.signup
+				.start_session(&user_id, password_mark(&services, &user_id).await);
 			(jar.add(session_cookie(token)), see_other("/account")).into_response()
 		},
 		| Err(e) =>
@@ -158,7 +160,7 @@ pub(super) async fn get_route(
 		return off;
 	}
 
-	let Some(session) = session(&services, &jar) else {
+	let Some(session) = session(&services, &jar).await else {
 		return see_other("/login");
 	};
 
@@ -185,7 +187,7 @@ pub(super) async fn post_route(
 		return off;
 	}
 
-	let Some(session) = session(&services, &jar) else {
+	let Some(session) = session(&services, &jar).await else {
 		return see_other("/login");
 	};
 
@@ -211,7 +213,9 @@ pub(super) async fn post_route(
 				// Every other browser signed in here is signed out, this one
 				// keeps going under a new cookie.
 				services.signup.end_sessions_for(user_id);
-				let token = services.signup.start_session(user_id);
+				let token = services
+					.signup
+					.start_session(user_id, password_mark(&services, user_id).await);
 				let jar = jar.add(session_cookie(token));
 
 				return (jar, see_other("/account?done=password")).into_response();

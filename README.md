@@ -61,13 +61,14 @@ changed are recorded in this repository's history.
   stand-in picture.
 - Optional AI moderation, off unless an admin turns it on. When it is on, content is sent to a
   third-party, no-retention AI service to be checked. Matrix user IDs, room IDs,
-  aliases and event IDs are swapped for placeholders first, but the content itself has to be sent
-  as it is, so the service can read it. What can be sent:
+  aliases and event IDs in it are swapped for placeholders first, and no server's name is sent,
+  but the content itself has to be sent as it is, so the service can read it. What can be sent:
   - the text of messages, and pictures and video frames, in rooms that aren't end-to-end
     encrypted;
   - pictures and videos uploaded here, and ones fetched from other servers when someone here opens
     them, wherever they were posted (end-to-end encrypted files can't be read, so they aren't);
-  - a room's name, topic, address and join rules when someone here joins it or they change,
+  - a room's name, topic, join rules, the words of its address (`#name`, without the server),
+    and how many servers its members are on, when someone here joins it or they change,
     encrypted rooms included, since those aren't encrypted; and its latest messages when the room
     isn't encrypted;
   - what people report with their app's Report button, and the reason they give;

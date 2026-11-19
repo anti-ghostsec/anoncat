@@ -43,6 +43,9 @@ pub struct Session {
 	pub user_id: OwnedUserId,
 	/// Sent back with every form, so another site can't post them.
 	pub csrf: String,
+	/// A mark of the account's password when the session started: once the
+	/// password changes, from anywhere, the session no longer works.
+	pub password: String,
 	started: Instant,
 	seen: Instant,
 }
@@ -136,12 +139,13 @@ impl Service {
 
 	/// Signs `user_id` in to the account page; the token goes in its cookie.
 	#[must_use]
-	pub fn start_session(&self, user_id: &UserId) -> String {
+	pub fn start_session(&self, user_id: &UserId, password: String) -> String {
 		let token = utils::random_string(TOKEN_LENGTH);
 		let now = Instant::now();
 		let session = Session {
 			user_id: user_id.to_owned(),
 			csrf: utils::random_string(TOKEN_LENGTH),
+			password,
 			started: now,
 			seen: now,
 		};
@@ -245,7 +249,7 @@ mod tests {
 	fn sessions_end() {
 		let service = service();
 		let user: OwnedUserId = "@a:example.com".try_into().unwrap();
-		let token = service.start_session(&user);
+		let token = service.start_session(&user, String::new());
 		assert_eq!(service.session(&token).unwrap().user_id, user);
 
 		service.end_sessions_for(&user);

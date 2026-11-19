@@ -468,6 +468,16 @@
 #
 #max_upload_size = 0
 
+# Memory that files bigger than `max_request_size` may take at once:
+# uploads and files downloaded from other servers, together. One account,
+# or one other server, gets at most one file of the biggest size at a
+# time. A file that doesn't fit is refused with M_LIMIT_EXCEEDED, and the
+# app tries again later. A file is held about three times while it's
+# checked and stored, so the memory used can be up to three times this.
+# Never less than `max_upload_size`. Takes effect at a restart.
+#
+#big_body_memory = "2 GiB"
+
 # Maximum size of a response body buffered from a remote server. Applies
 # to federation requests, push gateway and appservice transactions, and
 # remote media fetched for URL previews. A peer cannot be trusted to honor

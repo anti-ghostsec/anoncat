@@ -655,6 +655,21 @@ pub struct Config {
 	#[serde(default, deserialize_with = "deserialize_bytesize_usize")]
 	pub max_upload_size: usize,
 
+	/// Memory that files bigger than `max_request_size` may take at once:
+	/// uploads and files downloaded from other servers, together. One account,
+	/// or one other server, gets at most one file of the biggest size at a
+	/// time. A file that doesn't fit is refused with M_LIMIT_EXCEEDED, and the
+	/// app tries again later. A file is held about three times while it's
+	/// checked and stored, so the memory used can be up to three times this.
+	/// Never less than `max_upload_size`. Takes effect at a restart.
+	///
+	/// default: "2 GiB"
+	#[serde(
+		default = "default_big_body_memory",
+		deserialize_with = "deserialize_bytesize_usize"
+	)]
+	pub big_body_memory: usize,
+
 	/// Maximum size of a response body buffered from a remote server. Applies
 	/// to federation requests, push gateway and appservice transactions, and
 	/// remote media fetched for URL previews. A peer cannot be trusted to honor
@@ -6167,6 +6182,8 @@ fn default_ip_lookup_strategy() -> u8 { 5 }
 fn default_max_request_size() -> usize { 24 * 1024 * 1024 }
 
 fn default_max_response_size() -> usize { 256 * 1024 * 1024 }
+
+fn default_big_body_memory() -> usize { 2 * 1024 * 1024 * 1024 }
 
 fn default_max_remote_profile_fields() -> usize { 100 }
 

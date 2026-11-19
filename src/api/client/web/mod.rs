@@ -27,6 +27,7 @@ use tuwunel_core::{
 	Error,
 	utils::{hash::sha256, html::escape as html_escape},
 };
+use ruma::UserId;
 use tuwunel_service::{Services, signup::Session};
 
 use crate::State;
@@ -150,10 +151,37 @@ fn forbidden(services: &Services) -> Response {
 	)
 }
 
-/// The signed-in session this browser's cookie names, if any.
-fn session(services: &Services, jar: &CookieJar) -> Option<Session> {
+/// The signed-in session this browser's cookie names, if any. It ends once
+/// the account is locked or deactivated, or its password changed, wherever
+/// that was done.
+async fn session(services: &Services, jar: &CookieJar) -> Option<Session> {
 	let token = jar.get(COOKIE)?.value();
-	services.signup.session(token)
+	let session = services.signup.session(token)?;
+	let user_id = &session.user_id;
+
+	let usable = !services
+		.users
+		.is_deactivated(user_id)
+		.await
+		.unwrap_or(true)
+		&& !services.users.is_locked(user_id).await
+		&& password_mark(services, user_id).await == session.password;
+
+	if !usable {
+		services.signup.end_session(token);
+		return None;
+	}
+
+	Some(session)
+}
+
+/// A mark of the account's stored password hash: the same until the
+/// password changes. Not the hash itself, which stays in the database.
+async fn password_mark(services: &Services, user_id: &UserId) -> String {
+	match services.users.password_hash(user_id).await {
+		| Ok(hash) => STANDARD.encode(sha256::hash(hash.as_bytes())),
+		| Err(_) => String::new(),
+	}
 }
 
 fn session_cookie(token: String) -> Cookie<'static> {
@@ -165,7 +193,16 @@ fn session_cookie(token: String) -> Cookie<'static> {
 		.build()
 }
 
-fn removal_cookie() -> Cookie<'static> { Cookie::build(COOKIE).path("/").build() }
+/// `__Host-` cookies are only accepted with `Secure`, so the cookie that
+/// clears one needs it too, or the browser ignores it and stays signed in.
+fn removal_cookie() -> Cookie<'static> {
+	Cookie::build(COOKIE)
+		.path("/")
+		.secure(true)
+		.http_only(true)
+		.same_site(SameSite::Strict)
+		.build()
+}
 
 fn notice(kind: &str, text: &str) -> String {
 	match text {

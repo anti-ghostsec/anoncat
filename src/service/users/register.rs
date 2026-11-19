@@ -1,6 +1,6 @@
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use ruma::{UserId, events::GlobalAccountDataEventType, push};
-use tuwunel_core::{Err, Result, error, implement, info, warn};
+use tuwunel_core::{Err, Result, error, implement, info, utils::stream::ReadyExt, warn};
 
 use crate::{membership::Join, profile::Propagation};
 
@@ -97,14 +97,16 @@ pub async fn full_register(
 		)
 		.await?;
 
-	// If this is the first real user, grant them admin privileges except for guest
-	// users
-	// Note: the server user is generated first
+	// The first real account gets admin rights, and only the first: on a
+	// server that has other accounts but no admin (all of them removed), the
+	// next person to sign up must not get them. An admin is named from the
+	// command line then.
 	if !is_guest
 		&& !is_appservice
 		&& grant_first_user_admin
 		&& self.services.config.grant_admin_to_first_user
 		&& !self.services.admin.any_admin().await
+		&& self.is_first_account(user_id).await
 	{
 		self.services
 			.admin
@@ -162,4 +164,18 @@ pub async fn full_register(
 	}
 
 	Ok(())
+}
+
+/// Whether no account but `user_id` and the server's own exists, ever made
+/// here: deactivated accounts count too.
+#[implement(super::Service)]
+async fn is_first_account(&self, user_id: &UserId) -> bool {
+	let server_user: &UserId = &self.services.globals.server_user;
+
+	self.stream()
+		.ready_filter(|other| *other != user_id && *other != server_user)
+		.boxed()
+		.next()
+		.await
+		.is_none()
 }

@@ -85,7 +85,7 @@ case ${1:-} in
 	echo "Installed $(version "$BIN"); restarting in place..."
 	if ! restart_in_place; then
 		echo "The new binary didn't come up within ${TIMEOUT}s." >&2
-		journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true
+		journalctl --namespace=anoncat -u "$SERVICE" -n 30 --no-pager >&2 || true
 		rollback
 		exit 1
 	fi

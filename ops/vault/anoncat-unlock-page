@@ -64,6 +64,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
     # Unbuffered: a buffered reader would keep its own copy of the body,
     # passphrase included, that nothing ever wipes.
     rbufsize = 0
+    # A connection that stops sending is dropped, so it can't hold the
+    # page (one request at a time) for anyone else.
+    timeout = 30
 
     def log_message(self, *_args):
         # Nothing logged: no addresses, no paths.

@@ -19,7 +19,10 @@ use ruma::OwnedServerName;
 use tokio::{runtime, sync::broadcast};
 
 pub use self::progress::Progress;
-use crate::{Err, Result, config, config::Config, log::Logging, metrics::Metrics};
+use crate::{
+	Err, Result, config, config::Config, log::Logging, metrics::Metrics,
+	utils::memory_budget::MemoryBudget,
+};
 
 /// Server runtime state; public portion
 pub struct Server {
@@ -67,6 +70,9 @@ pub struct Server {
 
 	/// Progress of the long startup phase in flight, when there is one.
 	pub progress: Progress,
+
+	/// Memory for uploads and remote files above `max_request_size`.
+	pub big_bodies: MemoryBudget,
 }
 
 impl Server {
@@ -83,7 +89,10 @@ impl Server {
 		log: Logging,
 		metrics: Arc<Metrics>,
 	) -> Self {
+		let big_bodies = MemoryBudget::new(config.big_body_memory, config.media_fetch_limit());
+
 		Self {
+			big_bodies,
 			name: config.server_name.clone(),
 			config: config::Manager::new(config),
 			config_sources,

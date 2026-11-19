@@ -16,6 +16,7 @@ pub mod hash;
 pub mod html;
 pub mod json;
 pub mod math;
+pub mod memory_budget;
 pub mod mutex;
 pub mod mutex_map;
 pub mod option;

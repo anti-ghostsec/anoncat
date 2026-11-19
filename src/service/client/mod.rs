@@ -10,7 +10,8 @@ use ipaddress::{IPAddress, ipv4::from_u32 as ipv4_from_u32};
 use reqwest::{Client, ClientBuilder, Url, dns::Resolve, header::HeaderValue, redirect::Policy};
 use tuwunel_core::{
 	Config, Err, Result, config::proxy::ProxySnapshot, debug, either::Either, err,
-	error::error_chain, implement, trace, utils::math::u64_from_usize_saturating,
+	error::error_chain, implement, trace,
+	utils::{math::u64_from_usize_saturating, memory_budget},
 };
 use url::Host;
 
@@ -376,10 +377,22 @@ pub async fn read_response_capped(
 		| Some(len) => BytesMut::with_capacity(usize::try_from(len).unwrap_or(limit)),
 		| None => BytesMut::new(),
 	};
+	// A remote file takes room in the server's budget for big files as it
+	// arrives, when its fetch set one (`memory_budget::hold`).
+	let busy = |len: usize| memory_budget::grow_held(len) == Some(false);
+	if busy(body.capacity()) {
+		return Err!(Request(Unknown("The server is busy with other big files.")));
+	}
+
 	while let Some(chunk) = response.chunk().await? {
-		if body.len().saturating_add(chunk.len()) > limit {
+		let len = body.len().saturating_add(chunk.len());
+		if len > limit {
 			debug!(%limit, "rejecting response: streamed body exceeds limit");
 			return Err!(BadServerResponse("Response body exceeds the {limit} byte limit"));
+		}
+
+		if busy(len) {
+			return Err!(Request(Unknown("The server is busy with other big files.")));
 		}
 
 		body.extend_from_slice(&chunk);

@@ -18,7 +18,9 @@ use serde_json::json;
 use tuwunel_core::{Err, Result, err, info, utils::html::escape as html_escape};
 use tuwunel_service::{Services, users::Register};
 
-use super::{enabled, forbidden, notice, page, reason, same_origin, session_cookie};
+use super::{
+	enabled, forbidden, notice, page, password_mark, reason, same_origin, session_cookie,
+};
 
 const PASSWORD_MIN: usize = 8;
 const PASSWORD_MAX: usize = 512;
@@ -64,7 +66,9 @@ pub(super) async fn post_route(
 
 	match register(&services, &body).await {
 		| Ok(user_id) => {
-			let token = services.signup.start_session(&user_id);
+			let token = services
+				.signup
+				.start_session(&user_id, password_mark(&services, &user_id).await);
 			let jar = jar.add(session_cookie(token));
 			(jar, welcome(&services, &user_id)).into_response()
 		},

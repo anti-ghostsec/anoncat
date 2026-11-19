@@ -14,7 +14,7 @@ use ruma::{
 };
 use tuwunel_core::{
 	Err, Error, Result, debug_warn, err, implement,
-	utils::content_disposition::make_content_disposition,
+	utils::{content_disposition::make_content_disposition, memory_budget},
 };
 use url::Url;
 
@@ -52,19 +52,22 @@ pub async fn fetch_remote_thumbnail(
 ) -> Result<Fetched> {
 	self.check_fetch_authorized(mxc)?;
 
-	let result = self
-		.fetch_thumbnail_authenticated(mxc, server, timeout_ms, dim, animate)
-		.await;
-
-	if let Err(Error::Request(NotFound, ..)) = &result
-		&& self.services.server.config.request_legacy_media
-	{
-		return self
-			.fetch_thumbnail_unauthenticated(mxc, server, timeout_ms, dim, animate)
+	memory_budget::hold(self.fetch_reservation(mxc), async {
+		let result = self
+			.fetch_thumbnail_authenticated(mxc, server, timeout_ms, dim, animate)
 			.await;
-	}
 
-	result
+		if let Err(Error::Request(NotFound, ..)) = &result
+			&& self.services.server.config.request_legacy_media
+		{
+			return self
+				.fetch_thumbnail_unauthenticated(mxc, server, timeout_ms, dim, animate)
+				.await;
+		}
+
+		result
+	})
+	.await
 }
 
 /// Fetches the original file from the origin server.
@@ -83,19 +86,32 @@ pub async fn fetch_remote_content(
 ) -> Result<Fetched> {
 	self.check_fetch_authorized(mxc)?;
 
-	let result = self
-		.fetch_content_authenticated(mxc, server, timeout_ms)
-		.await;
-
-	if let Err(Error::Request(NotFound, ..)) = &result
-		&& self.services.server.config.request_legacy_media
-	{
-		return self
-			.fetch_content_unauthenticated(mxc, server, timeout_ms)
+	memory_budget::hold(self.fetch_reservation(mxc), async {
+		let result = self
+			.fetch_content_authenticated(mxc, server, timeout_ms)
 			.await;
-	}
 
-	result
+		if let Err(Error::Request(NotFound, ..)) = &result
+			&& self.services.server.config.request_legacy_media
+		{
+			return self
+				.fetch_content_unauthenticated(mxc, server, timeout_ms)
+				.await;
+		}
+
+		result
+	})
+	.await
+}
+
+/// Room in the budget for big files, for a file from the server `mxc` names:
+/// each other server gets one file of the biggest size at a time.
+#[implement(super::Service)]
+fn fetch_reservation(&self, mxc: &Mxc<'_>) -> memory_budget::Reservation {
+	self.services
+		.server
+		.big_bodies
+		.reserve(&format!("server {}", mxc.server_name))
 }
 
 #[implement(super::Service)]
@@ -458,22 +474,25 @@ pub async fn fetch_remote_thumbnail_legacy(
 
 	let dim = dim.normalized();
 
-	// both helpers cache what they fetch, so a picture the request forbids is
-	// kept beside the still derived from it rather than shadowed by it later
-	let fetched = match dim.is_original() {
-		| true =>
-			self.fetch_content_unauthenticated(mxc, None, timeout_ms)
-				.await?,
-		| false =>
-			self.fetch_thumbnail_unauthenticated(mxc, None, timeout_ms, &dim, animate)
-				.await?,
-	};
+	memory_budget::hold(self.fetch_reservation(mxc), async {
+		// both helpers cache what they fetch, so a picture the request forbids
+		// is kept beside the still derived from it rather than shadowed by it
+		let fetched = match dim.is_original() {
+			| true =>
+				self.fetch_content_unauthenticated(mxc, None, timeout_ms)
+					.await?,
+			| false =>
+				self.fetch_thumbnail_unauthenticated(mxc, None, timeout_ms, &dim, animate)
+					.await?,
+		};
 
-	if animate.accepts_fetched(&fetched) {
-		return Ok(fetched.media);
-	}
+		if animate.accepts_fetched(&fetched) {
+			return Ok(fetched.media);
+		}
 
-	self.store_still(mxc, &dim, fetched.media).await
+		self.store_still(mxc, &dim, fetched.media).await
+	})
+	.await
 }
 
 #[implement(super::Service)]
@@ -485,6 +504,20 @@ pub async fn fetch_remote_content_legacy(
 ) -> Result<media::get_content::v3::Response, Error> {
 	self.check_legacy_freeze()?;
 	self.check_fetch_authorized(mxc)?;
+	memory_budget::hold(
+		self.fetch_reservation(mxc),
+		self.fetch_content_legacy_held(mxc, timeout_ms),
+	)
+	.await
+}
+
+#[implement(super::Service)]
+#[expect(deprecated)]
+async fn fetch_content_legacy_held(
+	&self,
+	mxc: &Mxc<'_>,
+	timeout_ms: Duration,
+) -> Result<media::get_content::v3::Response, Error> {
 	let response = self
 		.services
 		.federation
