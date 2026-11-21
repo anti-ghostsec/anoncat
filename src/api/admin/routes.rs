@@ -26,6 +26,7 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/command", post(admin::anoncat::anoncat_command_route))
 		.route("/_anoncat/admin/v1/status", get(admin::anoncat::anoncat_status_route))
 		.route("/_anoncat/admin/v1/notices", get(admin::anoncat::anoncat_notices_route))
+		.route("/_anoncat/admin/v1/announce", get(a::announce::recipients_route).merge(post(a::announce::announce_route)))
 		.route("/_anoncat/admin/v1/moderation/settings", get(m::get_settings_route).merge(put(m::put_settings_route)))
 		.route("/_anoncat/admin/v1/moderation/test", post(m::test_route))
 		.route("/_anoncat/admin/v1/moderation/models", get(m::models_route))

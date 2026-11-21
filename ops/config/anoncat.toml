@@ -55,11 +55,15 @@ max_request_size = "24 MiB"
 # Biggest single upload. Only an upload with a valid access token, checked
 # before the file is read, may be this big. Uploads are held in memory while
 # they arrive.
-max_upload_size = "1 GiB"
+max_upload_size = "2 GiB"
 
-# Longest a request may take, upload included (seconds). 30 minutes lets a
-# 1 GiB upload finish on a slow phone connection through the VPN.
-client_request_timeout = 1800
+# Memory for big uploads at once (each is held about three times while it's
+# checked): room for two of the biggest at a time.
+big_body_memory = "4 GiB"
+
+# Longest a request may take, upload included (seconds). An hour lets a
+# 2 GiB upload finish on a slow phone connection through the VPN.
+client_request_timeout = 3600
 
 # --- registration --------------------------------------------------------------
 # Apps signing up need a token: this one (from the installer) or invite tokens

@@ -537,6 +537,68 @@ pub(super) const FFMPEG_INPUT_LIMITS: [&str; 4] = [
 ];
 
 /// Longest a conversion for the panel may run.
+/// Longest cleaning one upload may take: the streams are copied, not
+/// re-encoded, so this is mostly reading and writing the file.
+const CLEAN_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The same video in the same container without its metadata: location,
+/// camera, dates and names, chapters, and data tracks (the GPS tracks of
+/// action cameras and dashcams). Video, audio and subtitle streams are copied
+/// as they are. Only the sandboxed worker does this: the container has to be
+/// told apart and written back, which is the worker's job, so with no worker
+/// set up this fails and the caller decides what to store.
+#[implement(super::Service)]
+pub async fn video_clean(&self, content: &[u8]) -> Result<Vec<u8>> {
+	let config = &self.services.config;
+	if config.media_video_worker.is_empty() {
+		return Err!("Video cleaning isn't set up.");
+	}
+	if content.len() > config.media_video_thumbnail_max_size {
+		return Err!("Too big to clean.");
+	}
+
+	let deadline = Instant::now()
+		.checked_add(CLEAN_TIMEOUT)
+		.ok_or_else(|| err!("Timeout is out of range."))?;
+	let Ok(Ok(_slot)) = timeout_at(deadline, self.video_thumbnail_slots.acquire()).await else {
+		return Err!("Timed out waiting for a video slot.");
+	};
+
+	let path = staging_dir(config).join(format!("{STAGED}{}", random_string(NAME_LENGTH)));
+	defer! {{ remove_file(&path).ok(); }}
+	timeout_at(deadline, stage(&path, content))
+		.await
+		.map_err(|_| err!("Timed out staging the video."))??;
+	let input = path.to_string_lossy().into_owned();
+
+	// Cleaning only removes, so the copy is never much bigger than the upload.
+	let limit = u64_from_usize_saturating(content.len()).saturating_add(1024 * 1024);
+	run(&config.media_video_worker, ["clean", input.as_str()], limit, deadline).await
+}
+
+/// Whether an upload is a video whose metadata needs removing: declared as
+/// one, or not declared as audio or a picture and in a video container all
+/// the same, since the declared type is only the uploader's word.
+pub(super) fn needs_cleaning(content_type: Option<&str>, file: &[u8]) -> bool {
+	let declared = content_type.unwrap_or_default();
+	if declared.starts_with(VIDEO) {
+		return true;
+	}
+	if declared.starts_with("audio/") || declared.starts_with("image/") {
+		return false;
+	}
+
+	let at = |offset: usize, magic: &[u8]| {
+		file.get(offset..)
+			.is_some_and(|rest| rest.starts_with(magic))
+	};
+
+	at(4, b"ftyp")
+		|| at(0, b"\x1A\x45\xDF\xA3")
+		|| (at(0, b"RIFF") && at(8, b"AVI "))
+		|| at(0, b"FLV")
+}
+
 const PLAYABLE_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// A copy of a video any browser can play, for the admin judging it: VP8 and

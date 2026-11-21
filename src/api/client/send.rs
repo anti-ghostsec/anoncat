@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+	collections::BTreeMap,
+	time::{Duration, Instant},
+};
 
 use axum::extract::State;
 use futures::future::try_join4;
@@ -23,6 +26,9 @@ use tuwunel_matrix::{Event, PduEvent, pdu::PduBuilder};
 use tuwunel_service::{Services, plugins::PluginEvent};
 
 use crate::{Ruma, utils::is_self_redaction};
+
+/// A wait on the room lock at least this long is logged.
+const SLOW_LOCK: Duration = Duration::from_secs(1);
 
 #[derive(Deserialize)]
 struct ExtractRelatesTo {
@@ -123,7 +129,13 @@ pub(crate) async fn send_message_event_route(
 		.await
 		.map_err(|reason| err!(Request(Forbidden("{reason}"))))?;
 
+	let waiting = Instant::now();
 	let state_lock = services.state.mutex.lock(&body.room_id).await;
+	let waited = waiting.elapsed();
+	if waited >= SLOW_LOCK {
+		warn!(room_id = %body.room_id, ?waited, "A send waited on the room lock.");
+	}
+
 	let event_type = body.event_type.to_cow_str();
 
 	let (existing_txnid, ..) = try_join4(

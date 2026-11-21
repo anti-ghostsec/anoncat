@@ -36,16 +36,29 @@ changed are recorded in this repository's history.
 - The server's software version and user count are not published.
 - Location and camera details are removed from uploaded JPEG, PNG and WebP pictures. Other picture
   formats are not cleaned yet.
+- Uploaded videos (MP4, MOV, WebM, MKV, AVI and others) lose their location, camera, dates, titles,
+  chapters and GPS tracks; the picture and sound are copied untouched. If a video can't be cleaned,
+  the upload stops with a warning that it may still carry those details; sending the same video
+  again within 10 minutes sends it as it is. Videos over the video size limit (128 MiB by default) are too big to clean and are
+  stored as they are, metadata included.
 - Messages are deleted after 30 days, and messages with a picture, video or file after 90.
   Encrypted messages can't be told apart, so they go after 30.
 - Presence (who is online) is off.
+- Push notifications carry only the event and room IDs and the unread count, whatever the app asks
+  for. The push service and the phone vendor never see the message, who sent it, or the room's name.
+- New invite-only rooms and direct chats are end-to-end encrypted by default.
+- Other servers can't look up the profiles (display names, avatars) of people here.
 - All data (database, media, keys, logs) lives in an encrypted container that is locked after
   every restart and needs a passphrase to open.
 
 **Running the server**
 
 - An admin panel, reachable only from the server machine itself: users, rooms, reports, media,
-  cleanup, backups, plugins and logs.
+  cleanup, backups, plugins and logs. Admins can send a message to everyone from it; each person
+  gets it in their own notices room, which stays on this server.
+- An optional onion address for apps and the web pages, set up with `ops/install/anoncat-onion`.
+  Tor only connects outwards, so nothing is forwarded or published for it. Other servers still
+  use the normal address.
 - Sign-up from a web page with a captcha drawn by the server itself (no third-party captcha
   service), limited to a number of accounts an hour. Matrix apps signing up directly still need a
   registration token.

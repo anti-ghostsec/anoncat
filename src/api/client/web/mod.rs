@@ -4,6 +4,7 @@
 //! work in Tor Browser on its safest setting.
 
 mod account;
+mod captcha_fallback;
 mod home;
 mod register;
 
@@ -58,6 +59,10 @@ pub(crate) fn routes(router: Router<State>) -> Router<State> {
 		.route("/login", get(account::login_get_route).post(account::login_post_route))
 		.route("/account", get(account::get_route))
 		.route("/account/{action}", post(account::post_route))
+		.route(
+			"/_matrix/client/v3/auth/org.anoncat.captcha/fallback/web",
+			get(captcha_fallback::get_route).post(captcha_fallback::post_route),
+		)
 }
 
 /// The pages exist only while `web_signup` is on.

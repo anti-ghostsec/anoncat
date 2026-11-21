@@ -9,7 +9,8 @@
 set -euo pipefail
 
 TLS=/Drives/server/data/tls
-DOMAINS=(anoncat.gleeze.com hs.anoncat.gleeze.com)
+# direct: the path next to the relay (anoncat-netd); harmless without one.
+DOMAINS=(anoncat.gleeze.com hs.anoncat.gleeze.com direct.anoncat.gleeze.com)
 CERT=$TLS/certificates/${DOMAINS[0]}.crt
 
 args=(--accept-tos --path "$TLS" --email "admin@${DOMAINS[0]}" --dns exec --dns.disable-cp)

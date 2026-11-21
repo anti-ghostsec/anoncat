@@ -122,6 +122,10 @@ pub struct Service {
 	video_thumbnail_slots: Semaphore,
 	#[cfg(feature = "media_thumbnail")]
 	video_thumbnail_failures: Mutex<Failures>,
+	/// Videos held back because their metadata couldn't be removed, until
+	/// when their sender may send them again to store them as they are.
+	#[cfg(feature = "media_thumbnail")]
+	keep_metadata: Mutex<HashMap<[u8; 32], Instant>>,
 }
 
 /// generated MXC ID (`media-id`) length
@@ -135,6 +139,28 @@ pub const CORP_CROSS_ORIGIN: &str = "cross-origin";
 
 /// Validity window for a presigned media download redirect (MSC3860).
 const REDIRECT_TTL: Duration = Duration::from_mins(5);
+
+/// How long a video held back for its metadata waits for its sender to send
+/// it again anyway.
+#[cfg(feature = "media_thumbnail")]
+const KEEP_METADATA_WINDOW: Duration = Duration::from_mins(10);
+
+/// Starts the message of a video held back for its metadata, so a client can
+/// tell it apart and offer "send anyway" (by uploading it again).
+#[cfg(feature = "media_thumbnail")]
+pub const KEEP_METADATA_NOTICE: &str = "[anoncat:metadata-kept]";
+
+/// Recognises the same account sending the same video again.
+#[cfg(feature = "media_thumbnail")]
+fn keep_metadata_key(user: &UserId, file: &[u8]) -> [u8; 32] {
+	use sha2::{Digest, Sha256};
+
+	let mut hash = Sha256::new();
+	hash.update(user.as_bytes());
+	hash.update([0xFF]);
+	hash.update(file);
+	hash.finalize().into()
+}
 
 /// Starts the note on hidden media that was swapped for good.
 const SWAPPED: &str = "swapped: ";
@@ -162,6 +188,8 @@ impl crate::Service for Service {
 			},
 			#[cfg(feature = "media_thumbnail")]
 			video_thumbnail_failures: Failures::new(FAILURES).into(),
+			#[cfg(feature = "media_thumbnail")]
+			keep_metadata: Mutex::new(HashMap::new()),
 			#[cfg(feature = "media_thumbnail")]
 			animated_thumbnail_slots,
 			#[cfg(feature = "media_thumbnail")]
@@ -460,10 +488,11 @@ impl Service {
 	) -> Result<bool> {
 		// A user's own upload loses its location, camera and other metadata
 		// before it is stored; media fetched from other servers is theirs.
-		let stripped = user
-			.is_some_and(|user| self.services.globals.user_is_local(user))
-			.then(|| strip::strip_metadata(file))
-			.flatten();
+		let local = user.is_some_and(|user| self.services.globals.user_is_local(user));
+		let stripped = match user {
+			| Some(user) if local => self.strip_upload(user, content_type, file).await?,
+			| _ => None,
+		};
 		let file = stripped.as_deref().unwrap_or(file);
 
 		let walk = sequence(file);
@@ -481,6 +510,95 @@ impl Service {
 		self.create_media_file(&key, file)
 			.map_ok(|()| walk.animates())
 			.await
+	}
+
+	/// A local upload without its metadata, or `None` when there was none to
+	/// remove. Pictures are cleaned here; videos by the video worker.
+	#[cfg(feature = "media_thumbnail")]
+	async fn strip_upload(
+		&self,
+		user: &UserId,
+		content_type: Option<&str>,
+		file: &[u8],
+	) -> Result<Option<Vec<u8>>> {
+		if video::needs_cleaning(content_type, file) {
+			return self.clean_video(user, file).await;
+		}
+
+		Ok(strip::strip_metadata(file))
+	}
+
+	/// Without the video worker's support compiled in, only pictures are
+	/// cleaned.
+	#[cfg(not(feature = "media_thumbnail"))]
+	async fn strip_upload(
+		&self,
+		_user: &UserId,
+		_content_type: Option<&str>,
+		file: &[u8],
+	) -> Result<Option<Vec<u8>>> {
+		Ok(strip::strip_metadata(file))
+	}
+
+	/// A local video upload without its metadata.
+	///
+	/// When video cleaning isn't set up (no `media_video_worker`), or the video
+	/// is over `media_video_thumbnail_max_size`, the upload is stored as it is,
+	/// with a warning.
+	///
+	/// A video the worker can't clean is refused once, with a message saying it
+	/// still carries its details: many videos carry none, so the person decides.
+	/// Uploading the same video again within [`KEEP_METADATA_WINDOW`] stores it
+	/// as it is. Only a hash of the account and the video is kept to recognise
+	/// the retry, in memory, until the window ends.
+	#[cfg(feature = "media_thumbnail")]
+	async fn clean_video(&self, user: &UserId, file: &[u8]) -> Result<Option<Vec<u8>>> {
+		let config = &self.services.config;
+		if config.media_video_worker.is_empty() {
+			warn!("A video was stored with its metadata: media_video_worker isn't set.");
+			return Ok(None);
+		}
+
+		// The worker takes videos up to this size. Bigger ones are stored as
+		// they are, metadata and all, so long videos can still be sent.
+		let max = config.media_video_thumbnail_max_size;
+		if file.len() > max {
+			let max_mib = max >> 20;
+			warn!("A video over {max_mib} MiB was stored with its metadata: too big to clean.");
+			return Ok(None);
+		}
+
+		let error = match self.video_clean(file).await {
+			| Ok(cleaned) => return Ok(Some(cleaned)),
+			| Err(error) => error,
+		};
+
+		let key = keep_metadata_key(user, file);
+		let now = Instant::now();
+		let confirmed = {
+			let mut pending = self.keep_metadata.lock()?;
+			pending.retain(|_, until| now < *until);
+			if pending.remove(&key).is_some() {
+				true
+			} else {
+				let until = now.checked_add(KEEP_METADATA_WINDOW).unwrap_or(now);
+				pending.insert(key, until);
+				false
+			}
+		};
+
+		if confirmed {
+			warn!(%error, "A video was stored with its metadata: sent again after the warning.");
+			return Ok(None);
+		}
+
+		warn!(%error, "A video upload was held back: its metadata couldn't be removed.");
+		Err!(Request(Unknown(
+			"{KEEP_METADATA_NOTICE} This video's location, camera, date and other details couldn't \
+			 be removed, so it may still carry them (many videos carry none). It wasn't stored. To \
+			 send it as it is, send it again within 10 minutes. To be safe, cancel, or send it \
+			 as a different format."
+		)))
 	}
 
 	/// Deletes a file in the database and from the media directory via an MXC

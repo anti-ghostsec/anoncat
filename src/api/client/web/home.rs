@@ -28,6 +28,23 @@ fn words(text: &str) -> String {
 		.join(" ")
 }
 
+/// A paragraph a line, in the front page's notice box; nothing when empty.
+fn notice(text: &str) -> String {
+	let paragraphs: String = text
+		.lines()
+		.map(str::trim)
+		.filter(|line| !line.is_empty())
+		.map(|line| format!("<p>{}</p>", words(line)))
+		.collect();
+
+	if paragraphs.is_empty() {
+		return String::new();
+	}
+
+	format!(r#"<aside class="banner" role="note">{paragraphs}</aside>
+"#)
+}
+
 /// An item a line.
 fn items(text: &str) -> String {
 	text.lines()
@@ -46,8 +63,9 @@ pub(super) async fn index_route(State(services): State<crate::State>) -> Respons
 	let settings = services.moderation.settings();
 	let title = words(&settings.page_title);
 	let intro = words(&settings.page_intro);
+	let notice = notice(&settings.page_notice);
 	let body = format!(
-		r#"<h1 class="hero">{title}</h1>
+		r#"{notice}<h1 class="hero">{title}</h1>
 <p class="lead">{intro}</p>
 <div class="actions"><a class="button" href="/register">Create an account</a> <a class="button quiet" href="/login">Manage your account</a></div>
 <section>
@@ -91,7 +109,7 @@ pub(super) async fn rules_route(State(services): State<crate::State>) -> Respons
 
 #[cfg(test)]
 mod tests {
-	use super::{items, words};
+	use super::{items, notice, words};
 
 	#[test]
 	fn admin_words_are_escaped_and_linked() {
@@ -102,6 +120,8 @@ mod tests {
 		);
 		assert_eq!(words("a/b and / alone"), "a/b and / alone");
 		assert_eq!(items("one\n\n two "), "<li>one</li><li>two</li>");
+		assert_eq!(notice(" \n "), "");
+		assert!(notice("<i>a</i>\nb").starts_with(r#"<aside class="banner" role="note"><p>&lt;i&gt;a"#));
 		assert!(!words(r#"https://x.org/"onmouseover="a"#).contains(r#"""onmouseover"#));
 	}
 }

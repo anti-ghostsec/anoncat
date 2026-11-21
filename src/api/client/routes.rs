@@ -261,7 +261,7 @@ fn register_client_misc_routes(router: Router<State>) -> Router<State> {
 		.ruma_route(&client::turn_server_route)
 		.ruma_route(&client::get_transports_route)
 		.ruma_route(&client::well_known_support)
-		.ruma_route(&client::well_known_client)
+		.route("/.well-known/matrix/client", get(client::well_known_client))
 		.ruma_route(&client::tuwunel_remote_version)
 		.route("/_tuwunel/server_version", get(client::tuwunel_server_version))
 		.route(

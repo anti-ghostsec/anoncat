@@ -879,9 +879,9 @@ pub struct Config {
 	/// /keys/query and /keys/claim against remote servers. Should be well
 	/// below `federation_timeout` so an interactive request to an unresponsive
 	/// server does not outlast the requesting client's own send deadline. A
-	/// lookup that exceeds this bound records a transient federation failure
-	/// for that server, so subsequent lookups back off instead of blocking
-	/// again.
+	/// lookup that exceeds this bound, or fails as a peer failure, makes key
+	/// lookups skip that server for ten minutes instead of blocking again.
+	/// Other traffic to the server is not held back.
 	///
 	/// default: 8
 	#[serde(default = "default_federation_keys_timeout")]
@@ -1207,9 +1207,11 @@ pub struct Config {
 	/// - "none": Explicit value for no effect.
 	/// - Other values default to no effect.
 	///
+	/// anoncat encrypts invite-only rooms and direct chats by default.
+	///
 	/// reloadable: yes
-	/// default: "none"
-	#[serde(default)]
+	/// default: "invite"
+	#[serde(default = "default_encryption_enabled_by_default_for_room_type")]
 	pub encryption_enabled_by_default_for_room_type: Option<String>,
 
 	/// Controls whether federation is allowed or not. It is not recommended to
@@ -1544,11 +1546,12 @@ pub struct Config {
 	/// spiders.
 	///
 	/// This is inherently false if `allow_federation` is disabled
+	///
+	/// anoncat turns this off by default.
+	///
 	/// reloadable: yes
-	#[serde(
-		default = "true_fn",
-		alias = "allow_profile_lookup_federation_requests"
-	)]
+	/// default: false
+	#[serde(default, alias = "allow_profile_lookup_federation_requests")]
 	pub allow_inbound_profile_lookup_federation_requests: bool,
 
 	/// Allow standard users to create rooms. Appservices and admins are always
@@ -2445,6 +2448,28 @@ pub struct Config {
 	/// example: "127.0.0.1:8450"
 	pub admin_panel_address: Option<std::net::SocketAddr>,
 
+	/// Loopback address where Tor on this machine hands over the connections
+	/// to the server's onion address, for people's apps and the web pages.
+	/// Plain HTTP: Tor encrypts the whole way. Nothing is forwarded or
+	/// published for it, since Tor only connects outwards. Other servers
+	/// don't use it, so federation isn't served there. Set up Tor with
+	/// `ops/install/anoncat-onion`, which sets this too. Unset turns it off.
+	///
+	/// example: "127.0.0.1:8451"
+	pub onion_address: Option<std::net::SocketAddr>,
+
+	/// State file of anoncat-netd (`ANONCAT_STATE_FILE`). While a relay is
+	/// in front of the server and netd also keeps Proton's port forward, it
+	/// names the direct address there, and `/.well-known/matrix/client` then
+	/// offers it as `org.anoncat.direct`: apps that know the key (Whisker) go
+	/// straight to the port, every other app keeps using the relay in
+	/// `m.homeserver`. Read on each request, so a new port shows at once; an
+	/// entry netd hasn't refreshed for 3 minutes is left out. Unset, or
+	/// without a relay, the key is never published.
+	///
+	/// example: "/Drives/server/data/netd/address.json"
+	pub direct_address_file: Option<PathBuf>,
+
 	/// File holding the Venice AI API key used by the AI moderation in the
 	/// admin panel. Read each time it's needed, so saving a new key needs no
 	/// restart. Unset or missing turns the AI off; the rest of the moderation
@@ -2457,8 +2482,10 @@ pub struct Config {
 	/// sign-up form with a picture captcha the server draws itself, and
 	/// /login, where people manage their account (display name, devices,
 	/// password, deleting it). Sign-ups there need no registration token but
-	/// still need `allow_registration`; the Matrix register endpoint keeps
-	/// asking for the token, so apps and bots can't go around the captcha.
+	/// still need `allow_registration`. Matrix apps signing up get the same
+	/// captcha as a step of their own (`org.anoncat.captcha`, with the
+	/// picture in the reply and a fallback web page), or can use a
+	/// registration token; bots can't go around the captcha either way.
 	///
 	/// reloadable: yes
 	#[serde(default)]
@@ -2471,6 +2498,15 @@ pub struct Config {
 	/// default: 10
 	#[serde(default = "default_web_signups_per_hour")]
 	pub web_signups_per_hour: u32,
+
+	/// Most sign-up captchas handed out in an hour, on the web page and in
+	/// apps together. Counting pictures, not only right answers, means
+	/// asking for new ones over and over gets nowhere. 0 means no limit.
+	///
+	/// reloadable: yes
+	/// default: 300
+	#[serde(default = "default_signup_captchas_per_hour")]
+	pub signup_captchas_per_hour: u32,
 
 	/// How often the cleanup runs. Each run applies the `cleanup_*` limits
 	/// below and posts what it deleted to the admin room. Durations take
@@ -6229,6 +6265,10 @@ fn default_federation_timeout() -> u64 { 25 }
 
 fn default_federation_keys_timeout() -> u64 { 8 }
 
+fn default_encryption_enabled_by_default_for_room_type() -> Option<String> {
+	Some("invite".to_owned())
+}
+
 fn default_feds_timeout() -> u64 { 15 }
 
 fn default_feds_destination_limit() -> usize { 2048 }
@@ -6489,6 +6529,8 @@ fn default_client_response_timeout() -> u64 { 120 }
 fn default_client_shutdown_timeout() -> u64 { 15 }
 
 fn default_web_signups_per_hour() -> u32 { 10 }
+
+fn default_signup_captchas_per_hour() -> u32 { 300 }
 
 fn default_sender_shutdown_timeout() -> u64 { 5 }
 

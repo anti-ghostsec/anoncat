@@ -1,0 +1,90 @@
+#!/bin/bash
+# anoncat-onion: give anoncat an onion address, for people's apps and the web
+# pages. Run as root, with the vault unlocked:
+#
+#   sudo ops/install/anoncat-onion
+#
+# Tor runs as its own instance, tor@anoncat, apart from the system's Tor
+# (tor@default, which FerroOS's Tor mode uses and this leaves alone). It
+# publishes the onion service and hands its connections to anoncat's
+# onion_address on loopback. Tor only connects outwards, through the VPN like
+# everything else here, so nothing is forwarded and no port is opened: people
+# type the .onion name, with no port. The onion's keys stay in
+# /var/lib/tor-instances/anoncat; keep a copy somewhere safe, since the name
+# can't be got back without them.
+#
+# Safe to run again: it keeps the existing keys, so the address stays.
+set -euo pipefail
+
+DATA=/Drives/server/data
+CONFIG=$DATA/anoncat.toml
+INSTANCE=anoncat
+LISTEN=127.0.0.1:8451
+TORRC=/etc/tor/instances/$INSTANCE/torrc
+SERVICE_DIR=/var/lib/tor-instances/$INSTANCE/onion
+
+die() { echo "anoncat-onion: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ -f $CONFIG ]] || die "$CONFIG not found; unlock the vault first"
+command -v tor >/dev/null || die "tor isn't installed (apt install tor)"
+[[ -x /usr/sbin/tor-instance-create ]] || die "tor-instance-create is missing (it comes with Debian's tor package)"
+
+step "Tor instance $INSTANCE"
+if [[ ! -d /etc/tor/instances/$INSTANCE ]]; then
+	/usr/sbin/tor-instance-create "$INSTANCE"
+fi
+
+cat >"$TORRC.new" <<EOF
+# anoncat's onion address (written by anoncat-onion). Apps and web pages
+# only: other servers reach anoncat by its normal name.
+SocksPort 0
+HiddenServiceDir $SERVICE_DIR
+HiddenServicePort 80 $LISTEN
+# Defences against floods of connections: a proof of work that rises under
+# load, limits at the introduction points, and few streams per circuit.
+HiddenServicePoWDefensesEnabled 1
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceMaxStreams 64
+HiddenServiceMaxStreamsCloseCircuit 1
+EOF
+if ! cmp -s "$TORRC.new" "$TORRC" 2>/dev/null; then
+	mv "$TORRC.new" "$TORRC"
+	echo "Wrote $TORRC"
+else
+	rm "$TORRC.new"
+fi
+# The unit checks the config before it starts Tor.
+systemctl enable "tor@$INSTANCE.service" >/dev/null
+systemctl restart "tor@$INSTANCE.service" || die "Tor didn't start; see journalctl -u tor@$INSTANCE"
+
+step "Waiting for the onion name"
+for _ in $(seq 60); do
+	[[ -s $SERVICE_DIR/hostname ]] && break
+	sleep 1
+done
+[[ -s $SERVICE_DIR/hostname ]] || die "Tor made no onion name within a minute; see journalctl -u tor@$INSTANCE"
+ONION=$(<"$SERVICE_DIR/hostname")
+
+step "anoncat's config"
+if grep -q '^onion_address' "$CONFIG"; then
+	sed -i "s|^onion_address.*|onion_address = \"$LISTEN\"|" "$CONFIG"
+elif grep -q '^admin_panel_address' "$CONFIG"; then
+	sed -i "/^admin_panel_address/a onion_address = \"$LISTEN\"" "$CONFIG"
+else
+	sed -i "0,/^\[global\]/s||[global]\nonion_address = \"$LISTEN\"|" "$CONFIG"
+fi
+grep -q "^onion_address = \"$LISTEN\"" "$CONFIG" || die "couldn't set onion_address in $CONFIG"
+echo "onion_address = \"$LISTEN\""
+
+step "Restarting anoncat"
+systemctl restart anoncat.service
+
+echo
+echo "The onion address is:"
+echo
+echo "  http://$ONION"
+echo
+echo "People use it as the homeserver address in their app, with Tor running."
+echo "Keep a copy of $SERVICE_DIR: the address can't be recovered without it."

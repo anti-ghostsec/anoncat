@@ -424,6 +424,61 @@ dialog::backdrop { background: rgba(4, 6, 10, 0.6); backdrop-filter: blur(4px); 
 .lookup-results .media-thumb { max-width: 360px; }
 .copy-fallback { margin-bottom: 8px; }
 
+.announce-text { width: 100%; max-width: 760px; min-height: 220px; resize: vertical; font: inherit; line-height: 1.5; margin-bottom: 10px; }
+.announce-result { max-width: 760px; }
+
+/* --- compact actions: "⋯" menus and the right-click menu ------------------- */
+
+button.more { min-width: 30px; letter-spacing: 1px; }
+.menu {
+	position: fixed;
+	z-index: 50;
+	min-width: 180px;
+	max-width: min(320px, calc(100vw - 16px));
+	max-height: calc(100vh - 16px);
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	padding: 4px;
+	background: var(--card, #141821);
+	border: 1px solid var(--line-strong);
+	border-radius: 10px;
+	box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.menu .menu-item {
+	display: block;
+	width: 100%;
+	text-align: left;
+	padding: 7px 10px;
+	font-size: 13px;
+	background: transparent;
+	color: var(--text);
+	border: 0;
+	border-radius: 6px;
+	box-shadow: none;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.menu .menu-item:hover, .menu .menu-item:focus-visible { background: rgba(255, 255, 255, 0.07); filter: none; }
+.menu .menu-item.danger { color: var(--danger); }
+.menu .menu-item.danger:hover { background: var(--danger-soft); }
+
+
+/* --- medium screens: the side bar shows icons only ------------------------- */
+
+@media (max-width: 1180px) and (min-width: 861px) {
+	.side { width: 64px; }
+	.side .brand-text, .side .nav-group, .side .side-lookup, .side-foot .small { display: none; }
+	.side .nav-scroll a { justify-content: center; padding: 9px 0; font-size: 0; gap: 0; position: relative; }
+	.side .nav-scroll a .icon { margin: 0; }
+	.side .nav-scroll a .badge { position: absolute; top: 2px; right: 6px; font-size: 10px; }
+	.side-foot { justify-content: center; }
+	.side-foot button { font-size: 0; padding: 6px; }
+	.side-foot button::before { content: "\2192"; font-size: 13px; }
+	main { padding: 24px 24px 40px; }
+}
+
 /* --- narrow screens ---------------------------------------------------------- */
 
 @media (max-width: 860px) {

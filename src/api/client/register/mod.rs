@@ -5,7 +5,8 @@ mod token_validity;
 use tuwunel_service::appservice::RegistrationInfo;
 
 pub(crate) use self::{
-	available::get_register_available_route, register::register_route,
+	available::get_register_available_route,
+	register::{CAPTCHA_STAGE, captcha_stage, register_route},
 	token_validity::check_registration_token_validity,
 };
 use super::SESSION_ID_LENGTH;

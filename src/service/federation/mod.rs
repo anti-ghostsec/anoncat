@@ -12,8 +12,13 @@ pub mod scheme;
 #[cfg(test)]
 mod tests;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+	collections::HashMap,
+	sync::{Arc, Mutex},
+	time::{Duration, Instant},
+};
 
+use ruma::OwnedServerName;
 use tuwunel_core::{Result, utils::exponential_backoff_streak_cap};
 use tuwunel_database::Map;
 
@@ -51,6 +56,10 @@ pub struct Service {
 	/// `sender_retry_grace`. Zero disables the grace tier so the plain bucket
 	/// curve governs from the first failure.
 	grace: Duration,
+
+	/// Servers whose key lookups are skipped until the stored instant. Kept
+	/// apart from the peer status so it never holds back other traffic.
+	keys_cooldown: Mutex<HashMap<OwnedServerName, Instant>>,
 }
 
 impl crate::Service for Service {
@@ -65,6 +74,7 @@ impl crate::Service for Service {
 			window_secs,
 			n_max,
 			grace,
+			keys_cooldown: Mutex::new(HashMap::new()),
 		}))
 	}
 

@@ -3,7 +3,11 @@
 //! Entry points select an HTTP client plus peer-status posture. Destination
 //! validation and resolver-cache eviction remain shared across those postures.
 
-use std::{fmt::Debug, mem, time::Duration};
+use std::{
+	fmt::Debug,
+	mem,
+	time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use reqwest::{Method, Request, Response, Url};
@@ -52,8 +56,14 @@ where
 ///
 /// `/keys/query` and `/keys/claim` requests skip servers already in backoff and
 /// are limited by `federation_keys_timeout`. The uncounted send path
-/// deliberately records neither success, failure, nor timeout, so a slow key
-/// lookup does not suppress unrelated outbound traffic to the server.
+/// deliberately records neither success, failure, nor timeout in the peer
+/// status, so a slow key lookup does not suppress unrelated outbound traffic
+/// to the server.
+///
+/// A lookup that times out or fails as a peer failure instead starts a
+/// cool-down of [`KEYS_COOLDOWN`] for key lookups alone. A client's send waits
+/// on these lookups, so without it one slow server stalls a send every time
+/// keys are needed. The cool-down lives in memory and a success clears it.
 #[implement(super::Service)]
 #[tracing::instrument(skip_all, name = "keys", level = "debug")]
 pub async fn execute_keys<T>(&self, dest: &ServerName, request: T) -> Result<T::IncomingResponse>
@@ -66,6 +76,10 @@ where
 		return Err!("{dest} is in federation backoff; skipping key lookup");
 	}
 
+	if self.keys_cooling(dest) {
+		return Err!("{dest} key lookups are cooling down; skipping key lookup");
+	}
+
 	let timeout_dur = Duration::from_secs(
 		self.services
 			.server
@@ -76,9 +90,51 @@ where
 	let client = &self.services.client.federation;
 
 	match timeout(timeout_dur, self.execute_uncounted(client, dest, request)).await {
-		| Ok(result) => result,
-		| Err(_elapsed) => Err!("{dest} key lookup exceeded {}s", timeout_dur.as_secs()),
+		| Ok(result) => {
+			match &result {
+				| Ok(_) => self.keys_cooldown_clear(dest),
+				| Err(error) if classify_error(error).is_some() => self.keys_cooldown_start(dest),
+				| Err(_) => {},
+			}
+
+			result
+		},
+		| Err(_elapsed) => {
+			self.keys_cooldown_start(dest);
+			Err!("{dest} key lookup exceeded {}s", timeout_dur.as_secs())
+		},
 	}
+}
+
+/// How long key lookups skip a server after one timed out or failed.
+pub(super) const KEYS_COOLDOWN: Duration = Duration::from_secs(600);
+
+/// Whether key lookups to `dest` are inside their cool-down.
+#[implement(super::Service)]
+pub(super) fn keys_cooling(&self, dest: &ServerName) -> bool {
+	let now = Instant::now();
+	let cooldown = self.keys_cooldown.lock().expect("locked");
+
+	cooldown.get(dest).is_some_and(|until| now < *until)
+}
+
+/// Starts the key-lookup cool-down for `dest`, dropping lapsed entries.
+#[implement(super::Service)]
+pub(super) fn keys_cooldown_start(&self, dest: &ServerName) {
+	let now = Instant::now();
+	let mut cooldown = self.keys_cooldown.lock().expect("locked");
+
+	cooldown.retain(|_, until| now < *until);
+	cooldown.insert(dest.to_owned(), now + KEYS_COOLDOWN);
+}
+
+/// Ends the key-lookup cool-down for `dest`.
+#[implement(super::Service)]
+pub(super) fn keys_cooldown_clear(&self, dest: &ServerName) {
+	self.keys_cooldown
+		.lock()
+		.expect("locked")
+		.remove(dest);
 }
 
 /// Sends a federation request with the long-timeout Synapse client.

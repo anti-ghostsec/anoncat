@@ -77,6 +77,19 @@ h2 { margin: 0 0 0.5rem; font-size: 1rem; font-weight: 700; }
 h2::before { content: "# "; color: var(--accent); }
 
 .lead { margin: 0; color: var(--muted); }
+/* The admin's notice at the top of the front page. */
+.banner {
+	margin: 0 0 1.25rem;
+	padding: 0.85rem 1rem;
+	border: 1px solid var(--accent);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--accent) 12%, transparent);
+	color: var(--text);
+	text-align: left;
+}
+.banner p { margin: 0; }
+.banner p + p { margin-top: 0.5rem; }
+.banner a { color: var(--accent); }
 
 section { margin-top: 1.75rem; }
 section.danger h2, section.danger h2::before { color: var(--danger); }

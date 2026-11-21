@@ -496,7 +496,6 @@ pub async fn fetch_remote_thumbnail_legacy(
 }
 
 #[implement(super::Service)]
-#[expect(deprecated)]
 pub async fn fetch_remote_content_legacy(
 	&self,
 	mxc: &Mxc<'_>,

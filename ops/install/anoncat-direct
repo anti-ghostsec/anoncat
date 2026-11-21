@@ -1,0 +1,66 @@
+#!/bin/bash
+# anoncat-direct: the fallback for when there's no relay VPS. Goes back to
+# the old path: Proton's port forward carries the traffic, anoncat-netd points
+# hs.anoncat.gleeze.com at Proton's exit address and the forwarded port, and
+# Codeberg Pages serves the signpost on anoncat.gleeze.com. Run as root:
+#
+#   sudo anoncat-direct
+#
+# Nothing here exposes the home address: netd only ever publishes the
+# address Proton's gateway reports, and only talks to Dynu through wg0.
+# To go back to a relay, set one up as usual (ops/relay/README.md); the
+# anoncat-relay script rewrites relay.env (the wg0 rule stays, for the
+# direct path next to the relay).
+set -euo pipefail
+
+IFACE=anoncat-relay
+ENV=/etc/anoncat/relay.env
+RULE='iifname "wg0" tcp dport 8448 accept'
+COMMENT='# anoncat: the forwarded port, redirected to 8448 by anoncat-netd'
+
+die() { echo "anoncat-direct: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+ip link show wg0 &>/dev/null || die "wg0 is down; bring the VPN up first"
+
+step "Relay off"
+# The old relay must not come back by itself: 1984 was breached.
+# anoncat.service Wants= the tunnel, so disabling isn't enough: mask it.
+systemctl mask --now "wg-quick@$IFACE.service" 2>/dev/null || true
+if [[ -f $ENV ]] && grep -q '^ANONCAT_RELAY_IP=' "$ENV"; then
+	sed -i 's/^ANONCAT_RELAY_IP=/#ANONCAT_RELAY_IP=/' "$ENV"
+	echo "$ENV: relay address commented out"
+fi
+
+step "Firewall"
+# Let the forwarded connections reach anoncat's socket on wg0 again.
+if ! nft list chain inet filter input | grep -qF "$RULE"; then
+	nft insert rule inet filter input $RULE
+	echo "added to the running firewall"
+fi
+if ! grep -qF "$RULE" /etc/nftables.conf; then
+	cp -p /etc/nftables.conf /etc/nftables.conf.before-direct
+	sed -i "s|^\(\s*\)iif \"lo\" accept$|&\n\1$COMMENT\n\1$RULE|" /etc/nftables.conf
+	grep -qF "$RULE" /etc/nftables.conf || die "couldn't add the rule to /etc/nftables.conf"
+	nft -c -f /etc/nftables.conf || die "/etc/nftables.conf no longer parses; the original is /etc/nftables.conf.before-direct"
+	echo "added to /etc/nftables.conf"
+fi
+
+step "Config"
+# The relay's .well-known sends apps to https://anoncat.gleeze.com, which is
+# Codeberg Pages here and has no Matrix API: switch it off, so the Pages
+# signpost and typed-in addresses are the only ones. anoncat-relay adds it back.
+CONF=/Drives/server/data/anoncat.toml
+if grep -q '^\[global.well_known\]' "$CONF"; then
+	cp -p "$CONF" "$CONF.before-direct"
+	sed -i '/^\[global.well_known\]/,/^server = /s/^/#/' "$CONF"
+	echo "config: anoncat's own .well-known switched off"
+	systemctl restart anoncat.service
+fi
+
+step "DNS"
+systemctl restart anoncat-netd.service
+echo "waiting for anoncat-netd to publish the new address..."
+sleep 90
+journalctl --namespace=anoncat -u anoncat-netd -n 15 --no-pager -o cat

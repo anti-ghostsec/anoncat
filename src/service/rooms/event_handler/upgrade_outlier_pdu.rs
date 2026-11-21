@@ -1,4 +1,10 @@
-use std::{borrow::Borrow, collections::HashMap, iter::once, sync::Arc, time::Instant};
+use std::{
+	borrow::Borrow,
+	collections::HashMap,
+	iter::once,
+	sync::Arc,
+	time::{Duration, Instant},
+};
 
 use futures::{FutureExt, StreamExt};
 use ruma::{
@@ -34,6 +40,9 @@ use crate::rooms::{
 
 #[cfg(test)]
 mod tests;
+
+/// Holding the room lock at least this long is logged.
+const SLOW_LOCK: Duration = Duration::from_secs(1);
 
 /// How the state at the incoming event was obtained, deciding the memo write
 /// at the upgrade site.
@@ -124,10 +133,27 @@ pub(super) async fn upgrade_outlier_to_timeline_pdu(
 			.compute_soft_fail(&incoming_pdu, &room_rules, &mut pdu_json)
 			.await?;
 
+	// Compressing looks up every state event of the room. It reads only the state
+	// at the incoming event, never the current room state, so it runs before the
+	// room lock: local sends wait on that lock.
+	trace!("Compressing state...");
+	let state_ids_compressed: Arc<CompressedState> = self
+		.services
+		.state_compressor
+		.compress_state_events(
+			state_at_incoming_event
+				.iter()
+				.map(|(ssk, eid)| (ssk, eid.borrow())),
+		)
+		.collect()
+		.map(Arc::new)
+		.await;
+
 	// 13. Use state resolution to find new room state
 	// We start looking at current room state now, so lets lock the room
 	trace!("Locking the room");
 	let state_lock = self.services.state.mutex.lock(room_id).await;
+	let locked = Instant::now();
 
 	// 14. Check if the event passes auth based on the current room state.
 	let soft_fail_current_state = !self
@@ -162,19 +188,6 @@ pub(super) async fn upgrade_outlier_to_timeline_pdu(
 
 		debug!(?summary, "Pruned forward extremities over the cap.");
 	}
-
-	trace!("Compressing state...");
-	let state_ids_compressed: Arc<CompressedState> = self
-		.services
-		.state_compressor
-		.compress_state_events(
-			state_at_incoming_event
-				.iter()
-				.map(|(ssk, eid)| (ssk, eid.borrow())),
-		)
-		.collect()
-		.map(Arc::new)
-		.await;
 
 	// Memoize only complete local or fetched state after positional auth succeeds;
 	// soft-failed events cannot establish reusable state.
@@ -253,6 +266,11 @@ pub(super) async fn upgrade_outlier_to_timeline_pdu(
 	}
 
 	drop(state_lock);
+
+	let held = locked.elapsed();
+	if held >= SLOW_LOCK {
+		warn!(%room_id, ?held, "An incoming event held the room lock; local sends waited.");
+	}
 
 	if cleared {
 		self.services

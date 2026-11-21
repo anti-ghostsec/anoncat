@@ -221,10 +221,17 @@ pub struct Settings {
 	pub page_intro: String,
 	pub page_rules: String,
 	pub page_privacy: String,
+	/// A notice at the top of the front page, a paragraph a line. Empty
+	/// shows none; there are no built-in words to fall back to.
+	pub page_notice: String,
 }
 
 pub const DEFAULT_PAGE_TITLE: &str = "A private Matrix chat server";
 pub const DEFAULT_PAGE_INTRO: &str = "No email, no tracking.";
+/// The notice a server shows until its admin changes or clears it.
+pub const DEFAULT_PAGE_NOTICE: &str = "\
+About the recent outage: the relay host we used to reach the server was hacked, so we took it offline. Nothing to worry about: it only ever passed along encrypted connections, so it never saw your messages, account or password.
+To stay connected through problems like this, use the newest Whisker: https://github.com/anti-ghostsec/whisker It reaches the server on its own instead of depending on a relay.";
 pub const DEFAULT_PAGE_RULES: &str = "\
 Nothing illegal.
 No spam, scams or malware.
@@ -269,6 +276,7 @@ impl Default for Settings {
 			page_intro: DEFAULT_PAGE_INTRO.into(),
 			page_rules: DEFAULT_PAGE_RULES.into(),
 			page_privacy: DEFAULT_PAGE_PRIVACY.into(),
+			page_notice: DEFAULT_PAGE_NOTICE.into(),
 		}
 	}
 }
@@ -594,6 +602,7 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	settings.page_intro = page_words(&settings.page_intro, DEFAULT_PAGE_INTRO, 400, 1);
 	settings.page_rules = page_words(&settings.page_rules, DEFAULT_PAGE_RULES, 4000, 40);
 	settings.page_privacy = page_words(&settings.page_privacy, DEFAULT_PAGE_PRIVACY, 6000, 40);
+	settings.page_notice = page_words(&settings.page_notice, "", 1000, 5);
 	if settings.stand_in_image != "custom"
 		&& !stand_in::BUILT_IN.contains(&settings.stand_in_image.as_str())
 	{

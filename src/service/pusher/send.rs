@@ -1,17 +1,13 @@
-use futures::{
-	FutureExt,
-	future::{join, join4},
-};
+use futures::{FutureExt, future::join};
 use ruma::{
 	UInt, UserId,
 	api::{
 		client::push::{Pusher, PusherKind},
 		push_gateway::send_event_notification::v1::{
-			Device, Notification, NotificationCounts, NotificationPriority, Request,
+			Device, Notification, NotificationCounts, Request,
 		},
 	},
-	events::TimelineEventType,
-	push::{Action, HighlightTweakValue, HttpPusherData, PushFormat, Ruleset, Tweak},
+	push::{Action, HttpPusherData, PushFormat, Ruleset},
 };
 use serde_json::Value;
 use tuwunel_core::{Result, err, error, implement, trace, utils::BoolExt};
@@ -68,16 +64,7 @@ where
 	);
 
 	if notify || self.services.config.push_everything {
-		let tweaks: Vec<Tweak> = actions
-			.iter()
-			.filter_map(|action| match action {
-				| Action::SetTweak(tweak) => Some(tweak.clone()),
-				| _ => None,
-			})
-			.collect();
-
-		self.send_notice(user_id, pusher, tweaks, event)
-			.await?;
+		self.send_notice(user_id, pusher, event).await?;
 	}
 
 	Ok(())
@@ -119,13 +106,12 @@ async fn send_notice<Pdu: Event>(
 	&self,
 	user_id: &UserId,
 	pusher: &Pusher,
-	tweaks: Vec<Tweak>,
 	event: &Pdu,
 ) -> Result {
 	// TODO: email
 	match &pusher.kind {
 		| PusherKind::Http(http) =>
-			self.send_http_event_notice(user_id, pusher, http, tweaks, event)
+			self.send_http_event_notice(user_id, pusher, http, event)
 				.await,
 		// TODO: Handle email
 		//PusherKind::Email(_) => Ok(()),
@@ -133,26 +119,24 @@ async fn send_notice<Pdu: Event>(
 	}
 }
 
+/// Sends the notice for one event.
+///
+/// anoncat always sends the `event_id_only` format, whatever the client asked
+/// for: only the event and room IDs and the unread count leave the server. The
+/// push gateway, and the phone vendor's push service behind it, never see the
+/// message, its sender, or the room's name; the app fetches the event itself.
 #[implement(super::Service)]
 async fn send_http_event_notice<Pdu: Event>(
 	&self,
 	user_id: &UserId,
 	pusher: &Pusher,
 	http: &HttpPusherData,
-	tweaks: Vec<Tweak>,
 	event: &Pdu,
 ) -> Result {
 	let mut device = self.prepare_http_pusher(pusher, http)?;
-
-	// TODO (timo): can pusher/devices have conflicting formats
-	let event_id_only = http.format == Some(PushFormat::EventIdOnly);
-
-	if !event_id_only {
-		device.tweaks.clone_from(&tweaks);
-	}
+	device.data.format = Some(PushFormat::EventIdOnly);
 
 	let mut notify = Notification::new(vec![device]);
-
 	notify.event_id = Some(event.event_id().to_owned());
 	notify.room_id = Some(event.room_id().to_owned());
 
@@ -160,45 +144,8 @@ async fn send_http_event_notice<Pdu: Event>(
 		.is_false()
 		.then_async(async || {
 			UInt::new(self.global_notification_count(user_id).await).unwrap_or(UInt::MAX)
-		});
-
-	let unread = if !event_id_only {
-		if *event.kind() == TimelineEventType::RoomEncrypted
-			|| tweaks.iter().any(|t| {
-				matches!(t, Tweak::Highlight(HighlightTweakValue::Yes) | Tweak::Sound(_))
-			}) {
-			notify.prio = NotificationPriority::High;
-		} else {
-			notify.prio = NotificationPriority::Low;
-		}
-		notify.sender = Some(event.sender().to_owned());
-		notify.event_type = Some(event.kind().to_owned());
-		notify.content = serde_json::value::to_raw_value(event.content()).ok();
-
-		if *event.kind() == TimelineEventType::RoomMember {
-			notify.user_is_target = event.state_key() == Some(user_id.as_str());
-		}
-
-		let (display_name, room_name, room_alias, unread) = join4(
-			self.services.profile.displayname(event.sender()),
-			self.services
-				.state_accessor
-				.get_name(event.room_id()),
-			self.services
-				.state_accessor
-				.get_canonical_alias(event.room_id()),
-			unread,
-		)
+		})
 		.await;
-
-		notify.sender_display_name = display_name.ok();
-		notify.room_name = room_name.ok();
-		notify.room_alias = room_alias.ok();
-
-		unread
-	} else {
-		unread.await
-	};
 
 	if let Some(unread) = unread {
 		notify.counts = NotificationCounts::new_explicit(Some(unread), None);

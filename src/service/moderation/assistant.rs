@@ -489,7 +489,8 @@ async fn snapshot(&self) -> Result<String> {
 		.started
 		.elapsed()
 		.map_or(0, |d| d.as_secs());
-	writeln!(out, "- Software: anoncat {}", tuwunel_core::version::version())?;
+	// The software version and the account count are not published, so they are
+	// not told to the AI service either.
 	writeln!(out, "- Up for {}h {}m", uptime / 3600, (uptime % 3600) / 60)?;
 
 	let path = &services.config.database_path;
@@ -508,9 +509,8 @@ async fn snapshot(&self) -> Result<String> {
 		writeln!(out, "- RAM: {} GiB free of {} GiB", free >> 20, total >> 20)?;
 	}
 
-	let users = services.users.list_local_users().count().await;
 	let rooms = services.metadata.iter_ids().count().await;
-	writeln!(out, "- Accounts here: {users}; rooms this server knows: {rooms}")?;
+	writeln!(out, "- Rooms this server knows: {rooms}")?;
 
 	let config = &services.config;
 	writeln!(

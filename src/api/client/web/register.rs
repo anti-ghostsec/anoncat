@@ -226,7 +226,18 @@ async fn record_accepted_terms(services: &Services, user_id: &UserId) -> Result 
 }
 
 fn form(services: &Services, status: StatusCode, username: &str, error: &str) -> Response {
-	let captcha = services.signup.captcha();
+	let Some(captcha) = services
+		.signup
+		.captcha(services.config.signup_captchas_per_hour)
+	else {
+		return page(
+			services,
+			StatusCode::TOO_MANY_REQUESTS,
+			"Create an account",
+			"<h1>Create an account</h1><p class=\"err\" role=\"status\">Too many people are \
+			 signing up right now. Please try again in a while.</p>",
+		);
+	};
 	let picture = STANDARD.encode(&captcha.png);
 	let token = html_escape(&captcha.token);
 	let username = html_escape(username);

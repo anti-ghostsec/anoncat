@@ -162,6 +162,89 @@ function fill(el, ...children) {
 	el.replaceChildren(...children.flat().filter((c) => c !== null && c !== undefined && c !== false));
 }
 
+// --- compact actions ----------------------------------------------------------
+// A row keeps its first action in view; the rest go in a "⋯" menu, so tables
+// fit without widening the window. Right-clicking a row opens all of them.
+// Toolbars of media actions keep two. The menu's entries stand in for the
+// real buttons and click them, so every button keeps its own handler.
+
+let menuOpen = null;
+
+function closeMenu() {
+	menuOpen?.remove();
+	menuOpen = null;
+}
+
+function openMenu(buttons, x, y, alignRight = false) {
+	closeMenu();
+	const shown = buttons.filter((b) => !b.disabled && !b.hidden);
+	if (!shown.length) return;
+	const menu = h("div", { class: "menu", role: "menu" }, shown.map((b) =>
+		h("button", { type: "button", role: "menuitem", title: b.title || "",
+			class: b.classList.contains("danger") ? "menu-item danger" : "menu-item",
+			onclick: (e) => { e.stopPropagation(); closeMenu(); b.click(); } }, b.textContent)));
+	document.body.append(menu);
+	const { offsetWidth: w, offsetHeight: hgt } = menu;
+	const left = Math.max(8, Math.min(alignRight ? x - w : x, innerWidth - w - 8));
+	const top = y + hgt > innerHeight - 8 ? Math.max(8, y - hgt) : y;
+	menu.style.left = `${left}px`;
+	menu.style.top = `${top}px`;
+	menuOpen = menu;
+	menu.querySelector("button")?.focus();
+}
+
+function compactActions(el, keep) {
+	if (el.querySelector(":scope > .more, :scope > span > .more")) return;
+	const buttons = [...el.querySelectorAll(":scope > button, :scope > span > button")];
+	el.actionButtons = buttons;
+	if (buttons.length <= keep + 1) return;
+	const rest = buttons.slice(keep);
+	rest.forEach((b) => b.remove());
+	const more = h("button", { type: "button", class: `ghost ${el.matches(".media-actions") && buttons[0]?.classList.contains("tiny") ? "tiny" : "small"} more`,
+		title: "More actions", "aria-haspopup": "menu", "aria-label": "More actions" }, "⋯");
+	more.onclick = (e) => {
+		e.stopPropagation();
+		if (menuOpen) return closeMenu();
+		const r = more.getBoundingClientRect();
+		openMenu(rest, r.right, r.bottom + 4, true);
+	};
+	(buttons[0]?.parentElement === el ? el : buttons[0]?.parentElement || el).append(more);
+}
+
+function compactWithin(root) {
+	if (!(root instanceof Element)) return;
+	const cells = root.matches("td.actions, .media-actions") ? [root] : [];
+	cells.push(...root.querySelectorAll("td.actions, .media-actions"));
+	for (const el of cells) compactActions(el, el.matches(".media-actions") ? 2 : 1);
+}
+
+new MutationObserver((records) => {
+	for (const r of records) {
+		compactWithin(r.target);
+		r.addedNodes.forEach(compactWithin);
+	}
+}).observe(document.documentElement, { childList: true, subtree: true });
+
+document.addEventListener("click", (e) => { if (menuOpen && !menuOpen.contains(e.target)) closeMenu(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+addEventListener("resize", closeMenu);
+addEventListener("scroll", closeMenu, true);
+
+document.addEventListener("contextmenu", (e) => {
+	if (e.target.closest("input, textarea, select, a, video, .menu, dialog") || getSelection()?.toString()) return;
+	const cell = e.target.closest("tr")?.querySelector("td.actions") || e.target.closest(".media-actions");
+	if (!cell) return;
+	compactActions(cell, cell.matches(".media-actions") ? 2 : 1);
+	if (!cell.actionButtons?.length) return;
+	e.preventDefault();
+	openMenu(cell.actionButtons, e.clientX, e.clientY);
+});
+
+// With the side bar showing icons only, its links still say where they go.
+document.querySelectorAll(".side .nav-scroll a").forEach((a) => {
+	if (!a.title) a.title = a.textContent.trim();
+});
+
 function table(columns, rows, empty = "Nothing here.") {
 	if (!rows.length) return h("p", { class: "muted" }, empty);
 	return h("table", {},
@@ -1105,6 +1188,61 @@ pages.console = async (main) => {
 		output);
 };
 
+pages.announce = async (main) => {
+	const ANNOUNCE = "/_anoncat/admin/v1/announce";
+	const DRAFT = "anoncat.announce";
+	const { people } = await api("GET", ANNOUNCE);
+	const me = sessionStorage.getItem(USER_KEY);
+	const starters = {
+		"": "",
+		onion: "**anoncat now has an onion address**\n\nYou can reach this server over Tor at:\n\n`http://REPLACE-WITH-THE-ADDRESS.onion`\n\nUse it as the homeserver address in your app, with Tor running (Tor Browser, Orbot, or your app's proxy setting). It works for your account here and for everything you already use. It reaches this server only: it doesn't replace the normal address for talking with other servers.\n\nKeep it somewhere safe, in case the normal address ever stops working.",
+		downtime: "**Planned maintenance**\n\nanoncat will be down for about MINUTES minutes on DATE at TIME (UTC) for an update. Nothing is lost: messages sent to you meanwhile arrive once it's back.",
+	};
+	let draft = "";
+	try { draft = sessionStorage.getItem(DRAFT) || ""; } catch {}
+	const input = h("textarea", { class: "announce-text", rows: 12, placeholder: "What everyone should know. Markdown works: **bold**, *italic*, `code`, lists and links.", value: draft,
+		oninput: () => { try { sessionStorage.setItem(DRAFT, input.value); } catch {} } });
+	input.value = draft;
+	const start = h("select", { "aria-label": "Start from", onchange: async () => {
+		const text = starters[start.value];
+		start.value = "";
+		if (!text) return;
+		if (input.value.trim() && !(await ask("Replace what you wrote?", { text: "The message box is cleared and the starter goes in its place.", confirm: "Replace" }))) return;
+		input.value = text;
+		input.dispatchEvent(new Event("input"));
+		input.focus();
+	} },
+		h("option", { value: "" }, "Start from…"),
+		h("option", { value: "onion" }, "New onion address"),
+		h("option", { value: "downtime" }, "Planned maintenance"));
+	const result = h("div", { class: "announce-result" });
+	const send = async (to) => {
+		const text = input.value.trim();
+		if (!text) return toast("Write the message first");
+		if (!to && !(await ask(`Send this to all ${people} people?`, {
+			pre: text.length > 600 ? `${text.slice(0, 600)}…` : text,
+			text: "Each person gets it in their own notices room, which their app keeps at the bottom of the room list. It can't be taken back.",
+			confirm: `Send to ${people}` }))) return;
+		const r = await attempt(null, () => api("POST", ANNOUNCE, to ? { text, to } : { text }));
+		if (!r) return;
+		fill(result,
+			h("p", {}, to ? (r.sent ? `Sent to you (${to}). Look in your app for the notices room.` : "Not sent.")
+				: `Sent to ${r.sent} of ${people} people.`),
+			r.failed.length ? h("details", { open: true }, h("summary", {}, `${r.failed.length} couldn't be sent`),
+				table(["Person", "Why"], r.failed.map((f) => h("tr", {}, h("td", { class: "mono" }, f.user), h("td", { class: "small" }, f.error))))) : null);
+		if (!to && r.sent) { try { sessionStorage.removeItem(DRAFT); } catch {} }
+	};
+	fill(main,
+		h("h1", {}, "Announce"),
+		h("p", { class: "muted" }, `A message from the server to everyone with an account here (${people} people). Each person gets it in their own notices room, which only the server writes in; the first one comes as an invite. These rooms stay on this server.`),
+		h("div", { class: "toolbar" }, start),
+		input,
+		h("div", { class: "toolbar" },
+			h("button", { class: "ghost", onclick: () => send(me), title: "See how it looks before everyone gets it" }, "Send to me first"),
+			h("button", { onclick: () => send(null) }, `Send to everyone (${people})`)),
+		result);
+};
+
 pages.notices = async (main) => {
 	const res = await api("GET", "/_anoncat/admin/v1/notices");
 	const items = (res.notices || []).map((n) =>
@@ -1835,6 +1973,7 @@ pages.settings = async (main) => {
 		h("section", { class: "card" },
 			h("h2", {}, "Public pages"),
 			h("p", { class: "muted small" }, "The words on the front page and the rules page people accept when they sign up. Plain text: web addresses and paths like /login become links. Leave a box empty to put the built-in words back."),
+			field("Notice at the top", h("textarea", { name: "page_notice", rows: 4, maxlength: 1000 }, s.page_notice || ""), "A highlighted box above the heading, for news such as an outage. One paragraph a line. Leave it empty to show none."),
 			field("Front page heading", h("input", { name: "page_title", maxlength: 120, value: s.page_title || "" })),
 			field("Line under it", h("input", { name: "page_intro", maxlength: 400, value: s.page_intro || "" })),
 			field("Rules", h("textarea", { name: "page_rules", rows: 5 }, s.page_rules || ""), "One rule a line; they're numbered on the page."),
@@ -1872,6 +2011,7 @@ pages.settings = async (main) => {
 			page_intro: f.get("page_intro") || "",
 			page_rules: f.get("page_rules") || "",
 			page_privacy: f.get("page_privacy") || "",
+			page_notice: f.get("page_notice") || "",
 		};
 		if (await attempt("Saved", () => api("PUT", `${MOD}/settings`, body))) render();
 	});

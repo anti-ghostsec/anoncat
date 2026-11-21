@@ -854,3 +854,36 @@ fn short_of_space_is_strictly_below_the_minimum() {
 	assert!(!is_short_of_space(0, 0));
 	assert!(is_short_of_space(u64::MAX - 1, u64::MAX));
 }
+
+#[cfg(feature = "media_thumbnail")]
+mod clean {
+	use super::super::video::needs_cleaning;
+
+	const MP4: &[u8] = b"\0\0\0\x20ftypisom\0\0\x02\0";
+	const MKV: &[u8] = b"\x1A\x45\xDF\xA3\x01\0\0\0";
+	const AVI: &[u8] = b"RIFF\x10\0\0\0AVI LIST";
+	const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+	#[test]
+	fn declared_videos_are_cleaned() {
+		assert!(needs_cleaning(Some("video/mp4"), MP4));
+		assert!(needs_cleaning(Some("video/quicktime"), PNG));
+	}
+
+	#[test]
+	fn undeclared_video_containers_are_cleaned() {
+		for file in [MP4, MKV, AVI] {
+			assert!(needs_cleaning(None, file));
+			assert!(needs_cleaning(Some("application/octet-stream"), file));
+		}
+	}
+
+	#[test]
+	fn audio_pictures_and_other_files_are_left_to_the_picture_cleaner() {
+		assert!(!needs_cleaning(Some("audio/mp4"), MP4));
+		assert!(!needs_cleaning(Some("image/png"), PNG));
+		assert!(!needs_cleaning(None, PNG));
+		assert!(!needs_cleaning(None, b""));
+		assert!(!needs_cleaning(None, b"ftyp"));
+	}
+}

@@ -171,6 +171,24 @@ pub(super) async fn serve(services: Arc<Services>, handle: ServerHandle) -> Resu
 		info!("Admin panel at http://{addr}/_anoncat/panel/");
 	}
 
+	if let Some(addr) = config.onion_address {
+		if !addr.ip().is_loopback() {
+			return Err!(Config(
+				"onion_address",
+				"The onion listener is plain HTTP for Tor on this machine and must listen on a \
+				 loopback address."
+			));
+		}
+
+		let listener = TcpListener::bind(addr)
+			.map_err(|e| err!(Config("onion_address", "Failed to bind {addr}: {e}")))?;
+		listener.set_nonblocking(true)?;
+
+		let onion = super::onion::onion_router(app.clone());
+		futures.extend(plain::serve(&onion, &handle.handle_ip, once(listener))?);
+		info!("Onion listener at http://{addr} for Tor");
+	}
+
 	for future in futures {
 		join_set.spawn_on(future, server.runtime());
 	}

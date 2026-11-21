@@ -87,6 +87,11 @@ N
 if [ -f /etc/wireguard/relay.peer ]; then
 	sed -i 's|^\t\ttcp dport 22 accept$|\t\t# SSH only through the tunnel.\n\t\tiifname $tunnel tcp dport 22 accept|' /etc/nftables.conf
 fi
+# The public interface is ens3 at 1984; other providers use eth0, enp1s0 and
+# so on, so use whichever one carries the default route.
+pub=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+[ -n "$pub" ] || { echo "relay-setup: no default route" >&2; exit 1; }
+sed -i "s|^define public = .*|define public = \"$pub\"|" /etc/nftables.conf
 nft -c -f /etc/nftables.conf
 systemctl enable nftables.service >/dev/null 2>&1
 systemctl restart nftables.service

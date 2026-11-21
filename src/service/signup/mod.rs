@@ -1,7 +1,8 @@
-//! State behind anoncat's web pages (`web_signup`): the captchas handed out
-//! and not yet answered, how many accounts the sign-up page made in the last
-//! hour, and who is signed in to the account page. All of it is in memory
-//! only; a restart forgets it, which only signs people out of the page.
+//! State behind anoncat's sign-up captcha (`web_signup`): the captchas handed
+//! out and not yet answered, on the web page and in apps, how many were
+//! handed out and how many accounts were made in the last hour, and who is
+//! signed in to the account page. All of it is in memory only; a restart
+//! forgets it, which only signs people out of the page.
 
 mod captcha;
 
@@ -16,6 +17,8 @@ use tuwunel_core::{Result, utils};
 
 /// How long a captcha can be answered.
 const CAPTCHA_TTL: Duration = Duration::from_secs(10 * 60);
+/// How long a captcha shown in an app can be answered.
+pub const APP_CAPTCHA_TTL: Duration = Duration::from_secs(5 * 60);
 /// Captchas kept at once; past it the oldest go first.
 const CAPTCHAS_MAX: usize = 4096;
 /// How long the account page stays signed in without being used.
@@ -28,6 +31,10 @@ const HOUR: Duration = Duration::from_secs(60 * 60);
 
 pub struct Service {
 	captchas: Mutex<HashMap<String, Pending>>,
+	/// Captchas shown in apps, by the sign-up session they belong to.
+	app_captchas: Mutex<HashMap<String, Pending>>,
+	/// When captchas were handed out, web and apps together.
+	issued: Mutex<VecDeque<Instant>>,
 	signups: Mutex<VecDeque<Instant>>,
 	sessions: Mutex<HashMap<String, Session>>,
 }
@@ -60,6 +67,8 @@ impl crate::Service for Service {
 	fn build(_args: &crate::Args<'_>) -> Result<Arc<Self>> {
 		Ok(Arc::new(Self {
 			captchas: Mutex::default(),
+			app_captchas: Mutex::default(),
+			issued: Mutex::default(),
 			signups: Mutex::default(),
 			sessions: Mutex::default(),
 		}))
@@ -69,9 +78,15 @@ impl crate::Service for Service {
 }
 
 impl Service {
-	/// Draws a new captcha and remembers its answer.
+	/// Draws a new captcha and remembers its answer. `None` once
+	/// `per_hour` captchas were handed out in the last hour (0: no limit),
+	/// so asking for pictures over and over gets nowhere.
 	#[must_use]
-	pub fn captcha(&self) -> Captcha {
+	pub fn captcha(&self, per_hour: u32) -> Option<Captcha> {
+		if !within_hour(&self.issued, per_hour) {
+			return None;
+		}
+
 		let answer = captcha::answer();
 		let png = captcha::draw(&answer);
 		let token = utils::random_string(TOKEN_LENGTH);
@@ -91,7 +106,53 @@ impl Service {
 		}
 
 		captchas.insert(token.clone(), Pending { answer, made: now });
-		Captcha { token, png }
+		Some(Captcha { token, png })
+	}
+
+	/// Draws a captcha for an app's sign-up `session`, in place of any it
+	/// had: one picture per session at a time. `None` once `per_hour`
+	/// captchas were handed out in the last hour (0: no limit).
+	#[must_use]
+	pub fn captcha_for(&self, session: &str, per_hour: u32) -> Option<Vec<u8>> {
+		if !within_hour(&self.issued, per_hour) {
+			return None;
+		}
+
+		let answer = captcha::answer();
+		let png = captcha::draw(&answer);
+		let now = Instant::now();
+
+		let mut captchas = self.app_captchas.lock().expect("locked");
+		captchas.retain(|_, pending| now.duration_since(pending.made) < APP_CAPTCHA_TTL);
+		if captchas.len() >= CAPTCHAS_MAX && !captchas.contains_key(session) {
+			let oldest = captchas
+				.iter()
+				.min_by_key(|(_, pending)| pending.made)
+				.map(|(session, _)| session.clone());
+
+			if let Some(oldest) = oldest {
+				captchas.remove(&oldest);
+			}
+		}
+
+		captchas.insert(session.to_owned(), Pending { answer, made: now });
+		Some(png)
+	}
+
+	/// Whether `answer` solves the captcha of the sign-up `session`. Either
+	/// way it's used up: one guess per picture.
+	#[must_use]
+	pub fn solve_for(&self, session: &str, answer: &str) -> bool {
+		let Some(pending) = self
+			.app_captchas
+			.lock()
+			.expect("locked")
+			.remove(session)
+		else {
+			return false;
+		};
+
+		pending.made.elapsed() < APP_CAPTCHA_TTL && normalize(answer) == pending.answer
 	}
 
 	/// Whether `answer` solves the captcha `token`. Either way the captcha is
@@ -107,35 +168,12 @@ impl Service {
 			return false;
 		};
 
-		let answer: String = answer
-			.chars()
-			.filter(|c| !c.is_whitespace())
-			.map(|c| c.to_ascii_uppercase())
-			.collect();
-
-		pending.made.elapsed() < CAPTCHA_TTL && answer == pending.answer
+		pending.made.elapsed() < CAPTCHA_TTL && normalize(answer) == pending.answer
 	}
 
 	/// Counts a sign-up against the hourly limit, or says it's reached.
 	#[must_use]
-	pub fn allow_signup(&self, per_hour: u32) -> bool {
-		let now = Instant::now();
-		let mut signups = self.signups.lock().expect("locked");
-		while signups
-			.front()
-			.is_some_and(|&at| now.duration_since(at) >= HOUR)
-		{
-			signups.pop_front();
-		}
-
-		let limit = usize::try_from(per_hour).unwrap_or(usize::MAX);
-		if per_hour > 0 && signups.len() >= limit {
-			return false;
-		}
-
-		signups.push_back(now);
-		true
-	}
+	pub fn allow_signup(&self, per_hour: u32) -> bool { within_hour(&self.signups, per_hour) }
 
 	/// Signs `user_id` in to the account page; the token goes in its cookie.
 	#[must_use]
@@ -206,6 +244,36 @@ impl Session {
 	}
 }
 
+/// Counts one more in `times`, or says `per_hour` were already counted in
+/// the last hour (0: no limit).
+fn within_hour(times: &Mutex<VecDeque<Instant>>, per_hour: u32) -> bool {
+	let now = Instant::now();
+	let mut times = times.lock().expect("locked");
+	while times
+		.front()
+		.is_some_and(|&at| now.duration_since(at) >= HOUR)
+	{
+		times.pop_front();
+	}
+
+	let limit = usize::try_from(per_hour).unwrap_or(usize::MAX);
+	if per_hour > 0 && times.len() >= limit {
+		return false;
+	}
+
+	times.push_back(now);
+	true
+}
+
+/// An answer as the captcha compares it: no spaces, capitals or not alike.
+fn normalize(answer: &str) -> String {
+	answer
+		.chars()
+		.filter(|c| !c.is_whitespace())
+		.map(|c| c.to_ascii_uppercase())
+		.collect()
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -213,6 +281,8 @@ mod tests {
 	fn service() -> Service {
 		Service {
 			captchas: Mutex::default(),
+			app_captchas: Mutex::default(),
+			issued: Mutex::default(),
 			signups: Mutex::default(),
 			sessions: Mutex::default(),
 		}
@@ -221,7 +291,7 @@ mod tests {
 	#[test]
 	fn captcha_takes_one_guess() {
 		let service = service();
-		let captcha = service.captcha();
+		let captcha = service.captcha(0).unwrap();
 		let answer = service.captchas.lock().unwrap()[&captcha.token]
 			.answer
 			.clone();
@@ -229,11 +299,37 @@ mod tests {
 		assert!(!service.solve(&captcha.token, "nope"));
 		assert!(!service.solve(&captcha.token, &answer));
 
-		let captcha = service.captcha();
+		let captcha = service.captcha(0).unwrap();
 		let answer = service.captchas.lock().unwrap()[&captcha.token]
 			.answer
 			.to_lowercase();
 		assert!(service.solve(&captcha.token, &format!(" {answer} ")));
+	}
+
+	#[test]
+	fn app_captcha_is_per_session_and_takes_one_guess() {
+		let service = service();
+		assert!(service.captcha_for("s1", 0).is_some());
+		let answer = service.app_captchas.lock().unwrap()["s1"].answer.clone();
+
+		assert!(!service.solve_for("s2", &answer), "another session's picture");
+		assert!(!service.solve_for("s1", "nope"));
+		assert!(!service.solve_for("s1", &answer), "a wrong guess used it up");
+
+		assert!(service.captcha_for("s1", 0).is_some());
+		let answer = service.app_captchas.lock().unwrap()["s1"].answer.to_lowercase();
+		assert!(service.solve_for("s1", &format!(" {answer} ")));
+		assert!(!service.solve_for("s1", &answer), "a right guess used it up too");
+	}
+
+	#[test]
+	fn captchas_handed_out_count_against_the_hour() {
+		let service = service();
+		assert!(service.captcha(2).is_some());
+		assert!(service.captcha_for("s", 2).is_some());
+		assert!(service.captcha(2).is_none());
+		assert!(service.captcha_for("s", 2).is_none());
+		assert!(service.captcha(0).is_some());
 	}
 
 	#[test]

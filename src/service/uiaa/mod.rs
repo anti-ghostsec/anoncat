@@ -487,7 +487,7 @@ pub fn update_uiaa_session(
 }
 
 #[implement(Service)]
-async fn get_uiaa_session(
+pub async fn get_uiaa_session(
 	&self,
 	user_id: &UserId,
 	device_id: &DeviceId,

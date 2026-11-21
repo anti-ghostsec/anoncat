@@ -18,6 +18,9 @@ server can only ask for these four:
             scene that starts partway through falls between six stills)
   playable  a WebM copy (VP8 and Opus) any browser can play (the panel):
             open codecs, which need no extra codec packages, unlike H.264
+  clean     the same video in the same container, streams copied untouched,
+            without its metadata (location, camera, dates, names), chapters
+            or data tracks (GoPro and dashcam GPS): for uploads from here
 
 Request:  job name, "\\n", 8-byte big-endian length, the video.
 Reply:    1 byte (0 ok, 1 failed), 8-byte big-endian length, the output or
@@ -32,7 +35,7 @@ import tempfile
 
 MAX_INPUT = 128 * 1024 * 1024
 MAX_OUTPUT = 128 * 1024 * 1024
-TIMEOUTS = {"frame": 30, "sheet": 30, "survey": 120, "playable": 180}
+TIMEOUTS = {"frame": 30, "sheet": 30, "survey": 120, "playable": 180, "clean": 120}
 # The survey: a still every SURVEY_GAP seconds, between 6 and SURVEY_MAX,
 # each SURVEY_SIDE pixels on its longer side.
 SURVEY_GAP = 5.0
@@ -46,6 +49,15 @@ LIMITS = [
     "-format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,avi,mpegts,flv",
 ]
 FFMPEG = ["ffmpeg", "-nostdin", "-loglevel", "error"]
+# Metadata, chapters and encoder tags dropped from every video written out.
+NO_METADATA = [
+    "-map_metadata", "-1", "-map_metadata:s:v", "-1", "-map_metadata:s:a", "-1",
+    "-map_metadata:s:s", "-1", "-map_chapters", "-1",
+    "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
+]
+# The container ffprobe names (first of its list) -> the muxer that writes it
+# back. Matroska may be WebM; that is tried first (see clean_muxers).
+MUXERS = {"mov": "mov", "avi": "avi", "mpegts": "mpegts", "flv": "flv", "ogg": "ogg"}
 
 
 def read_exact(stream, n):
@@ -76,6 +88,43 @@ def duration(path, timeout):
     return seconds if seconds > 0 and seconds < float("inf") else None
 
 
+def probe_container(path, timeout):
+    """ffprobe's container name and the file's brand ("isom", "qt  ", "3gp4"...)."""
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", *LIMITS, "-show_entries",
+         "format=format_name:format_tags=major_brand", "-of", "default=nw=1", path],
+        capture_output=True, timeout=timeout, check=False)
+    fields = {}
+    for line in probe.stdout.decode("utf-8", "replace").splitlines():
+        key, _, value = line.partition("=")
+        fields[key.removeprefix("TAG:")] = value
+    return fields.get("format_name", "").split(",")[0], fields.get("major_brand", "")
+
+
+def clean_muxers(path, timeout):
+    """Muxers to try, in order, to write the video back in its own container."""
+    name, brand = probe_container(path, timeout)
+    if name == "mov":
+        if brand.startswith("qt"):
+            return [("mov", ["-movflags", "+faststart"])]
+        if brand.startswith("3g"):
+            return [("3gp", ["-movflags", "+faststart"])]
+        return [("mp4", ["-movflags", "+faststart"]), ("mov", ["-movflags", "+faststart"])]
+    if name == "matroska":
+        return [("webm", []), ("matroska", [])]
+    if name in MUXERS:
+        return [(MUXERS[name], [])]
+    raise ValueError(f"not a video container this cleans: {name or 'unknown'}")
+
+
+def clean_command(path, out, muxer, extra):
+    # Video, audio and subtitles only: data tracks carry GPS (GoPro, dashcams)
+    # and attachments can carry anything.
+    return [*FFMPEG, "-threads", "1", *LIMITS, "-i", path,
+            "-map", "0:v?", "-map", "0:a?", "-map", "0:s?", "-dn",
+            *NO_METADATA, "-c", "copy", *extra, "-f", muxer, "-y", out]
+
+
 def command(job, path, timeout, out):
     if job == "frame":
         return [*FFMPEG, "-threads", "1", *LIMITS, "-i", path, "-vf", "thumbnail=30",
@@ -100,7 +149,8 @@ def command(job, path, timeout, out):
                 "-frames:v", str(SURVEY_MAX // 6), "-f", "image2pipe", "-c:v", "png", "pipe:1"]
     if job == "playable":
         return [*FFMPEG, "-threads", "2", *LIMITS, "-i", path, "-map", "0:v:0",
-                "-map", "0:a:0?", "-sn", "-dn", "-vf", "scale=-2:'min(480,ih)'",
+                "-map", "0:a:0?", "-sn", "-dn", *NO_METADATA,
+                "-vf", "scale=-2:'min(480,ih)'",
                 "-c:v", "libvpx", "-deadline", "realtime", "-cpu-used", "8", "-b:v", "1M",
                 "-crf", "10", "-threads", "2", "-c:a", "libopus", "-b:a", "96k",
                 # To a file, not a pipe: only then does the WebM get its
@@ -130,12 +180,19 @@ def main():
         staged.flush()
 
         timeout = TIMEOUTS[job]
-        out = staged.name + ".webm"
+        out = staged.name + ".out"
         try:
-            done = subprocess.run(command(job, staged.name, timeout, out), capture_output=True,
-                                  timeout=timeout, check=False)
+            if job == "clean":
+                for muxer, extra in clean_muxers(staged.name, timeout):
+                    done = subprocess.run(clean_command(staged.name, out, muxer, extra),
+                                          capture_output=True, timeout=timeout, check=False)
+                    if done.returncode == 0:
+                        break
+            else:
+                done = subprocess.run(command(job, staged.name, timeout, out),
+                                      capture_output=True, timeout=timeout, check=False)
             output = done.stdout
-            if job == "playable" and done.returncode == 0:
+            if job in ("playable", "clean") and done.returncode == 0:
                 with open(out, "rb") as f:
                     output = f.read(MAX_OUTPUT + 1)
         except subprocess.TimeoutExpired:

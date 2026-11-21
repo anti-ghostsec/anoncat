@@ -10,11 +10,17 @@ the server.
   name over `/run/anoncat-video.sock` and prints what comes back.
 - `anoncat-video-helper` runs on the other end, started by systemd for each
   connection (`anoncat-video.socket`, `anoncat-video@.service`). It runs
-  ffmpeg with fixed arguments for one of three jobs:
+  ffmpeg with fixed arguments for one of these jobs:
   - `frame`: one still, for clients' video thumbnails;
   - `sheet`: six stills from across the video, for the panel;
   - `playable`: a WebM copy (VP8 and Opus, open codecs every browser plays
     without extra codec packages), for the panel.
+  - `clean`: the same video in its own container, streams copied untouched,
+    without metadata (location, camera, dates, names), chapters or data tracks
+    (GoPro and dashcam GPS). Every video uploaded here goes through it before
+    it is stored; one it can't clean is held back with a warning, and stored
+    as it is if the person sends it again within 10 minutes. Videos over the size limit
+    (`media_video_thumbnail_max_size`) are stored without cleaning.
 
   The request names a job, never ffmpeg's arguments, so even a compromised
   server can't make it run anything else.

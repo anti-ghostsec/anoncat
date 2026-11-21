@@ -115,20 +115,21 @@ if ! nft list chain inet filter input | grep -qF "$INPUT_RULE"; then
 	echo "added to the running firewall"
 fi
 
-# The direct path through Proton's port forward is retired: nothing should
-# reach anoncat on wg0 any more. (The socket stays bound there, for restarts;
-# with the rule gone, the firewall drops anything that arrives for it.)
-OLD_RULE='iifname "wg0" tcp dport 8448 accept'
-if grep -qF "$OLD_RULE" /etc/nftables.conf; then
-	grep -vF -e "$OLD_RULE" -e "# anoncat: the forwarded port, redirected to 8448 by anoncat-netd" /etc/nftables.conf > /etc/nftables.conf.new
-	cat /etc/nftables.conf.new > /etc/nftables.conf && rm -f /etc/nftables.conf.new
+# Proton's port forward stays open next to the relay: anoncat-netd keeps
+# it, and apps that know the direct path (Whisker) use it, as it's faster.
+# The rest stay on the relay.
+DIRECT_RULE='iifname "wg0" tcp dport 8448 accept'
+DIRECT_COMMENT='# anoncat: the forwarded port, redirected to 8448 by anoncat-netd'
+if ! grep -qF "$DIRECT_RULE" /etc/nftables.conf; then
+	sed -i "s|^\(\s*\)iif \"lo\" accept$|&\n\1$DIRECT_COMMENT\n\1$DIRECT_RULE|" /etc/nftables.conf
+	grep -qF "$DIRECT_RULE" /etc/nftables.conf || die "couldn't add the forwarded-port rule to /etc/nftables.conf"
 	nft -c -f /etc/nftables.conf || die "/etc/nftables.conf no longer parses; the original is /etc/nftables.conf.before-relay"
-	echo "removed the old port-forward rule from /etc/nftables.conf"
+	echo "added the forwarded-port rule to /etc/nftables.conf"
 fi
-while handle=$(nft -a list chain inet filter input | grep -F "$OLD_RULE" | grep -oE 'handle [0-9]+$' | head -1) && [[ -n $handle ]]; do
-	nft delete rule inet filter input ${handle}
-	echo "removed the old port-forward rule from the running firewall"
-done
+if ! nft list chain inet filter input | grep -qF "$DIRECT_RULE"; then
+	nft insert rule inet filter input $DIRECT_RULE
+	echo "added the forwarded-port rule to the running firewall"
+fi
 
 step "Config"
 if ! grep -qE "^address = .*\"$HOME_ADDR\"" "$CONF"; then
@@ -136,6 +137,11 @@ if ! grep -qE "^address = .*\"$HOME_ADDR\"" "$CONF"; then
 	sed -i -E "s|^(address = \[.*)\]$|\1, \"$HOME_ADDR\"]|" "$CONF"
 	grep -qE "^address = .*\"$HOME_ADDR\"" "$CONF" || die "couldn't add $HOME_ADDR to address in $CONF"
 	echo "config: anoncat also listens on the tunnel ($HOME_ADDR:8449)"
+fi
+if ! grep -q '^direct_address_file' "$CONF"; then
+	sed -i -E "0,/^address = /s|^(address = .*)$|\1\ndirect_address_file = \"/Drives/server/data/netd/address.json\"|" "$CONF"
+	grep -q '^direct_address_file' "$CONF" || die "couldn't add direct_address_file to $CONF"
+	echo "config: .well-known offers the direct path to apps that know it"
 fi
 if ! grep -q '^\[global.well_known\]' "$CONF"; then
 	server=$(sed -nE 's/^server_name = "(.*)"$/\1/p' "$CONF")
@@ -152,6 +158,7 @@ fi
 chown anoncat:anoncat "$CONF"
 
 step "Start"
+systemctl unmask "wg-quick@$IFACE.service" >/dev/null 2>&1  # anoncat-direct masks it
 systemctl enable "wg-quick@$IFACE.service" >/dev/null 2>&1
 systemctl restart "wg-quick@$IFACE.service"
 # FerroOS's kill switch lets traffic out only through wg0; the relay tunnel

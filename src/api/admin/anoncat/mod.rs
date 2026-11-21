@@ -3,6 +3,7 @@
 //! Plain axum handlers: ruma's request macros can't read this crate's
 //! manifest, so authentication is checked here directly.
 
+pub(crate) mod announce;
 pub(crate) mod backups;
 pub(crate) mod badfiles;
 pub(crate) mod cached_media;

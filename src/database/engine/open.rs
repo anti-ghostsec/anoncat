@@ -289,8 +289,8 @@ pub(super) fn is_remnant(name: &str) -> bool {
 /// hold old values of everything since overwritten, deleted or redacted, and
 /// RocksDB never purges them once both archive limits are 0. Archived logs
 /// are never needed to open the database.
-fn remove_wal_archive(path: &std::path::Path) {
-	let Ok(entries) = std::fs::read_dir(path.join("archive")) else {
+fn remove_wal_archive(path: &Path) {
+	let Ok(entries) = read_dir(path.join("archive")) else {
 		return;
 	};
 

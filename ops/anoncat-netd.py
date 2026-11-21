@@ -25,7 +25,13 @@ Relay mode (ANONCAT_RELAY_IP, set in /etc/anoncat/relay.env by
 anoncat-relay) replaces all of that: a VPS with a fixed address passes
 ports 443, 8448 and 53383 down a WireGuard tunnel to this machine, and
 anoncat answers there itself, .well-known included. DNS then points both
-names at the VPS for good: no port forward, no Pages, nothing that changes.
+names at the VPS for good: no Pages, nothing that changes for most apps.
+Proton's port forward is still kept next to it, as a faster direct path
+for apps that know it (Whisker): direct.anoncat.gleeze.com points at
+Proton's exit, and the state file names it with the port, which anoncat
+offers as `org.anoncat.direct` in its .well-known (`direct_address_file`).
+Only once the certificate covers that name, and only while netd renews the
+forward; if the forward fails, the entry goes and apps stay on the relay.
 
 Pages mode needs a Codeberg account (CODEBERG_FILE: username, then token)
 and a certificate that covers hs.anoncat.gleeze.com; until both are there,
@@ -45,6 +51,7 @@ Usage:
 import base64
 import ipaddress
 import hashlib
+import http.client
 import json
 import os
 import socket
@@ -81,6 +88,9 @@ REDIRECT = os.environ.get("ANONCAT_REDIRECT") == "1"
 
 HS_NODE = "hs"
 HS = f"{HS_NODE}.{DOMAIN}"
+# Relay mode's direct path: Proton's exit, for apps that look for it.
+DIRECT_NODE = "direct"
+DIRECT = f"{DIRECT_NODE}.{DOMAIN}"
 CODEBERG_FILE = os.environ.get("ANONCAT_CODEBERG_FILE", "/Drives/server/data/secrets/codeberg")
 CERT_FILE = os.environ.get("ANONCAT_CERT_FILE", f"/Drives/server/data/tls/certificates/{DOMAIN}.crt")
 CODEBERG_API = "https://codeberg.org/api/v1"
@@ -219,13 +229,29 @@ def codeberg(method, path, body=None, ok_missing=False):
     return json.loads(raw) if raw else None
 
 
-def cert_covers_hs():
-    """Whether the server's certificate is valid for HS yet."""
+def cert_covers(name):
+    """Whether the server's certificate is valid for `name` yet."""
     try:
         cert = ssl._ssl._test_decode_cert(CERT_FILE)
     except (OSError, ssl.SSLError):
         return False
-    return ("DNS", HS) in cert.get("subjectAltName", ())
+    return ("DNS", name) in cert.get("subjectAltName", ())
+
+
+def cert_covers_hs():
+    return cert_covers(HS)
+
+
+def set_record(node, kind, fields):
+    """Create or update one record of the domain."""
+    dom = domain()
+    records = dynu("GET", f"/dns/{dom['id']}/record")["dnsRecords"]
+    rec = {"nodeName": node, "recordType": kind, "ttl": TTL, "state": True, **fields}
+    found = next((r for r in records if r["nodeName"] == node and r["recordType"] == kind), None)
+    if found:
+        dynu("POST", f"/dns/{dom['id']}/record/{found['id']}", rec)
+    else:
+        dynu("POST", f"/dns/{dom['id']}/record", rec)
 
 
 def pages_mode():
@@ -359,6 +385,39 @@ def page(title, body):
             ).replace("@@DOMAIN@@", DOMAIN)
 
 
+# The server's own front and rules pages, as last read: what Codeberg
+# serves then looks and reads the same as the server, words from the panel
+# included. Kept across a failed read, so a restart of anoncat doesn't swap
+# the built-in pages in and out.
+_live_pages = {}
+
+
+def live_page(path):
+    """A page from anoncat's local listener, or None. Verified against the
+    server's own certificate name, over loopback: nothing leaves this machine."""
+    try:
+        ctx = ssl.create_default_context()
+        raw = socket.create_connection(("127.0.0.1", LOOPBACK_PORT), timeout=10)
+        conn = http.client.HTTPSConnection(DOMAIN, LOOPBACK_PORT, context=ctx, timeout=10)
+        conn.sock = ctx.wrap_socket(raw, server_hostname=DOMAIN)
+        conn.request("GET", path, headers={"Host": DOMAIN, "Accept": "text/html"})
+        res = conn.getresponse()
+        body = res.read(1 << 20)
+        conn.close()
+        if res.status != 200 or not body.lstrip().lower().startswith(b"<!doctype html"):
+            return None
+        return body.decode("utf-8")
+    except (OSError, ssl.SSLError, http.client.HTTPException, UnicodeDecodeError):
+        return None
+
+
+def served_page(name, path, fallback):
+    page_now = live_page(path)
+    if page_now is not None:
+        _live_pages[name] = page_now
+    return _live_pages.get(name, fallback)
+
+
 def pages_files(port, deployed_at=None):
     client = json.dumps({"m.homeserver": {"base_url": f"https://{HS}:{port}"}}, indent=2) + "\n"
     return {
@@ -375,8 +434,8 @@ def pages_files(port, deployed_at=None):
         # Element's web app reads it from another origin.
         "_headers": "/matrix-client.json\n    Access-Control-Allow-Origin: *\n"
                     "/.well-known/matrix/client\n    Access-Control-Allow-Origin: *\n",
-        "index.html": page(DOMAIN, INDEX_BODY),
-        "rules.html": page(f"Rules and privacy - {DOMAIN}", RULES_BODY),
+        "index.html": served_page("index", "/", page(DOMAIN, INDEX_BODY)),
+        "rules.html": served_page("rules", "/rules", page(f"Rules and privacy - {DOMAIN}", RULES_BODY)),
         # Changed only to force a push, which is what makes Codeberg deploy.
         "deployed.txt": f"{deployed_at or 0}\n",
     }
@@ -466,11 +525,16 @@ def redirect(port, ip, public):
     redirect_rules(port, (public,), (port, ip, public))
 
 
-def redirect_relay():
-    """Relay mode: nothing arrives on wg0 any more, but this machine's own
-    apps still reach the server through its tunnel address (/etc/hosts), on
-    any of the ports the relay serves."""
-    redirect_rules(None, RELAY_PORTS, ("relay",))
+def redirect_relay(direct=None):
+    """Relay mode: this machine's own apps reach the server through its
+    tunnel address (/etc/hosts), on any of the ports the relay serves. With
+    the direct path (exit ip, public port, local port), the forwarded
+    connections on wg0 arrive too, and its public port joins the local ones."""
+    if direct is None:
+        redirect_rules(None, RELAY_PORTS, ("relay",))
+        return
+    _, public, local = direct
+    redirect_rules(local, (*RELAY_PORTS, public), ("relay", public))
 
 
 def redirect_rules(port, public_ports, key):
@@ -564,22 +628,57 @@ def allow_relay_out():
 
 def step_relay(dry_run=False):
     """Relay mode: DNS points at the VPS; only a change of VPS (or of this
-    layout) sends anything to Dynu."""
+    layout) sends anything to Dynu. Proton's port forward is renewed next to
+    it for the direct path; see publish_direct."""
     if not ipaddress.ip_address(RELAY_IP).is_global:
         raise RuntimeError(f"ANONCAT_RELAY_IP {RELAY_IP} isn't a public address")
+    try:
+        direct = forward()
+    except Exception as e:  # the relay works without it
+        log(f"no direct path next to the relay: {e}")
+        direct = None
     if REDIRECT and not dry_run:
-        redirect_relay()
+        redirect_relay(direct)
         allow_relay_out()
     state = load_state()
-    if (state.get("relay"), state.get("layout")) == (RELAY_IP, DNS_LAYOUT):
+    if (state.get("relay"), state.get("layout")) != (RELAY_IP, DNS_LAYOUT):
+        if dry_run:
+            log(f"would set DNS: A {DOMAIN} and {HS} {RELAY_IP}, SRV {', '.join(SRV_NAMES)} -> {HS}:8448")
+        else:
+            set_dns(RELAY_IP, 8448, pages=False)
+            log(f"DNS now {DOMAIN} and {HS} -> relay {RELAY_IP} (was {state.get('ip')}:{state.get('port')})")
+            state = {"relay": RELAY_IP, "ip": RELAY_IP, "port": 8448, "pages": False,
+                     "layout": DNS_LAYOUT, "since": int(time.time())}
+            save_state(state)
+    publish_direct(state, direct, dry_run)
+
+
+def publish_direct(state, direct, dry_run=False):
+    """Name the direct path in the state file, for anoncat's .well-known,
+    with DIRECT pointing at Proton's exit; or take it out when the forward
+    failed or the certificate doesn't cover DIRECT yet. Rewritten on every
+    round: anoncat leaves out an entry that wasn't refreshed lately."""
+    if direct is None or not cert_covers(DIRECT):
+        if dry_run:
+            log(f"would offer no direct path (forward {'down' if direct is None else 'up'}, "
+                f"certificate covers {DIRECT}: {cert_covers(DIRECT)})")
+        elif state.pop("direct", None) is not None:
+            save_state(state)
+            log("direct path withdrawn: apps use the relay")
         return
+    ip, port, _ = direct
     if dry_run:
-        log(f"would set DNS: A {DOMAIN} and {HS} {RELAY_IP}, SRV {', '.join(SRV_NAMES)} -> {HS}:8448")
+        log(f"would offer the direct path https://{DIRECT}:{port}, A {DIRECT} {ip}")
         return
-    set_dns(RELAY_IP, 8448, pages=False)
-    save_state({"relay": RELAY_IP, "ip": RELAY_IP, "port": 8448, "pages": False,
-                "layout": DNS_LAYOUT, "since": int(time.time())})
-    log(f"DNS now {DOMAIN} and {HS} -> relay {RELAY_IP} (was {state.get('ip')}:{state.get('port')})")
+    old = state.get("direct") or {}
+    if (old.get("ip"), old.get("layout")) != (ip, DNS_LAYOUT):
+        set_record(DIRECT_NODE, "A", {"ipv4Address": ip})
+        log(f"DNS now {DIRECT} -> {ip}")
+    if old.get("port") != port:
+        log(f"direct path https://{DIRECT}:{port} next to the relay")
+    state["direct"] = {"host": DIRECT, "ip": ip, "port": port, "layout": DNS_LAYOUT,
+                       "checked": int(time.time())}
+    save_state(state)
 
 
 def publish_logged(ip, port):

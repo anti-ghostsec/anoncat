@@ -668,8 +668,9 @@ async fn reject_bad_url(fixture: &Fixture<'_>) -> Result {
 		.ok_or_else(|| err!("set_pusher accepted a non-HTTP(S) pusher URL"))
 }
 
-/// A full-format notification carries the event, sender, content, and device
-/// identity, and leaves the pusher in place.
+/// A pusher that asks for the full format still gets only the identifiers:
+/// anoncat never sends content, sender or room name to a push gateway. The
+/// device is told the format it actually got, and the pusher stays in place.
 async fn full_format_delivery(fixture: &Fixture<'_>) -> Result {
 	let pushkey = "pk-full";
 	let (path, body) = deliver(fixture, pushkey, false, false, r#"{"rejected":[]}"#).await?;
@@ -682,16 +683,30 @@ async fn full_format_delivery(fixture: &Fixture<'_>) -> Result {
 
 	expect_str(notification, "event_id", EVENT_ID)?;
 	expect_str(notification, "room_id", fixture.room_id)?;
-	expect_str(notification, "prio", "low")?;
-	expect_str(notification, "sender", SENDER)?;
+
+	for field in [
+		"sender",
+		"sender_display_name",
+		"type",
+		"content",
+		"room_name",
+		"room_alias",
+		"user_is_target",
+	] {
+		expect_absent(notification, field)?;
+	}
 
 	assert_eq!(notification.get("counts"), Some(&json!({"unread": 2})));
+	expect_absent(first_device(notification)?, "tweaks")?;
 
-	let content = notification
-		.get("content")
-		.ok_or_else(|| err!("full-format notification had no content"))?;
+	let format = first_device(notification)?
+		.get("data")
+		.and_then(|data| data.get("format"))
+		.and_then(Value::as_str);
 
-	expect_str(content, "body", "hello world")?;
+	if format != Some("event_id_only") {
+		return Err!("device format was {format:?}, expected event_id_only");
+	}
 
 	let device = first_device(notification)?;
 

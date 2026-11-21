@@ -5,11 +5,13 @@ use ruma::{
 	DeviceId, MilliSecondsSinceUnixEpoch, OwnedUserId, UserId,
 	api::client::{
 		account::register::{self, LoginType, RegistrationKind},
-		uiaa::{AuthFlow, AuthType, UiaaInfo},
+		uiaa::{AuthData, AuthFlow, AuthType, LoginTermsParams, UiaaInfo},
 	},
+	api::error::{ErrorKind, StandardErrorBody},
 	thirdparty::Medium,
 };
-use serde_json::{json, value::to_raw_value};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde_json::{json, value::{RawValue, to_raw_value}};
 use tuwunel_core::{Err, Error, Result, debug_info, debug_warn, info, utils, warn};
 use tuwunel_service::{
 	threepid::Association,
@@ -78,7 +80,7 @@ pub(crate) async fn register_route(
 		.check_device_id(&user_id, device_id)
 		.await?;
 
-	let email_association = enforce_uiaa(services, &body, is_guest).await?;
+	let (email_association, by_captcha) = enforce_uiaa(services, &body, is_guest).await?;
 
 	let password = if is_guest { None } else { body.password.as_deref() };
 
@@ -89,7 +91,10 @@ pub(crate) async fn register_route(
 			password,
 			is_appservice: body.appservice_info.is_some(),
 			is_guest,
-			grant_first_user_admin: true,
+			// Not by captcha: on a fresh install, whoever solved the first
+			// one would be admin. The first account made with the
+			// registration token is.
+			grant_first_user_admin: !by_captcha,
 			..Default::default()
 		})
 		.await?;
@@ -285,13 +290,22 @@ async fn check_appservice_namespace(
 	Ok(())
 }
 
+/// anoncat's sign-up captcha, as a step apps can take in place of the
+/// registration token: the picture comes in the reply's `params`, the answer
+/// goes back as `response`, and `/_matrix/client/v3/auth/org.anoncat.captcha/
+/// fallback/web` shows the same captcha in a browser for apps that can't.
+pub(crate) const CAPTCHA_STAGE: &str = "org.anoncat.captcha";
+
+pub(crate) fn captcha_stage() -> AuthType { AuthType::from(CAPTCHA_STAGE) }
+
+/// Runs the sign-up steps. Also says whether the captcha was the way in.
 async fn enforce_uiaa(
 	services: crate::State,
 	body: &Ruma<register::v3::Request>,
 	is_guest: bool,
-) -> Result<Option<Association>> {
+) -> Result<(Option<Association>, bool)> {
 	if body.appservice_info.is_some() || is_guest {
-		return Ok(None);
+		return Ok((None, false));
 	}
 
 	let token_required = services.registration_tokens.is_enabled().await;
@@ -318,15 +332,22 @@ async fn enforce_uiaa(
 		stages
 	};
 
-	let params = terms
-		.as_ref()
-		.map(|terms| to_raw_value(&json!({ "m.login.terms": terms })))
-		.transpose()?;
+	// The captcha stands in for the token where the sign-up page is on.
+	let captcha_offered = token_required && !email_required && services.config.web_signup;
+	let captcha_flow = AuthFlow {
+		stages: stages
+			.iter()
+			.map(|stage| match stage {
+				| AuthType::RegistrationToken => captcha_stage(),
+				| stage => stage.clone(),
+			})
+			.collect(),
+	};
 
 	let mut uiaainfo = UiaaInfo {
 		flows: vec![AuthFlow { stages }],
 		completed: Vec::new(),
-		params,
+		params: uiaa_params(terms.as_ref(), None)?,
 		session: None,
 		auth_error: None,
 	};
@@ -335,6 +356,41 @@ async fn enforce_uiaa(
 	let server_device: &DeviceId = "".into();
 
 	match &body.auth {
+		| Some(auth) if auth.auth_type() == Some(captcha_stage()) => {
+			let Some(session) = auth.session() else {
+				return Err!(Request(MissingParam("The captcha needs the sign-up session.")));
+			};
+
+			let mut uiaainfo = services
+				.uiaa
+				.get_uiaa_session(&server_user, server_device, session)
+				.await?;
+
+			if !uiaainfo
+				.flows
+				.iter()
+				.any(|flow| flow.stages.contains(&captcha_stage()))
+			{
+				return Err!(Request(Forbidden("This sign-up doesn't use the captcha.")));
+			}
+
+			solve_captcha(services, auth, session, terms.as_ref(), &mut uiaainfo)?;
+
+			if !flow_done(&uiaainfo) {
+				services
+					.uiaa
+					.update_uiaa_session(&server_user, server_device, session, Some(&uiaainfo));
+
+				return Err(Error::Uiaa(uiaainfo));
+			}
+
+			finish_captcha_signup(services)?;
+			services
+				.uiaa
+				.update_uiaa_session(&server_user, server_device, session, None);
+
+			Ok((None, true))
+		},
 		| Some(auth) => {
 			let (worked, uiaainfo) = match email_required {
 				| true =>
@@ -351,6 +407,12 @@ async fn enforce_uiaa(
 
 			if !worked {
 				return Err(Error::Uiaa(uiaainfo));
+			}
+
+			// The captcha came first, then a later step (the rules) finished.
+			let by_captcha = uiaainfo.completed.contains(&captcha_stage());
+			if by_captcha {
+				finish_captcha_signup(services)?;
 			}
 
 			let session = uiaainfo.session.expect("session is always set");
@@ -381,12 +443,25 @@ async fn enforce_uiaa(
 				.uiaa
 				.update_uiaa_session(&claim.0, &claim.1, &claim.2, None);
 
-			Ok(association)
+			Ok((association, by_captcha))
 		},
 		| _ => match body.json_body {
 			| None => Err!(Request(NotJson("JSON body is not valid"))),
 			| Some(ref json) => {
-				uiaainfo.session = Some(utils::random_string(SESSION_ID_LENGTH));
+				let session = utils::random_string(SESSION_ID_LENGTH);
+
+				// A picture for this session only; none left this hour, and
+				// the token is the only way in for now.
+				if captcha_offered
+					&& let Some(png) = services
+						.signup
+						.captcha_for(&session, services.config.signup_captchas_per_hour)
+				{
+					uiaainfo.flows.push(captcha_flow);
+					uiaainfo.params = uiaa_params(terms.as_ref(), Some(&png))?;
+				}
+
+				uiaainfo.session = Some(session);
 				services
 					.uiaa
 					.create(&server_user, server_device, &uiaainfo, json);
@@ -395,6 +470,108 @@ async fn enforce_uiaa(
 			},
 		},
 	}
+}
+
+/// Checks the captcha answer in `auth`, or, with none, that the fallback
+/// page saw it solved. A wrong answer used up the picture: a new one goes in
+/// the reply, with the error.
+fn solve_captcha(
+	services: crate::State,
+	auth: &AuthData,
+	session: &str,
+	terms: Option<&LoginTermsParams>,
+	uiaainfo: &mut UiaaInfo,
+) -> Result {
+	let stage = captcha_stage();
+	if uiaainfo.completed.contains(&stage) {
+		uiaainfo.auth_error = None;
+		return Ok(());
+	}
+
+	let data = auth.data();
+	let solved = data
+		.get("response")
+		.and_then(|response| response.as_str())
+		.is_some_and(|response| services.signup.solve_for(session, response));
+
+	if solved {
+		uiaainfo.completed.push(stage);
+		uiaainfo.auth_error = None;
+		return Ok(());
+	}
+
+	let png = services
+		.signup
+		.captcha_for(session, services.config.signup_captchas_per_hour);
+
+	let message = match (&png, data.contains_key("response")) {
+		| (None, _) => "Too many people are signing up right now. Try again in a while.",
+		| (Some(_), true) => "The letters didn't match the picture. Here's a new one to try.",
+		| (Some(_), false) => "The captcha isn't solved yet. Here's a new picture.",
+	};
+
+	uiaainfo.params = uiaa_params(terms, png.as_deref())?;
+	uiaainfo.auth_error = Some(Box::new(StandardErrorBody {
+		kind: ErrorKind::forbidden(),
+		message: message.to_owned(),
+	}));
+
+	let server_user = UserId::parse_with_server_name("", services.globals.server_name())?;
+	services
+		.uiaa
+		.update_uiaa_session(&server_user, "".into(), session, Some(uiaainfo));
+
+	Err(Error::Uiaa(uiaainfo.clone()))
+}
+
+/// Whether every step of some flow is done.
+fn flow_done(uiaainfo: &UiaaInfo) -> bool {
+	uiaainfo.flows.iter().any(|flow| {
+		flow.stages
+			.iter()
+			.all(|stage| uiaainfo.completed.contains(stage))
+	})
+}
+
+/// A captcha sign-up counts against the hour, like the sign-up page's.
+fn finish_captcha_signup(services: crate::State) -> Result {
+	if !services
+		.signup
+		.allow_signup(services.config.web_signups_per_hour)
+	{
+		return Err!(Request(Forbidden(
+			"Too many accounts were made in the last hour. Please try again later."
+		)));
+	}
+
+	Ok(())
+}
+
+/// The reply's `params`: the rules to accept, and the captcha's picture.
+fn uiaa_params(
+	terms: Option<&LoginTermsParams>,
+	captcha: Option<&[u8]>,
+) -> Result<Option<Box<RawValue>>> {
+	let mut params = serde_json::Map::new();
+	if let Some(terms) = terms {
+		params.insert("m.login.terms".to_owned(), serde_json::to_value(terms)?);
+	}
+
+	if let Some(png) = captcha {
+		params.insert(
+			CAPTCHA_STAGE.to_owned(),
+			json!({
+				"image": format!("data:image/png;base64,{}", STANDARD.encode(png)),
+				"expires_in": tuwunel_service::signup::APP_CAPTCHA_TTL.as_secs(),
+			}),
+		);
+	}
+
+	if params.is_empty() {
+		return Ok(None);
+	}
+
+	Ok(Some(to_raw_value(&params)?))
 }
 
 async fn record_accepted_terms(

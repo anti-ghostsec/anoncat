@@ -639,3 +639,25 @@ fn fold_streak_tracks_anchor_and_oldest() {
 	assert_eq!(second.latest_bucket, 12);
 	assert!(matches!(second.class, Classification::Permanent));
 }
+
+#[tokio::test]
+async fn key_lookup_cooldown_is_per_server_and_clears() -> Result {
+	let Some(fixture) = fixture(Figment::new()).await? else {
+		return Ok(());
+	};
+
+	let federation = &fixture.services.federation;
+	let slow: OwnedServerName = "slow.example".try_into().expect("valid server name");
+	let other: OwnedServerName = "other.example".try_into().expect("valid server name");
+
+	assert!(!federation.keys_cooling(&slow));
+
+	federation.keys_cooldown_start(&slow);
+	assert!(federation.keys_cooling(&slow));
+	assert!(!federation.keys_cooling(&other));
+
+	federation.keys_cooldown_clear(&slow);
+	assert!(!federation.keys_cooling(&slow));
+
+	Ok(())
+}
