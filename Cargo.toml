@@ -848,7 +848,9 @@ strip = "none"
 # and can be raised if build times are tolerable.
 
 [profile.dev]
-debug = 0
+# Debug info: file and line numbers for our code, none for dependencies,
+# or the build folder grows by tens of gigabytes.
+debug = "line-tables-only"
 #rustflags = [
 #	'--cfg', 'tuwunel_mods',
 #	'-Ztime-passes',
