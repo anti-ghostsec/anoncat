@@ -1,10 +1,12 @@
 # Keeps anoncat reachable through Proton's port forward: renews the NAT-PMP
 # lease, points Dynu DNS (A + SRV) at the exit address, and keeps the nftables
-# redirect from the forwarded port on wg0 to anoncat's socket. Runs while
-# anoncat runs; its key and state live in the vault.
+# redirect from the forwarded port on wg0 to anoncat's socket. Starts with
+# anoncat; its key and state live in the vault.
 [Unit]
 Description=anoncat VPN port forward and DNS
-BindsTo=anoncat.service
+# Not bound to anoncat: when anoncat restarts (or is killed for memory),
+# this keeps renewing the lease, so the forwarded port and every app's
+# address stay the same. Connections wait on systemd's socket meanwhile.
 After=anoncat.service
 RequiresMountsFor=/Drives/server/data
 
