@@ -9,7 +9,7 @@ use std::{
 use futures::{FutureExt, Stream, StreamExt, TryFutureExt, TryStreamExt, future::join};
 use ruma::{
 	CanonicalJsonObject, CanonicalJsonValue, OwnedEventId, OwnedRoomId, OwnedServerName,
-	OwnedUserId, RoomId,
+	OwnedUserId, RoomId, ServerName,
 	RoomOrAliasId, RoomVersionId, UserId,
 	api::{error::ErrorKind, federation},
 	canonical_json::to_canonical_value,
@@ -170,6 +170,38 @@ async fn check_room_ban(&self, sender_user: &UserId, room_id: &RoomId) -> Result
 	Ok(())
 }
 
+/// Refuses a room on another server that's bigger than the configured limit,
+/// before anything of it is fetched. A server that won't describe the room
+/// (private, or doesn't answer) is no reason to refuse.
+#[implement(Service)]
+async fn check_remote_room_size(&self, room_id: &RoomId, remote_server: &ServerName) -> Result {
+	let limit = self.services.config.max_remote_room_members;
+	if limit == 0 {
+		return Ok(());
+	}
+
+	let request = federation::space::get_hierarchy::v1::Request::new(room_id.to_owned());
+	let Ok(response) = self
+		.services
+		.federation
+		.execute(remote_server, request)
+		.await
+	else {
+		return Ok(());
+	};
+
+	let summary = &response.room.summary;
+	let members: u64 = summary.num_joined_members.into();
+	if summary.room_id == room_id && members > limit {
+		info!(%room_id, members, limit, "Refused a join: the room is too big");
+		return Err!(Request(Forbidden(
+			"This room is too big for this server ({members} members; the limit is {limit})."
+		)));
+	}
+
+	Ok(())
+}
+
 /// Acquires the room's federation and state mutexes in canonical order.
 ///
 /// A remote join needs both mutexes, but the branch is final only under the
@@ -273,6 +305,9 @@ async fn join_remote(
 		.await?;
 
 	info!("make_join finished");
+
+	self.check_remote_room_size(room_id, &remote_server)
+		.await?;
 
 	let room_version_id = self.require_supported_remote_room_version(&make_join_response)?;
 	let room_version_rules = room_version::rules(&room_version_id)?;

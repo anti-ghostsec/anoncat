@@ -3,6 +3,7 @@ mod data;
 pub(super) mod migrations;
 pub mod strip;
 mod preview;
+pub mod range;
 mod remote;
 mod space;
 mod stand_in;

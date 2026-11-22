@@ -400,6 +400,27 @@ pub async fn load(&self, path: &str) -> Result<GetResult> {
 		.await
 }
 
+/// Reads one byte range of an object, without loading the rest of it.
+#[implement(Provider)]
+#[tracing::instrument(
+	level = "debug",
+	err(level = "debug"),
+	skip_all,
+	fields(
+		provider = %self.name,
+		?path,
+		?range,
+	)
+)]
+pub async fn get_range(&self, path: &str, range: Range<u64>) -> Result<Bytes> {
+	let path = self.to_abs_path(path)?;
+
+	self.provider
+		.get_range(&path, range)
+		.map_err(Error::from)
+		.await
+}
+
 /// Creates a time-limited GET URL when the backend supports signing.
 ///
 /// The provider prefix is applied before signing. Backends without a signer,

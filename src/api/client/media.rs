@@ -385,14 +385,17 @@ async fn fetch_file(
 	timeout_ms: Duration,
 	filename: Option<&str>,
 ) -> Result<Media> {
+	// A video player's piece of a big file is read on its own, never the
+	// whole file (see media::range).
+	let piece = services.media.get_piece(mxc).await;
 	let Media {
 		content,
 		content_type,
 		content_disposition,
-	} = services
-		.media
-		.get_or_fetch(mxc, timeout_ms)
-		.await?;
+	} = match piece {
+		| Some(piece) => piece,
+		| None => services.media.get_or_fetch(mxc, timeout_ms).await?,
+	};
 
 	let content_disposition = Some(make_content_disposition(
 		content_disposition.as_ref(),

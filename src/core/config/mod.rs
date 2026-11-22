@@ -3692,6 +3692,18 @@ pub struct Config {
 	#[serde(default = "default_max_join_attempts_per_join_request")]
 	pub max_join_attempts_per_join_request: usize,
 
+	/// Largest room on another server that people here may join, in joined
+	/// members. Joining a huge federated room (Matrix HQ and the like) makes
+	/// this server fetch and check a large state and history, which is the
+	/// heaviest thing a small server does. The size is asked of the room's
+	/// server before joining; a room that won't say is let through. 0 turns
+	/// the limit off. Rooms this server is already in aren't affected.
+	///
+	/// reloadable: yes
+	/// default: 2000
+	#[serde(default = "default_max_remote_room_members")]
+	pub max_remote_room_members: u64,
+
 	/// Retry failed and incomplete messages to remote servers immediately upon
 	/// startup.
 	///
@@ -6561,6 +6573,8 @@ fn default_one_time_key_limit() -> usize { 256 }
 fn default_max_make_join_attempts_per_join_attempt() -> usize { 48 }
 
 fn default_max_join_attempts_per_join_request() -> usize { 3 }
+
+fn default_max_remote_room_members() -> u64 { 2000 }
 
 fn default_sso_grant_session_duration() -> Option<u64> { Some(300) }
 
