@@ -2,6 +2,7 @@ mod handle;
 mod layers;
 mod onion;
 mod panel;
+mod range;
 mod request;
 mod router;
 mod run;

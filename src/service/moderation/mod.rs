@@ -181,7 +181,12 @@ pub struct Settings {
 	/// Files at least this large are reported for a look, without the AI.
 	/// 0 turns that off.
 	pub large_file_mb: u64,
-	/// "auto" uses Venice's current default.
+	/// Which AI service: "venice", "nanogpt" or "custom" (`ai_base_url`).
+	/// Each has its own key file; see `key_path`.
+	pub ai_service: String,
+	/// The custom service's OpenAI-compatible API address, https only.
+	pub ai_base_url: String,
+	/// "auto" uses the service's current private default (Venice only).
 	pub text_model: String,
 	pub vision_model: String,
 	/// The server's rules, as the AI is told them.
@@ -230,8 +235,7 @@ pub const DEFAULT_PAGE_TITLE: &str = "A private Matrix chat server";
 pub const DEFAULT_PAGE_INTRO: &str = "No email, no tracking.";
 /// The notice a server shows until its admin changes or clears it.
 pub const DEFAULT_PAGE_NOTICE: &str = "\
-About the recent outage: the relay host we used to reach the server was hacked, so we took it offline. Nothing to worry about: it only ever passed along encrypted connections, so it never saw your messages, account or password.
-To stay connected through problems like this, use the newest Whisker: https://github.com/anti-ghostsec/whisker It reaches the server on its own instead of depending on a relay.";
+For the most reliable connection, use the newest Whisker: https://github.com/anti-ghostsec/whisker It reaches the server on its own instead of depending on a relay.";
 pub const DEFAULT_PAGE_RULES: &str = "\
 Nothing illegal.
 No spam, scams or malware.
@@ -260,6 +264,8 @@ impl Default for Settings {
 			check_remote: false,
 			check_rooms: true,
 			large_file_mb: 100,
+			ai_service: "venice".into(),
+			ai_base_url: String::new(),
 			text_model: "auto".into(),
 			vision_model: "auto".into(),
 			rules: DEFAULT_RULES.into(),
@@ -608,6 +614,19 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	{
 		settings.stand_in_image = "orange".into();
 	}
+	if !venice::SERVICES.contains(&settings.ai_service.as_str()) {
+		settings.ai_service = "venice".into();
+	}
+	settings.ai_base_url = settings.ai_base_url.trim().trim_end_matches('/').to_owned();
+	if settings.ai_service == "custom" {
+		venice::Api::new(self.client(), "custom", &settings.ai_base_url)?;
+	}
+	if settings.ai_service != self.settings().ai_service
+		|| settings.ai_base_url != self.settings().ai_base_url
+	{
+		// Another service, other models; and its own key.
+		*self.models.lock().expect("locked") = None;
+	}
 	for model in [&mut settings.text_model, &mut settings.vision_model] {
 		let trimmed = model.trim();
 		*model = if trimmed.is_empty() { "auto".into() } else { trimmed.into() };
@@ -620,10 +639,23 @@ pub async fn set_settings(&self, mut settings: Settings, extra: &[String]) -> Re
 	Ok(settings)
 }
 
-/// The Venice API key, read fresh so a newly saved one works at once.
+/// Where the chosen service's key is kept: `ai_key_file` for Venice, and a
+/// file named after the service beside it for the others (for example
+/// secrets/nanogpt), so switching back and forth keeps both keys.
+#[implement(Service)]
+pub fn key_path(&self) -> Option<std::path::PathBuf> {
+	let path = self.services.config.ai_key_file.as_ref()?;
+	match self.settings().ai_service.as_str() {
+		| "venice" => Some(path.clone()),
+		| other => Some(path.with_file_name(other)),
+	}
+}
+
+/// The chosen service's API key, read fresh so a newly saved one works at
+/// once.
 #[implement(Service)]
 pub fn key(&self) -> Option<String> {
-	let path = self.services.config.ai_key_file.as_ref()?;
+	let path = self.key_path()?;
 	let key = std::fs::read_to_string(path).ok()?;
 	let key = key.trim();
 	(!key.is_empty()).then(|| key.to_owned())
@@ -632,7 +664,14 @@ pub fn key(&self) -> Option<String> {
 #[implement(Service)]
 fn client(&self) -> &reqwest::Client { &self.services.client.clients.default }
 
-/// Venice's models, cached for an hour.
+/// The chosen AI service.
+#[implement(Service)]
+fn api(&self) -> Result<venice::Api<'_>> {
+	let settings = self.settings();
+	venice::Api::new(self.client(), &settings.ai_service, &settings.ai_base_url)
+}
+
+/// The service's models, cached for an hour.
 #[implement(Service)]
 pub async fn models(&self) -> Result<Vec<Model>> {
 	if let Some((at, models)) = &*self.models.lock().expect("locked") {
@@ -641,7 +680,8 @@ pub async fn models(&self) -> Result<Vec<Model>> {
 		}
 	}
 
-	let models = venice::models(self.client()).await?;
+	let key = self.key();
+	let models = venice::models(&self.api()?, key.as_deref()).await?;
 	*self.models.lock().expect("locked") = Some((Instant::now(), models.clone()));
 
 	Ok(models)
@@ -952,7 +992,7 @@ async fn check_messages(&self, settings: &Settings, key: &str, messages: Vec<Mes
 	);
 
 	let reply =
-		venice::chat(self.client(), key, &model, &system, &[], vec![Part::Text(list)]).await?;
+		venice::chat(&self.api()?, key, &model, &system, &[], vec![Part::Text(list)]).await?;
 	let Some(flags) = json_in(&reply).and_then(|v| v["flags"].as_array().cloned()) else {
 		return Err!("the AI's answer wasn't the expected JSON");
 	};
@@ -1220,7 +1260,7 @@ async fn image_verdict(
 
 	let mut parts = vec![Part::Text(note)];
 	parts.extend(views);
-	let reply = venice::chat(self.client(), key, &model, &system, &[], parts).await?;
+	let reply = venice::chat(&self.api()?, key, &model, &system, &[], parts).await?;
 	let Some(answer) = json_in(&reply) else {
 		return Err!("the AI's answer wasn't the expected JSON");
 	};
@@ -1298,7 +1338,7 @@ async fn video_verdict(&self, settings: &Settings, key: &str, content: &[u8]) ->
 			data: data.clone(),
 		}));
 
-		let reply = venice::chat(self.client(), key, &model, &system, &[], parts).await?;
+		let reply = venice::chat(&self.api()?, key, &model, &system, &[], parts).await?;
 		let Some(answer) = json_in(&reply) else {
 			return Err!("the AI's answer wasn't the expected JSON");
 		};
@@ -1646,7 +1686,7 @@ pub async fn test(&self) -> Result<String> {
 	let model = self.model(&settings.text_model, false).await?;
 	let vision = self.model(&settings.vision_model, true).await?;
 	let reply = venice::chat(
-		self.client(),
+		&self.api()?,
 		&key,
 		&model,
 		"Answer with the single word: ready",

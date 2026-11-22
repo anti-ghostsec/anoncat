@@ -356,7 +356,7 @@ async fn check_room(
 
 	let model = self.model(&settings.text_model, false).await?;
 	let reply = venice::chat(
-		self.client(),
+		&self.api()?,
 		key,
 		&model,
 		&system,

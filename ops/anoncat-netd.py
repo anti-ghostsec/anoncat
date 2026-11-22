@@ -100,7 +100,13 @@ PAGES_BRANCH = "pages"
 # the domain itself, so these, which Codeberg says may change.
 PAGES_IPV4 = "217.197.84.141"
 # Bumped when what set_dns publishes changes, so a running setup re-applies it.
-DNS_LAYOUT = 2
+DNS_LAYOUT = 3
+# CAA: only Let's Encrypt, and only through DNS-01, which needs the Dynu key.
+# Without it, whoever holds an address a name points at (a relay VPS, a
+# hijacked IP) could get a valid certificate for it by answering HTTP-01.
+# In pages mode the bare domain points at Codeberg, which gets its own
+# certificate there, so it has none; the names that reach anoncat always do.
+CAA_LOCKED = [("issue", "letsencrypt.org; validationmethods=dns-01"), ("issuewild", ";")]
 
 
 def log(msg):
@@ -194,10 +200,31 @@ def set_dns(ip, port, pages):
     upsert(HS_NODE, "A", {"ipv4Address": ip})
     for name in SRV_NAMES:
         upsert(name, "SRV", {"host": HS, "priority": 0, "weight": 5, "port": port})
+    # A refused CAA change mustn't hold up the addresses themselves.
+    try:
+        for node in (HS_NODE, DIRECT_NODE):
+            set_caa(dom["id"], records, node, CAA_LOCKED)
+        set_caa(dom["id"], records, "", [] if pages else CAA_LOCKED)
+    except Exception as e:
+        log(f"CAA records not updated: {e}")
     if pages:
         user, _ = codeberg_login()
         upsert("_git-pages-repository", "TXT",
                {"textData": f"https://codeberg.org/{user}/{PAGES_REPO}.git"})
+
+
+def set_caa(dom_id, records, node, wanted):
+    """Make node's CAA records exactly `wanted`, (tag, value) pairs."""
+    have = [r for r in records if r["recordType"] == "CAA" and (r.get("nodeName") or "") == node]
+    for r in have:
+        if (r.get("tag"), r.get("value")) not in wanted:
+            dynu("DELETE", f"/dns/{dom_id}/record/{r['id']}")
+    present = {(r.get("tag"), r.get("value")) for r in have}
+    for tag, value in wanted:
+        if (tag, value) not in present:
+            dynu("POST", f"/dns/{dom_id}/record",
+                 {"nodeName": node, "recordType": "CAA", "ttl": TTL, "state": True,
+                  "flags": 0, "tag": tag, "value": value})
 
 
 # --- Codeberg Pages: the signpost on the standard port --------------------------

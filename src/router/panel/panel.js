@@ -1914,6 +1914,12 @@ pages.settings = async (main) => {
 			res.key_saved
 				? h("p", { class: "small" }, h("span", { class: "tag ok" }, "key saved"), "AI service key found.")
 				: h("p", { class: "small" }, h("span", { class: "tag warn" }, "no key"), `Save your AI service key in ${res.key_file || "the file set by ai_key_file"} first; the AI does nothing without it.`),
+			field("AI service", h("select", { name: "ai_service" },
+				h("option", { value: "venice", selected: s.ai_service === "venice" }, "Venice (open models keep nothing)"),
+				h("option", { value: "nanogpt", selected: s.ai_service === "nanogpt" }, "NanoGPT"),
+				h("option", { value: "custom", selected: s.ai_service === "custom" }, "Another OpenAI-compatible service")),
+				"Each service has its own key file, shown above once saved. Venice's own open models keep nothing; NanoGPT and other services pass what's checked on to whoever hosts the model, so Auto won't pick one there and you choose the model yourself. Save, then the model lists below show that service's models."),
+			field("Custom service address", h("input", { type: "url", name: "ai_base_url", value: s.ai_base_url || "", placeholder: "https://example.com/api/v1", spellcheck: "false" }), "Only for another service: its OpenAI-compatible API address, ending before /chat/completions."),
 			check("enabled", "Turn on AI moderation", "Only rooms that aren't encrypted are ever read. Names and IDs are replaced with placeholders (U1, R1) before anything is sent to the AI service."),
 			h("div", { class: "toolbar" }, h("button", { type: "button", class: "ghost small", onclick: async () => {
 				testOut.textContent = "Testing…";
@@ -1957,7 +1963,7 @@ pages.settings = async (main) => {
 		h("section", { class: "card" },
 			h("h2", {}, "Models and rules"),
 			field("Text model", modelSelect("text_model", false)),
-			field("Image model", modelSelect("vision_model", true), "The open models (Qwen, DeepSeek, GLM, Gemma, Llama) run on the no-retention service itself, which keeps nothing. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
+			field("Image model", modelSelect("vision_model", true), "On Venice, the open models (Qwen, DeepSeek, GLM, Gemma, Llama) run on the no-retention service itself, which keeps nothing. Gemini, Grok, Claude and GPT get passed on to their own companies; avoid them for privacy."),
 			field("Server rules, as the AI is told them", rules),
 			field("Notes on judging", guidance, "How to judge borderline cases, in your words. Added to every check, and the AI follows them over its own sense. \"Dismiss + note for the AI\" on a report adds a note here, and the AI merges it with the others so the list stays short."),
 			h("div", { class: "toolbar" },
@@ -1997,6 +2003,8 @@ pages.settings = async (main) => {
 			extra_rooms: [...watched, ...String(f.get("extra_rooms_add") || "").split(/\s+/).filter(Boolean)],
 			large_file_mb: Number(f.get("large_file_mb") || 0),
 			batch_minutes: Number(f.get("batch_minutes") || 2),
+			ai_service: f.get("ai_service") || "venice",
+			ai_base_url: f.get("ai_base_url") || "",
 			text_model: f.get("text_model"),
 			vision_model: f.get("vision_model"),
 			rules: f.get("rules"),

@@ -41,7 +41,7 @@ const PLAY_MAX_BYTES: usize = 1 << 30;
 #[derive(Serialize)]
 pub(crate) struct SettingsResponse {
 	settings: Settings,
-	/// Whether a Venice key is saved (never the key itself).
+	/// Whether the chosen AI service's key is saved (never the key itself).
 	key_saved: bool,
 	key_file: Option<String>,
 	/// The listed rooms by ID: their name, and whether this server has them.
@@ -82,9 +82,8 @@ async fn settings_response(services: &crate::State, settings: Settings) -> Setti
 		settings,
 		key_saved: services.moderation.key().is_some(),
 		key_file: services
-			.config
-			.ai_key_file
-			.as_ref()
+			.moderation
+			.key_path()
 			.map(|p| p.display().to_string()),
 	}
 }

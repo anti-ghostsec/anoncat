@@ -68,11 +68,18 @@ const READ_ONLY: &[&str] = &[
 	"media where-posted",
 	"federation incoming-federation",
 	"federation remote-user-in-rooms",
-	"query room-timeline",
-	"query room-state-cache",
 	"query room-alias resolve-local-alias",
 	"query room-alias local-aliases-for-room",
 	"query room-alias all-local-aliases",
+];
+
+/// Commands that only read, but print what people wrote: messages, and the
+/// state of rooms that may be private. They never run by themselves: what
+/// they print goes to the AI service, so the admin decides each time, with
+/// a click, which room's content leaves this server.
+const READS_CONTENT: &[&str] = &[
+	"query room-timeline",
+	"query room-state-cache",
 	"debug get-pdu",
 	"debug get-room-state",
 	"debug first-pdu-in-room",
@@ -170,6 +177,7 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 	let snapshot = self.snapshot().await?;
 	let commands = self.command_list();
 	let read_only = READ_ONLY.join("\n");
+	let reads_content = READS_CONTENT.join("\n");
 
 	let system = format!(
 		"You help the admin of a small, privacy-focused Matrix homeserver (anoncat, built on \
@@ -182,8 +190,10 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 		 freely to find out what you need, up to {AUTO_ROUNDS} rounds, instead of asking the \
 		 admin to run them, and only answer once you know. One that names another server's \
 		 #alias waits for the admin, since looking that alias up means asking that server; \
-		 use the room ID instead. A reply that mixes read-only commands with others runs \
-		 none of them. Every other command waits for the admin to \
+		 use the room ID instead. Commands that show what people wrote (the content list \
+		 below) also wait for the admin: their output would be sent to you, so the admin \
+		 chooses each time. Propose one only when it's needed, and say which room it reads. \
+		 A reply that mixes read-only commands with others runs none of them. Every other command waits for the admin to \
 		 click Run. Don't use tool or function calls of any kind, DSML included: a command block is the \
 		 only way a command runs. Never claim something changed unless a command's output says so. Use \
 		 only commands from the list below. Say plainly when a command deletes data or can't \
@@ -205,7 +215,7 @@ pub async fn assistant(&self, history: &[Turn], admin: &UserId) -> Result<Vec<Sa
 		 ends an account here. If the sender can't be found because the room is encrypted, \
 		 swapping the file still works, and asking someone in the room to report the message \
 		 from their app names the sender.\n\n# Server now\n{snapshot}\n# Read-only \
-		 commands\n{read_only}\n\n# Admin commands\n{commands}"
+		 commands\n{read_only}\n\n# Commands that show content (wait for the admin)\n{reads_content}\n\n# Admin commands\n{commands}"
 	);
 
 	let started = Instant::now();
@@ -279,7 +289,7 @@ async fn ask(&self, key: &str, model: &str, system: &str, history: &[Turn]) -> R
 		(system, turns)
 	};
 
-	let reply = venice::chat(self.client(), key, model, &system, &turns, Vec::new()).await?;
+	let reply = venice::chat(&self.api()?, key, model, &system, &turns, Vec::new()).await?;
 	let (text, cut) = from_dsml(&self.masks.lock().expect("locked").unmask(&reply));
 	if !cut {
 		return Ok(text);
@@ -291,7 +301,7 @@ async fn ask(&self, key: &str, model: &str, system: &str, history: &[Turn]) -> R
 	let mut again = turns;
 	again.push(Turn { role: "assistant".into(), content: reply });
 	again.push(Turn { role: "user".into(), content: CUT_OFF_ASK.into() });
-	let retry = venice::chat(self.client(), key, model, &system, &again, Vec::new()).await?;
+	let retry = venice::chat(&self.api()?, key, model, &system, &again, Vec::new()).await?;
 	let (retried, cut) = from_dsml(&self.masks.lock().expect("locked").unmask(&retry));
 	if !cut && !retried.is_empty() {
 		return Ok(retried);
@@ -676,13 +686,16 @@ mod tests {
 		assert!(!text.contains('<'));
 
 		let ro = |c: &str| is_read_only(c, "x");
-		assert!(ro(&proposed[0]));
+		// Reads what people wrote: the admin clicks for it.
+		assert!(!ro(&proposed[0]));
+		assert!(!ro("debug get-room-state !r:x"));
+		assert!(!ro("debug get-pdu $e:x"));
+		assert!(ro("users list-users"));
 		assert!(!ro(&proposed[1]));
 		assert!(ro("rooms info !r:x"));
 		assert!(ro("rooms info !r:elsewhere.org"));
 		assert!(ro("rooms info #lobby:x"));
 		assert!(!ro("rooms info #lobby:evil.example"));
-		assert!(!ro("debug get-room-state '#a:evil.example'"));
 		assert!(!ro("query room-alias resolve-alias #a:x"));
 		assert!(ro("query room-alias resolve-local-alias #a:x"));
 		assert!(!ro("rooms delete !r:x"));

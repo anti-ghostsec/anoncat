@@ -161,7 +161,7 @@ async fn tidy(&self, notes: &str, new: Option<(&str, Option<&str>)>) -> Result<S
 			input["about"] = about.into();
 		}
 	}
-	let reply = venice::chat(self.client(), &key, &model, &system, &[], vec![Part::Text(
+	let reply = venice::chat(&self.api()?, &key, &model, &system, &[], vec![Part::Text(
 		input.to_string(),
 	)])
 	.await?;

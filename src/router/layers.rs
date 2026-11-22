@@ -130,6 +130,7 @@ pub(crate) fn build(services: &Arc<Services>) -> Result<(Router, Guard)> {
 		.layer(CatchPanicLayer::custom(move |panic| catch_panic(panic, services_.clone())));
 
 	let (router, guard) = router::build(services);
+	let router = router.layer(axum::middleware::from_fn(crate::range::handle));
 	Ok((router.layer(layers), guard))
 }
 

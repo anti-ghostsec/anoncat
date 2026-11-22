@@ -177,7 +177,7 @@ async fn triage(&self, id: u64) -> tuwunel_core::Result {
 				"reported_because": pseudonymize(&reasons.join(" / ")),
 			})
 			.to_string();
-			let reply = venice::chat(self.client(), &key, &model, &system, &[], vec![
+			let reply = venice::chat(&self.api()?, &key, &model, &system, &[], vec![
 				Part::Text(text),
 			])
 			.await?;

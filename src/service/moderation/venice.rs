@@ -1,4 +1,6 @@
-//! Venice AI's chat API (OpenAI-shaped), as the moderation uses it.
+//! The AI service's chat API, as the moderation uses it: Venice by default,
+//! or another OpenAI-compatible one (NanoGPT, or any base URL the admin
+//! gives), chosen in the panel's settings.
 //!
 //! Requests leave through the server's own network, which is the VPN tunnel;
 //! no address or name of this machine goes with them, only the API key and
@@ -11,7 +13,40 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tuwunel_core::{Err, Result, err};
 
-const API: &str = "https://api.venice.ai/api/v1";
+const VENICE: &str = "https://api.venice.ai/api/v1";
+const NANOGPT: &str = "https://nano-gpt.com/api/v1";
+
+/// The services the settings offer by name; "custom" takes a base URL.
+pub(super) const SERVICES: [&str; 3] = ["venice", "nanogpt", "custom"];
+
+/// Where requests go, and what that service understands.
+pub(super) struct Api<'a> {
+	pub client: &'a reqwest::Client,
+	pub base: String,
+	/// Venice: its own model details and request options.
+	pub venice: bool,
+}
+
+impl<'a> Api<'a> {
+	/// `service` is one of [`SERVICES`]; `custom_base` is used for "custom"
+	/// and must be https.
+	pub(super) fn new(client: &'a reqwest::Client, service: &str, custom_base: &str) -> Result<Self> {
+		let base = match service {
+			| "venice" => VENICE.to_owned(),
+			| "nanogpt" => NANOGPT.to_owned(),
+			| "custom" => {
+				let base = custom_base.trim().trim_end_matches('/');
+				if !base.starts_with("https://") {
+					return Err!("The custom AI service's address must start with https://");
+				}
+				base.to_owned()
+			},
+			| other => return Err!("Unknown AI service {other:?}"),
+		};
+
+		Ok(Self { client, base, venice: service == "venice" })
+	}
+}
 const TIMEOUT: Duration = Duration::from_secs(90);
 const USER_AGENT: &str = "Mozilla/5.0";
 
@@ -45,11 +80,18 @@ fn is_private(id: &str, spec: &Value) -> bool {
 	}
 }
 
-/// Venice's model list. Needs no key.
-pub(super) async fn models(client: &reqwest::Client) -> Result<Vec<Model>> {
-	let res = client
-		.get(format!("{API}/models?type=text"))
-		.header("User-Agent", USER_AGENT)
+/// The service's model list. Venice's needs no key; others may.
+pub(super) async fn models(api: &Api<'_>, key: Option<&str>) -> Result<Vec<Model>> {
+	let url = if api.venice {
+		format!("{}/models?type=text", api.base)
+	} else {
+		format!("{}/models?detailed=true", api.base)
+	};
+	let mut req = api.client.get(url).header("User-Agent", USER_AGENT);
+	if let Some(key) = key {
+		req = req.bearer_auth(key);
+	}
+	let res = req
 		.timeout(TIMEOUT)
 		.send()
 		.await
@@ -65,6 +107,9 @@ pub(super) async fn models(client: &reqwest::Client) -> Result<Vec<Model>> {
 		.into_iter()
 		.flatten()
 		.filter_map(|m| {
+			if !api.venice {
+				return other_model(m);
+			}
 			let spec = &m["model_spec"];
 			Some(Model {
 				id: m["id"].as_str()?.to_owned(),
@@ -86,6 +131,24 @@ pub(super) async fn models(client: &reqwest::Client) -> Result<Vec<Model>> {
 	Ok(models)
 }
 
+/// A model from an OpenAI-compatible list. Such services pass requests on to
+/// whoever hosts the model, so none counts as private: "auto" won't pick one,
+/// and the admin chooses a model knowingly.
+fn other_model(m: &Value) -> Option<Model> {
+	let id = m["id"].as_str()?.to_owned();
+	let modalities = |v: &Value| {
+		v.as_array()
+			.into_iter()
+			.flatten()
+			.any(|x| x.as_str() == Some("image"))
+	};
+	let vision = m["capabilities"]["vision"].as_bool().unwrap_or(false)
+		|| modalities(&m["architecture"]["input_modalities"])
+		|| modalities(&m["input_modalities"]);
+
+	Some(Model { id, vision, traits: Vec::new(), price_in: None, private: false })
+}
+
 /// A chat message part: text, or an image as a data: URL.
 pub(super) enum Part {
 	Text(String),
@@ -101,7 +164,7 @@ pub struct Turn {
 /// Asks `model` with a system prompt and the user's parts; returns the reply
 /// text.
 pub(super) async fn chat(
-	client: &reqwest::Client,
+	api: &Api<'_>,
 	key: &str,
 	model: &str,
 	system: &str,
@@ -132,19 +195,22 @@ pub(super) async fn chat(
 		messages.push(json!({ "role": "user", "content": content }));
 	}
 
-	let body = json!({
+	let mut body = json!({
 		"model": model,
 		"messages": messages,
 		"temperature": 0,
-		"venice_parameters": {
+	});
+	if api.venice {
+		body["venice_parameters"] = json!({
 			"include_venice_system_prompt": false,
 			"enable_web_search": "off",
 			"strip_thinking_response": true,
-		},
-	});
+		});
+	}
 
-	let res = client
-		.post(format!("{API}/chat/completions"))
+	let res = api
+		.client
+		.post(format!("{}/chat/completions", api.base))
 		.header("User-Agent", USER_AGENT)
 		.bearer_auth(key)
 		.json(&body)
