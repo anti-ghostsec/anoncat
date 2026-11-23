@@ -106,6 +106,8 @@ DNS_LAYOUT = 3
 # hijacked IP) could get a valid certificate for it by answering HTTP-01.
 # In pages mode the bare domain points at Codeberg, which gets its own
 # certificate there, so it has none; the names that reach anoncat always do.
+# Seconds between tries of a CAA change Dynu refused.
+CAA_RETRY = 600
 CAA_LOCKED = [("issue", "letsencrypt.org; validationmethods=dns-01"), ("issuewild", ";")]
 
 
@@ -200,17 +202,28 @@ def set_dns(ip, port, pages):
     upsert(HS_NODE, "A", {"ipv4Address": ip})
     for name in SRV_NAMES:
         upsert(name, "SRV", {"host": HS, "priority": 0, "weight": 5, "port": port})
-    # A refused CAA change mustn't hold up the addresses themselves.
-    try:
-        for node in (HS_NODE, DIRECT_NODE):
-            set_caa(dom["id"], records, node, CAA_LOCKED)
-        set_caa(dom["id"], records, "", [] if pages else CAA_LOCKED)
-    except Exception as e:
-        log(f"CAA records not updated: {e}")
+    # A refused CAA change mustn't hold up the addresses themselves; it's
+    # tried again later (see publish).
+    caa_ok = set_caa_all(dom["id"], records, pages)
     if pages:
         user, _ = codeberg_login()
         upsert("_git-pages-repository", "TXT",
                {"textData": f"https://codeberg.org/{user}/{PAGES_REPO}.git"})
+    return caa_ok
+
+
+def set_caa_all(dom_id, records, pages):
+    """Lock every name's certificates to Let's Encrypt over DNS-01; the bare
+    name is left open while Codeberg Pages needs its own certificate there.
+    Returns whether Dynu took it (it refuses when its rate limit is hit)."""
+    try:
+        for node in (HS_NODE, DIRECT_NODE):
+            set_caa(dom_id, records, node, CAA_LOCKED)
+        set_caa(dom_id, records, "", [] if pages else CAA_LOCKED)
+        return True
+    except Exception as e:
+        log(f"CAA records not updated: {e}")
+        return False
 
 
 def set_caa(dom_id, records, node, wanted):
@@ -723,6 +736,18 @@ def publish(ip, port, dry_run=False):
     rev = pages_rev(port) if pages else None
     if (state.get("ip"), state.get("port"), state.get("pages"), state.get("layout"),
             state.get("pages_rev")) == (ip, port, pages, DNS_LAYOUT, rev):
+        # Addresses are current; a CAA change Dynu refused is tried again,
+        # gently, since its refusal is usually its rate limit.
+        if (not dry_run and state.get("caa") is not True
+                and time.time() - state.get("caa_tried", 0) > CAA_RETRY):
+            state["caa_tried"] = int(time.time())
+            save_state(state)
+            dom_id = domain()["id"]
+            records = dynu("GET", f"/dns/{dom_id}/record")["dnsRecords"]
+            state["caa"] = set_caa_all(dom_id, records, pages)
+            save_state(state)
+            if state["caa"]:
+                log("CAA records in place")
         return
     front = "Codeberg Pages" if pages else ip
     if dry_run:
@@ -731,7 +756,7 @@ def publish(ip, port, dry_run=False):
     # Signpost first: by the time DNS sends apps to Codeberg it says the new port.
     if pages:
         publish_pages(port)
-    set_dns(ip, port, pages)
+    caa = set_dns(ip, port, pages)
     # Pointing DNS at Codeberg (first time, or a new layout): deploy again now
     # that the webhook reaches Codeberg, so it serves the site and issues its
     # certificate.
@@ -739,7 +764,8 @@ def publish(ip, port, dry_run=False):
         time.sleep(TTL)
         publish_pages(port, redeploy=True)
     save_state({"ip": ip, "port": port, "pages": pages, "layout": DNS_LAYOUT,
-                "pages_rev": rev, "since": int(time.time())})
+                "pages_rev": rev, "since": int(time.time()),
+                "caa": caa, "caa_tried": int(time.time())})
     log(f"DNS now {HS} -> {ip}:{port}, {DOMAIN} -> {front} "
         f"(was {state.get('ip')}:{state.get('port')}, pages {state.get('pages')})")
 
