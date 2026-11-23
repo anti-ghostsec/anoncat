@@ -791,6 +791,12 @@ def main():
             if failing_since is not None:
                 log(f"working again after {int(time.time() - failing_since)}s of failures")
                 failing_since = None
+        except PermissionError as e:
+            # systemd's RestrictNetworkInterfaces holds wg0 by its index, fixed
+            # at start; when the VPN reconnects, wg0 comes back with a new one
+            # and every packet is refused. A restart picks up the new wg0.
+            log(f"VPN interface changed ({e}); restarting to use the new one")
+            sys.exit(1)
         except Exception as e:  # keep renewing; a missed lease only costs the port
             failing_since = failing_since or time.time()
             what = "keeping DNS on the relay" if RELAY_IP else "renewing the port forward"
