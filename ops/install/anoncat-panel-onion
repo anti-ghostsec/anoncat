@@ -1,0 +1,101 @@
+#!/bin/bash
+# anoncat-panel-onion: reach the admin panel (and nothing else) from anywhere,
+# a phone included, at a private onion address. Run on the server as root,
+# after anoncat-onion:
+#
+#   sudo anoncat-panel-onion [device-name]
+#
+# Tor's client authorization keeps the address closed: without a key, a
+# device can't even find it. Each run for a new device name makes a key for
+# it and prints it once; Tor Browser asks for it the first time the address
+# is opened. To remove a device, delete its file from
+# /var/lib/tor-instances/anoncat/panel/authorized_clients and restart
+# tor@anoncat. The panel still asks for an admin account's sign-in.
+set -euo pipefail
+
+INSTANCE=anoncat
+DATA=/Drives/server/data
+CONFIG=$DATA/anoncat.toml
+DIR=/var/lib/tor-instances/$INSTANCE/panel
+CONF=/etc/tor/instances/$INSTANCE/torrc.d/panel.conf
+
+die() { echo "anoncat-panel-onion: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+DEVICE=${1:-phone}
+[[ $DEVICE =~ ^[a-z0-9-]{1,32}$ ]] || die "device name: lowercase letters, digits and dashes"
+[[ -f $CONFIG ]] || die "$CONFIG not found; unlock the vault first"
+grep -qE '^onion_address' "$CONFIG" || die "run anoncat-onion first"
+PANEL=$(sed -nE 's/^admin_panel_address = "(127\.0\.0\.1:[0-9]+)"$/\1/p' "$CONFIG")
+[[ -n $PANEL ]] || die "no admin_panel_address on 127.0.0.1 in $CONFIG"
+grep -q 'torrc.d' "/etc/tor/instances/$INSTANCE/torrc" || die "run anoncat-onion again first (it adds torrc.d)"
+TOR_USER=_tor-$INSTANCE
+
+step "Onion service for the panel"
+cat > "$CONF.new" <<TORRC
+# The admin panel's onion (anoncat-panel-onion). Only devices with a key in
+# $DIR/authorized_clients can reach it.
+HiddenServiceDir $DIR
+HiddenServicePort 80 $PANEL
+HiddenServicePoWDefensesEnabled 1
+HiddenServiceMaxStreams 32
+TORRC
+mv "$CONF.new" "$CONF"
+install -d -m 0700 -o "$TOR_USER" -g "$TOR_USER" "$DIR" "$DIR/authorized_clients"
+
+step "Key for $DEVICE"
+auth=$DIR/authorized_clients/$DEVICE.auth
+private=
+if [[ -f $auth ]]; then
+	echo "$DEVICE already has a key (delete $auth to make a new one)"
+else
+	# An x25519 key pair, in Tor's base32 form: the last 32 bytes of each DER.
+	keys=$(openssl genpkey -algorithm x25519 | python3 -I -c '
+import base64, subprocess, sys
+pem = sys.stdin.buffer.read()
+der = lambda *a: subprocess.run(["openssl", "pkey", *a, "-outform", "DER"], input=pem, capture_output=True, check=True).stdout
+b32 = lambda raw: base64.b32encode(raw).decode().rstrip("=")
+print(b32(der()[-32:]), b32(der("-pubout")[-32:]))
+')
+	read -r private public <<<"$keys"
+	unset keys
+	[[ ${#private} -eq 52 && ${#public} -eq 52 ]] || die "couldn't make a key"
+	printf 'descriptor:x25519:%s\n' "$public" > "$auth"
+	chown "$TOR_USER:$TOR_USER" "$auth"
+	chmod 0600 "$auth"
+fi
+systemctl restart "tor@$INSTANCE"
+
+for _ in $(seq 60); do
+	[[ -s $DIR/hostname ]] && break
+	sleep 1
+done
+[[ -s $DIR/hostname ]] || die "Tor made no onion name; see journalctl -u tor@$INSTANCE"
+ONION=$(<"$DIR/hostname")
+# A copy of the keys in the vault, so backups keep the address.
+install -d -m 0700 "$DATA/tor-keys"
+rm -rf "$DATA/tor-keys/panel"
+cp -a "$DIR" "$DATA/tor-keys/panel"
+
+step "anoncat's config"
+line="admin_panel_hosts = [\"$ONION\"]"
+if grep -q '^admin_panel_hosts' "$CONFIG"; then
+	sed -i "s|^admin_panel_hosts.*|$line|" "$CONFIG"
+else
+	sed -i "/^admin_panel_address/a $line" "$CONFIG"
+fi
+grep -qxF "$line" "$CONFIG" || die "couldn't set admin_panel_hosts"
+systemctl restart anoncat.service
+echo "restarted anoncat"
+
+echo
+echo "Panel: http://$ONION/_anoncat/panel/"
+if [[ -n $private ]]; then
+	echo
+	echo "Key for $DEVICE (shown once; Tor Browser asks for it the first time):"
+	echo
+	echo "  $private"
+	echo
+	echo "In Tor Browser, open the address, paste the key and tick \"Remember this key\"."
+fi

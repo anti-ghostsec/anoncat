@@ -48,7 +48,10 @@ HiddenServicePoWDefensesEnabled 1
 HiddenServiceEnableIntroDoSDefense 1
 HiddenServiceMaxStreams 64
 HiddenServiceMaxStreamsCloseCircuit 1
+# More onion services (the admin panel's, from anoncat-panel-onion).
+%include /etc/tor/instances/$INSTANCE/torrc.d/
 EOF
+install -d -m 0755 "/etc/tor/instances/$INSTANCE/torrc.d"
 if ! cmp -s "$TORRC.new" "$TORRC" 2>/dev/null; then
 	mv "$TORRC.new" "$TORRC"
 	echo "Wrote $TORRC"
