@@ -1,0 +1,79 @@
+#!/bin/bash
+# anoncat-cutover-dns: the last two steps of anoncat-cutover, run again on
+# their own: point anoncat.gleeze.com at the VPS, then copy media there in
+# the background. Asks for a new Dynu API key first when the saved one is
+# refused, and saves it here and on the VPS.
+#
+#   sudo anoncat-cutover-dns <vps-public-address>
+set -euo pipefail
+
+DATA=/Drives/server/data
+KEYFILE=$DATA/secrets/dynu-key
+VPS_ADDR=10.78.0.1
+KEY=/home/nully/.ssh/anoncat-vps
+KNOWN=/home/nully/.ssh/known_hosts_vps
+
+die() { echo "anoncat-cutover-dns: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ $# -eq 1 && $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "usage: $0 <vps-public-address>"
+VPS=$1
+SSH="ssh -F /dev/null -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=15 -o UserKnownHostsFile=$KNOWN -o HostKeyAlias=$VPS"
+$SSH op@$VPS_ADDR 'systemctl is-active -q anoncat.service' || die "anoncat isn't running on the VPS"
+
+# 0 when Dynu accepts the key in the file given.
+key_ok() {
+	runuser -u anoncat -- python3 -I -c '
+import sys, urllib.request
+k = open(sys.argv[1]).read().strip()
+r = urllib.request.Request("https://api.dynu.com/v2/dns", headers={"API-Key": k, "Accept": "application/json"})
+try:
+    urllib.request.urlopen(r, timeout=20).read()
+except Exception as e:
+    sys.exit(1)
+' "$1"
+}
+
+step "Dynu key"
+if key_ok "$KEYFILE"; then
+	echo "the saved key works"
+else
+	echo "Dynu refuses the saved key. Make a new one at dynu.com: Control Panel > API Credentials"
+	echo "(the API-Key row; reset it if it shows none) and paste it here. It isn't shown."
+	read -rsp "New Dynu API key: " k; echo
+	[[ $k =~ ^[A-Za-z0-9]{16,128}$ ]] || die "that doesn't look like a Dynu API key"
+	tmp=$(mktemp "$DATA/secrets/.dynu-key.XXXXXX")
+	printf '%s' "$k" > "$tmp"; unset k
+	chown anoncat:anoncat "$tmp"; chmod 0600 "$tmp"
+	key_ok "$tmp" || { rm -f "$tmp"; die "Dynu refuses that key too"; }
+	mv -f "$tmp" "$KEYFILE"
+	echo "saved here"
+	# The VPS renews the certificate with it.
+	$SSH op@$VPS_ADDR 'sudo install -m 0600 -o anoncat -g anoncat /dev/stdin /Drives/server/data/secrets/dynu-key' < "$KEYFILE"
+	echo "saved on the VPS"
+fi
+
+step "DNS: anoncat.gleeze.com -> $VPS"
+runuser -u anoncat -- env ANONCAT_RELAY_IP="$VPS" ANONCAT_DYNU_KEY_FILE=$KEYFILE \
+	ANONCAT_STATE_FILE=$DATA/netd/address.json \
+	python3 -I -c '
+import importlib.util, time
+spec = importlib.util.spec_from_file_location("netd", "/usr/local/lib/anoncat/anoncat-netd.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.set_dns(m.RELAY_IP, 8448, pages=False)
+m.set_record(m.DIRECT_NODE, "A", {"ipv4Address": m.RELAY_IP})
+m.save_state({"vps": m.RELAY_IP, "relay": m.RELAY_IP, "ip": m.RELAY_IP, "port": 8448, "pages": False,
+              "layout": m.DNS_LAYOUT, "since": int(time.time())})
+print("DNS set: A", m.DOMAIN, m.HS, m.DIRECT, "->", m.RELAY_IP)
+'
+
+step "Media keeps copying in the background"
+systemctl reset-failed anoncat-mediasync.service 2>/dev/null || true
+systemctl is-active -q anoncat-mediasync.service || systemd-run --unit=anoncat-mediasync --property=CPUAffinity=0-3 \
+	rsync -aHX --chown=anoncat:anoncat -e "$SSH" --rsync-path="sudo rsync" \
+	"$DATA/db/media/" "op@$VPS_ADDR:$DATA/db/media/"
+echo
+echo "Done. anoncat runs on the VPS; apps follow as DNS updates (a few minutes)."
+echo "Media copy: journalctl -u anoncat-mediasync"

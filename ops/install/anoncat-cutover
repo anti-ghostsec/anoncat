@@ -14,8 +14,8 @@
 # 5. keeps copying media in the background (the VPS reads what it lacks from
 #    here meanwhile).
 #
-# Until step 4, undo is: systemctl unmask --now anoncat.socket anoncat.service
-# anoncat-netd.service here. The VPS isn't reachable by its name before that.
+# Until step 4, undo is printed if a step fails (unmask, put the unit files
+# back, start). The VPS isn't reachable by its name before that.
 set -euo pipefail
 
 DATA=/Drives/server/data
@@ -23,6 +23,8 @@ VPS_ADDR=10.78.0.1
 KEY=/home/nully/.ssh/anoncat-vps
 KNOWN=/home/nully/.ssh/known_hosts_vps
 
+UNITS="anoncat.service anoncat.socket anoncat-netd.service"
+UNDO="systemctl unmask $UNITS; for u in $UNITS; do [ -f /etc/systemd/system/\$u.home ] && mv /etc/systemd/system/\$u.home /etc/systemd/system/\$u; done; systemctl daemon-reload; systemctl start anoncat.socket anoncat.service anoncat-netd.service"
 die() { echo "anoncat-cutover: $*" >&2; exit 1; }
 step() { echo; echo "== $*"; }
 
@@ -44,17 +46,25 @@ systemctl disable anoncat-tls-renew.timer anoncat-backup.timer anoncat-reconnect
 systemctl stop anoncat-tls-renew.timer anoncat-backup.timer 2>/dev/null || true
 # Masked: nothing (an unlock, a reboot, the reconnect unit) starts it here
 # again while the VPS runs, which would be two servers with one name.
-systemctl mask anoncat.service anoncat.socket anoncat-netd.service
-echo "stopped and masked"
+# The units are files in /etc/systemd/system, which mask can't replace:
+# kept beside them as *.home, then masked.
+for unit in $UNITS; do
+	f=/etc/systemd/system/$unit
+	if [[ -f $f && ! -L $f ]]; then mv -f "$f" "$f.home"; fi
+done
+systemctl daemon-reload
+systemctl mask $UNITS
+echo "stopped and masked (unit files kept as /etc/systemd/system/*.home)"
 
 step "Copy everything but media (the database exactly)"
 rsync -aHX --delete --chown=anoncat:anoncat --exclude=/lost+found --exclude=/db/media/ \
-	-e "$SSH" --rsync-path="sudo rsync" "$DATA/" "op@$VPS_ADDR:$DATA/"
+	-e "$SSH" --rsync-path="sudo rsync" "$DATA/" "op@$VPS_ADDR:$DATA/" \
+	|| die "the copy failed. Undo here (as root): $UNDO"
 echo "copied"
 
 step "Install and start on the VPS"
 $SSH op@$VPS_ADDR 'sudo stage/ops/vps/vps-install stage/tuwunel'
-$SSH op@$VPS_ADDR 'systemctl is-active -q anoncat.service' || die "anoncat didn't start on the VPS; see: journalctl --namespace=anoncat -u anoncat (on the VPS). Undo here: systemctl unmask anoncat.service anoncat.socket anoncat-netd.service && systemctl start anoncat.socket anoncat.service anoncat-netd.service"
+$SSH op@$VPS_ADDR 'systemctl is-active -q anoncat.service' || die "anoncat didn't start on the VPS; see: journalctl --namespace=anoncat -u anoncat (on the VPS). Undo here (as root): $UNDO"
 ok=
 for _ in $(seq 60); do
 	if curl -sk --max-time 5 --resolve "anoncat.gleeze.com:8449:$VPS_ADDR" \
@@ -63,7 +73,7 @@ for _ in $(seq 60); do
 	fi
 	sleep 2
 done
-[[ -n $ok ]] || die "anoncat on the VPS doesn't answer yet; DNS left alone"
+[[ -n $ok ]] || die "anoncat on the VPS doesn't answer yet; DNS left alone. Undo here (as root): $UNDO"
 echo "anoncat answers on the VPS"
 
 step "DNS: anoncat.gleeze.com -> $VPS"
