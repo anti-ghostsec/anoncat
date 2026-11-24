@@ -1,0 +1,14 @@
+#!/bin/bash
+# home-archive-mount: run (through a forced command) when the home PC
+# connects to serve its media folder; mounts it read-only at
+# /Drives/server/archive-home with sshfs in slave mode, over the connection
+# itself (stdin/stdout). anoncat reads it as its archive storage provider.
+set -euo pipefail
+M=/Drives/server/archive-home
+install -d -m 0755 "$M"
+if mountpoint -q "$M"; then
+	fusermount3 -u -z "$M" || true
+fi
+u=$(id -u anoncat)
+g=$(id -g anoncat)
+exec sshfs -o slave,ro,allow_other,default_permissions,uid=$u,gid=$g,umask=0227,noatime :/Drives/server/data/db/media "$M"

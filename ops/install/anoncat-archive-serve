@@ -1,0 +1,113 @@
+#!/bin/bash
+# anoncat-archive-serve: let the VPS read this (home) PC's media folder, for
+# files it doesn't have yet. Run as root, with the vault unlocked and the
+# VPS tunnel (anoncat-vps-link) up:
+#
+#   sudo anoncat-archive-serve <vps-public-address>
+#
+# Nothing at home listens: this PC connects out to the VPS through the
+# tunnel and serves the folder down that connection, read-only (sftp-server
+# -R; the VPS mounts it with sshfs in slave mode). The sandbox shows the
+# server only the media folder, never the database, keys or config. The key
+# it uses can do one thing on the VPS: mount it (a forced command).
+#
+# Safe to run again. Prints the key line for the VPS at the end.
+set -euo pipefail
+
+DATA=/Drives/server/data
+MEDIA=$DATA/db/media
+LIB=/usr/local/lib/anoncat
+KEY=/etc/anoncat/archive-key
+VPS_ADDR=10.78.0.1
+
+die() { echo "anoncat-archive-serve: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ $# -eq 1 && $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "usage: $0 <vps-public-address> (the name its host key is saved under)"
+VPS_HOST_ALIAS=$1
+mountpoint -q "$DATA" || die "$DATA isn't mounted; run: anoncat-vault unlock"
+[[ -d $MEDIA ]] || die "no $MEDIA"
+ip link show anoncat-vps &>/dev/null || die "the VPS tunnel is down; run anoncat-vps-link first"
+known=/home/nully/.ssh/known_hosts_vps
+[[ -f $known ]] || die "no $known: connect to the VPS once first"
+
+step "sftp-server (the file-serving half of OpenSSH; no server, nothing listens)"
+[[ -x /usr/lib/openssh/sftp-server ]] || apt-get install -y openssh-sftp-server
+
+step "Key"
+install -d -m 0755 /etc/anoncat
+if [[ ! -f $KEY ]]; then
+	ssh-keygen -q -t ed25519 -N "" -C anoncat-archive -f "$KEY"
+fi
+chown anoncat:anoncat "$KEY" "$KEY.pub"
+chmod 0600 "$KEY"
+install -m 0644 -o root -g root "$known" /etc/anoncat/known_hosts_vps
+
+step "Service"
+install -d -m 0755 "$LIB"
+cat > "$LIB/archive-serve" <<'PY'
+#!/usr/bin/python3 -I
+"""Serves the media folder, read-only, down an SSH connection to the VPS,
+where sshfs mounts it (slave mode). Ends when either side does; systemd
+starts it again."""
+import os, subprocess, sys
+
+media, key, alias, addr = sys.argv[1:5]
+sftp = subprocess.Popen(["/usr/lib/openssh/sftp-server", "-R", "-d", media, "-l", "QUIET"],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+ssh = subprocess.Popen(["ssh", "-F", "/dev/null", "-i", key, "-o", "IdentitiesOnly=yes",
+                        "-o", "BatchMode=yes", "-o", "ServerAliveInterval=10",
+                        "-o", "ServerAliveCountMax=3",
+                        "-o", "UserKnownHostsFile=/etc/anoncat/known_hosts_vps",
+                        "-o", f"HostKeyAlias={alias}", f"op@{addr}", "mount"],
+                       stdin=sftp.stdout, stdout=sftp.stdin)
+sftp.stdout.close()
+sftp.stdin.close()
+code = ssh.wait()
+sftp.terminate()
+sys.exit(code or 1)
+PY
+chmod 0755 "$LIB/archive-serve"
+cat > /etc/systemd/system/anoncat-archive-serve.service <<UNIT
+[Unit]
+Description=Serve anoncat's media folder to the VPS, read-only
+After=wg-quick@anoncat-vps.service
+Wants=wg-quick@anoncat-vps.service
+RequiresMountsFor=$DATA
+
+[Service]
+User=anoncat
+Group=anoncat
+ExecStart=$LIB/archive-serve $MEDIA $KEY $VPS_HOST_ALIAS $VPS_ADDR
+Restart=always
+RestartSec=15
+# The tunnel to the VPS only.
+RestrictNetworkInterfaces=lo anoncat-vps
+# Only the media folder of the vault is visible, read-only.
+TemporaryFileSystem=$DATA:ro
+BindReadOnlyPaths=$MEDIA
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+LimitCORE=0
+CPUAffinity=0-3
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable anoncat-archive-serve.service >/dev/null 2>&1
+
+echo
+echo "On the VPS, this key may only mount (add it"
+echo "to op's ~/.ssh/authorized_keys):"
+echo "command=\"sudo /usr/local/sbin/home-archive-mount\",restrict $(cat "$KEY.pub")"
+echo
+echo "Then: sudo systemctl start anoncat-archive-serve"

@@ -1,0 +1,91 @@
+#!/bin/bash
+# anoncat-cutover: move anoncat from this (home) PC to the VPS. Run as root,
+# with the vault unlocked, the VPS tunnel up, the media folder being served
+# to the VPS (anoncat-archive-serve) and the new binary and ops/ staged on
+# the VPS in ~op/stage (tuwunel, ops/):
+#
+#   sudo anoncat-cutover <vps-public-address>
+#
+# 1. stops anoncat here, and masks it, so two copies never run at once
+#    (and netd, so it stops pointing DNS here);
+# 2. copies the database and everything else but media to the VPS, exactly;
+# 3. installs and starts anoncat there, and checks it answers;
+# 4. points anoncat.gleeze.com's DNS at the VPS;
+# 5. keeps copying media in the background (the VPS reads what it lacks from
+#    here meanwhile).
+#
+# Until step 4, undo is: systemctl unmask --now anoncat.socket anoncat.service
+# anoncat-netd.service here. The VPS isn't reachable by its name before that.
+set -euo pipefail
+
+DATA=/Drives/server/data
+VPS_ADDR=10.78.0.1
+KEY=/home/nully/.ssh/anoncat-vps
+KNOWN=/home/nully/.ssh/known_hosts_vps
+
+die() { echo "anoncat-cutover: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ $# -eq 1 && $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "usage: $0 <vps-public-address>"
+VPS=$1
+SSH="ssh -F /dev/null -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=15 -o UserKnownHostsFile=$KNOWN -o HostKeyAlias=$VPS"
+mountpoint -q "$DATA" || die "$DATA isn't mounted"
+$SSH op@$VPS_ADDR true || die "can't reach the VPS through the tunnel"
+$SSH op@$VPS_ADDR 'test -x stage/tuwunel && test -x stage/ops/vps/vps-install' || die "nothing staged in ~op/stage on the VPS"
+$SSH op@$VPS_ADDR 'mountpoint -q /Drives/server/data' || die "the VPS vault is locked"
+$SSH op@$VPS_ADDR 'mountpoint -q /Drives/server/archive-home' \
+	|| die "the VPS can't see home's media folder; start anoncat-archive-serve first"
+
+step "Stop anoncat here"
+systemctl stop anoncat-precopy.service 2>/dev/null || true
+systemctl stop anoncat-netd.service anoncat.socket anoncat.service
+systemctl disable anoncat-tls-renew.timer anoncat-backup.timer anoncat-reconnect.service 2>/dev/null || true
+systemctl stop anoncat-tls-renew.timer anoncat-backup.timer 2>/dev/null || true
+# Masked: nothing (an unlock, a reboot, the reconnect unit) starts it here
+# again while the VPS runs, which would be two servers with one name.
+systemctl mask anoncat.service anoncat.socket anoncat-netd.service
+echo "stopped and masked"
+
+step "Copy everything but media (the database exactly)"
+rsync -aHX --delete --chown=anoncat:anoncat --exclude=/lost+found --exclude=/db/media/ \
+	-e "$SSH" --rsync-path="sudo rsync" "$DATA/" "op@$VPS_ADDR:$DATA/"
+echo "copied"
+
+step "Install and start on the VPS"
+$SSH op@$VPS_ADDR 'sudo stage/ops/vps/vps-install stage/tuwunel'
+$SSH op@$VPS_ADDR 'systemctl is-active -q anoncat.service' || die "anoncat didn't start on the VPS; see: journalctl --namespace=anoncat -u anoncat (on the VPS). Undo here: systemctl unmask anoncat.service anoncat.socket anoncat-netd.service && systemctl start anoncat.socket anoncat.service anoncat-netd.service"
+ok=
+for _ in $(seq 60); do
+	if curl -sk --max-time 5 --resolve "anoncat.gleeze.com:8449:$VPS_ADDR" \
+		https://anoncat.gleeze.com:8449/_matrix/client/versions | grep -q versions; then
+		ok=1; break
+	fi
+	sleep 2
+done
+[[ -n $ok ]] || die "anoncat on the VPS doesn't answer yet; DNS left alone"
+echo "anoncat answers on the VPS"
+
+step "DNS: anoncat.gleeze.com -> $VPS"
+runuser -u anoncat -- env ANONCAT_RELAY_IP="$VPS" ANONCAT_DYNU_KEY_FILE=$DATA/secrets/dynu-key \
+	ANONCAT_STATE_FILE=$DATA/netd/address.json \
+	python3 -I -c '
+import importlib.util, time
+spec = importlib.util.spec_from_file_location("netd", "/usr/local/lib/anoncat/anoncat-netd.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.set_dns(m.RELAY_IP, 8448, pages=False)
+m.set_record(m.DIRECT_NODE, "A", {"ipv4Address": m.RELAY_IP})
+m.save_state({"vps": m.RELAY_IP, "relay": m.RELAY_IP, "ip": m.RELAY_IP, "port": 8448, "pages": False,
+              "layout": m.DNS_LAYOUT, "since": int(time.time())})
+print("DNS set: A", m.DOMAIN, m.HS, m.DIRECT, "->", m.RELAY_IP)
+'
+
+step "Media keeps copying in the background"
+systemctl reset-failed anoncat-mediasync.service 2>/dev/null || true
+systemd-run --unit=anoncat-mediasync --property=CPUAffinity=0-3 \
+	rsync -aHX --chown=anoncat:anoncat -e "$SSH" --rsync-path="sudo rsync" \
+	"$DATA/db/media/" "op@$VPS_ADDR:$DATA/db/media/"
+echo
+echo "Done. anoncat runs on the VPS; apps follow as DNS updates (a few minutes)."
+echo "Media copy: journalctl -u anoncat-mediasync"

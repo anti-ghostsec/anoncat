@@ -94,6 +94,22 @@ server = "$server:443"
 TOML
 	echo "config: anoncat answers .well-known itself"
 fi
+# Media not on this disk yet (still copying in, or archived) is read from
+# the home PC's media folder, which it serves down the tunnel
+# (home-archive-mount). Old uploads are copied there after 30 days.
+if ! grep -q '^media_archive_provider' "$CONF"; then
+	sed -i "0,/^server_name = /s|^\(server_name = .*\)$|\1\n\n# Old media: home's folder, mounted over the tunnel (ops/vps).\nmedia_storage_providers = [\"media\", \"archive\"]\nstore_media_on_providers = [\"media\"]\nmedia_archive_provider = \"archive\"\nmedia_archive_after = \"30d\"|" "$CONF"
+	cat >> "$CONF" <<TOML
+
+# The home PC's media folder, read over the tunnel. Not checked at start, so
+# anoncat starts while home is unreachable.
+[global.storage_provider.archive.local]
+base_path = "/Drives/server/archive-home"
+startup_check = false
+TOML
+	grep -q '^media_archive_provider = "archive"' "$CONF" || die "couldn't add the archive settings to $CONF"
+	echo "config: media not here yet is read from home; old uploads copied there after 30 days"
+fi
 chown "$USER_:$USER_" "$CONF"
 
 step "Start"
