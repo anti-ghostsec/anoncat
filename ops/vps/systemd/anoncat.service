@@ -1,0 +1,93 @@
+# anoncat homeserver, on the VPS (ops/vps). The home PC's version is
+# ops/systemd/anoncat.service; this differs in network, CPU and memory.
+#
+# Its data lives in the passphrase-only vault (ops/vault/anoncat-vault), so
+# it can't start until someone unlocks that after a boot; `anoncat-vault
+# unlock` starts it. Install: copy to /etc/systemd/system/, then
+# `systemctl daemon-reload && systemctl enable anoncat`.
+[Unit]
+Description=anoncat Matrix homeserver
+After=network-online.target anoncat.socket
+Wants=network-online.target
+Requires=anoncat.socket
+# Video work runs in its own sandboxed unit (ops/video/README.md).
+Wants=anoncat-video.socket
+After=anoncat-video.socket
+RequiresMountsFor=/Drives/server/data
+# Locked vault: skip quietly instead of starting on an empty directory.
+ConditionPathIsMountPoint=/Drives/server/data
+
+[Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
+# On the VPS: its public interface, and the tunnel to the home PC (the
+# archive and backups). Set by vps-install to the interface in use.
+RestrictNetworkInterfaces=lo eth0 home
+# Logs kept in RAM only (journalctl --namespace=anoncat); see
+# ops/systemd/journald@anoncat.conf.
+LogNamespace=anoncat
+Type=notify-reload
+NotifyAccess=main
+WatchdogSec=30
+Environment="MALLOC_CONF=background_thread:false"
+User=anoncat
+Group=anoncat
+ExecStart=/usr/local/bin/anoncat -c /Drives/server/data/anoncat.toml
+# Reload = restart in place on the installed binary (ops/update/anoncat-update);
+# the socket stays open, so clients wait instead of failing, and
+# `systemctl reload` returns once the new binary is ready. Config only:
+# `systemctl kill -s USR1 anoncat`.
+ReloadSignal=SIGHUP
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=10min
+TimeoutStopSec=2min
+
+# 6 GB of RAM on the VPS, no disk swap (zram only). Over MemoryHigh the
+# kernel reclaims the server's caches and slows it rather than letting the
+# machine run out; MemoryMax is the hard stop, below what the system needs.
+MemoryHigh=4G
+MemoryMax=5G
+MemorySwapMax=1G
+
+# Hardening: nothing outside the vault is writable.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/Drives/server/data
+# The helpers' secrets and state aren't the server's: a compromised server
+# can't repoint DNS or take over the Pages repository, or change its own
+# certificate.
+InaccessiblePaths=-/Drives/server/data/secrets/dynu-key -/Drives/server/data/secrets/codeberg -/Drives/server/data/netd
+ReadOnlyPaths=-/Drives/server/data/tls
+ProtectHome=yes
+# Its own /tmp and /var/tmp, both in RAM.
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateMounts=yes
+PrivateUsers=yes
+PrivateIPC=yes
+RemoveIPC=yes
+ProtectProc=invisible
+DevicePolicy=closed
+ManagedOOMPreference=avoid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Plugins are compiled to machine code at load time, which needs this.
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,116 @@
+#!/bin/bash
+# vps-install: put anoncat live on the VPS (after vps-setup, with the vault
+# unlocked and the data copied in from home). Run on the VPS as root, from a
+# copy of ops/:
+#
+#   sudo ops/vps/vps-install /path/to/release/tuwunel
+#
+# Safe to run again. The config copied from home is adjusted for the VPS
+# (listen addresses); the original is kept beside it.
+set -euo pipefail
+
+OPS=$(cd "$(dirname "$0")/.." && pwd)
+DATA=/Drives/server/data
+CONF=$DATA/anoncat.toml
+USER_=anoncat
+BIN=/usr/local/bin/anoncat
+LIB=/usr/local/lib/anoncat
+SBIN=/usr/local/sbin
+TUNNEL_ADDR=10.78.0.1
+# Home's units, used as they are.
+UNITS=(anoncat-tls-renew.timer anoncat-backup.service anoncat-backup.timer
+	anoncat-vault-helper.socket anoncat-vault-helper@.service anoncat-unlock.service
+	anoncat-start.service anoncat-video.socket anoncat-video@.service)
+
+die() { echo "vps-install: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ $# -eq 1 && -f $1 ]] || die "usage: $0 /path/to/release/tuwunel"
+mountpoint -q "$DATA" || die "$DATA isn't mounted; run: anoncat-vault unlock"
+[[ -f $CONF ]] || die "no $CONF: copy the data in from home first"
+id "$USER_" &>/dev/null || die "no $USER_ user; run vps-setup first"
+
+step "Binary"
+staged=$(mktemp "$BIN.staged.XXXXXX")
+trap 'rm -f "$staged"' EXIT
+cp "$1" "$staged"
+chown root:root "$staged"
+chmod 0755 "$staged"
+version=$(runuser -u "$USER_" -- "$staged" --version 2>/dev/null | head -1)
+[[ -n $version ]] || die "$1 doesn't run"
+if cmp -s "$staged" "$BIN"; then
+	echo "already installed: $version"
+else
+	mv -f "$staged" "$BIN"
+	echo "installed $version"
+fi
+
+step "Tools"
+install -d -m 0755 "$LIB" "$LIB/unlock"
+install -m 0755 "$OPS/anoncat-tls" "$OPS/acme-dynu-hook.py" "$LIB/"
+install -m 0755 "$OPS/vault/anoncat-vault-helper" "$OPS/vault/anoncat-unlock-page" "$LIB/"
+install -m 0755 "$OPS/video/anoncat-video" "$OPS/video/anoncat-video-helper" "$LIB/"
+install -m 0644 "$OPS/vault/unlock/unlock.html" "$OPS/vault/unlock/unlock.js" "$OPS/../src/router/panel/panel.css" "$LIB/unlock/"
+install -m 0755 "$OPS/vault/anoncat-vault" "$OPS/update/anoncat-update" "$OPS/backup/anoncat-backup" "$SBIN/"
+
+step "Units"
+install -m 0644 "$OPS/systemd/journald@anoncat.conf" /etc/systemd/journald@anoncat.conf
+install -m 0644 "$OPS/vps/systemd/anoncat.service" "$OPS/vps/systemd/anoncat.socket" /etc/systemd/system/
+for unit in "${UNITS[@]}"; do
+	install -m 0644 "$OPS/systemd/$unit" /etc/systemd/system/
+done
+# The certificate renewal reaches Dynu over the VPS's own network here, not
+# a VPN, with the system's resolver.
+sed -e 's/^RestrictNetworkInterfaces=lo wg0$/RestrictNetworkInterfaces=lo eth0/' \
+	-e '/^BindReadOnlyPaths=\/etc\/anoncat\/resolv.conf/d' \
+	"$OPS/systemd/anoncat-tls-renew.service" > /etc/systemd/system/anoncat-tls-renew.service
+# The public interface's name, if it isn't eth0.
+pub=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+if [[ -n $pub && $pub != eth0 ]]; then
+	sed -i "s/^RestrictNetworkInterfaces=lo eth0/RestrictNetworkInterfaces=lo $pub/" \
+		/etc/systemd/system/anoncat.service /etc/systemd/system/anoncat-tls-renew.service
+fi
+systemctl daemon-reload
+echo "anoncat, its socket (443, 8448) and ${#UNITS[@]} helper units"
+
+step "Config"
+if ! grep -qE "^address = \[\"127.0.0.1\", \"$TUNNEL_ADDR\"\]$" "$CONF"; then
+	cp -p "$CONF" "$CONF.home"
+	# Home's addresses (Proton's, the old relay's) don't exist here.
+	sed -i -E "s|^address = \[.*\]$|address = [\"127.0.0.1\", \"$TUNNEL_ADDR\"]|" "$CONF"
+	# Proton's direct path is home's, not this machine's.
+	sed -i '/^direct_address_file = /d' "$CONF"
+	echo "config: listens on loopback and the home tunnel (original: $CONF.home)"
+fi
+if ! grep -q '^\[global.well_known\]' "$CONF"; then
+	server=$(sed -nE 's/^server_name = "(.*)"$/\1/p' "$CONF")
+	cat >> "$CONF" <<TOML
+
+# Apps and other servers find anoncat on the standard port of the server name.
+[global.well_known]
+client = "https://$server"
+server = "$server:443"
+TOML
+	echo "config: anoncat answers .well-known itself"
+fi
+chown "$USER_:$USER_" "$CONF"
+
+step "Start"
+systemctl reenable anoncat.socket anoncat.service anoncat-tls-renew.timer anoncat-backup.timer \
+	anoncat-vault-helper.socket anoncat-unlock.service anoncat-video.socket
+systemctl stop anoncat-unlock.service 2>/dev/null || true
+systemctl start anoncat-video.socket anoncat.socket
+if systemctl is-active -q anoncat.service; then
+	systemctl restart anoncat.service
+else
+	systemctl start anoncat.service
+fi
+systemctl start anoncat-tls-renew.timer anoncat-backup.timer anoncat-vault-helper.socket
+echo "waiting for anoncat to be ready..."
+for _ in $(seq 300); do
+	state=$(systemctl show -P ActiveState anoncat.service)
+	[[ $state == active || $state == failed ]] && break
+	sleep 1
+done
+systemctl --no-pager status anoncat.service | grep -E "●|Active:" || true

@@ -1,0 +1,144 @@
+#!/bin/bash
+# vps-setup: turn a fresh Debian 13 VPS into anoncat's main server (the home
+# PC becomes its standby). Run on the VPS as root, over SSH reached through
+# the VPN:
+#
+#   ssh op@<vps> sudo bash -s < ops/vps/vps-setup
+#
+# Safe to run again. It prepares the machine only: the encrypted vault, the
+# anoncat binary and its data come after (ops/vps/README.md).
+#
+# Paths match the home PC's (/Drives/server/data for the vault), so the same
+# config, tools and units work on both.
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+# The tunnel to home: home connects from behind its VPN, so it has no
+# endpoint here. A new range and new keys: nothing of the old relay is reused.
+WG_IF=home
+WG_PORT=51477
+WG_ADDR=10.78.0.1
+HOME_ADDR=10.78.0.2
+
+apt-get -qq update
+apt-get -qq -y -o Dpkg::Options::=--force-confold full-upgrade >/dev/null
+apt-get -qq -y install wireguard-tools nftables unattended-upgrades cryptsetup \
+	python3 lego ffmpeg rsync sshfs zram-tools >/dev/null
+
+# No logs on disk: journald in RAM only, rsyslog gone.
+systemctl disable --now rsyslog.service rsyslog.socket syslog.socket 2>/dev/null || true
+apt-get -qq -y purge rsyslog >/dev/null 2>&1 || true
+mkdir -p /etc/systemd/journald.conf.d
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=64M\nMaxRetentionSec=2day\n' > /etc/systemd/journald.conf.d/ram.conf
+systemctl restart systemd-journald
+rm -rf /var/log/journal /var/log/*.log /var/log/*.gz /var/log/syslog* /var/log/auth.log* /var/log/messages* 2>/dev/null || true
+: > /var/log/wtmp; : > /var/log/btmp; : > /var/log/lastlog 2>/dev/null || true
+
+# No disk swap: it would hold decrypted data unencrypted. Compressed RAM
+# instead, so a memory spike slows the server rather than killing it.
+swapoff -a
+sed -i '/\sswap\s/d' /etc/fstab
+printf 'ALGO=zstd\nPERCENT=50\n' > /etc/default/zramswap
+systemctl enable --now zramswap.service >/dev/null 2>&1 || true
+systemctl mask --now hibernate.target hybrid-sleep.target >/dev/null 2>&1 || true
+
+# SSH: keys only, quiet logging. Local forwarding stays on for the panel
+# (ssh -L 8450:127.0.0.1:8450), nothing else.
+cat > /etc/ssh/sshd_config.d/10-anoncat.conf <<'S'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+X11Forwarding no
+AllowTcpForwarding local
+AllowAgentForwarding no
+LogLevel QUIET
+S
+sshd -t && systemctl reload ssh
+
+# Security updates on their own.
+printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > /etc/apt/apt.conf.d/20auto-upgrades
+systemctl enable --now unattended-upgrades >/dev/null 2>&1
+
+# The account anoncat runs as, and the vault's mount point.
+id anoncat &>/dev/null || useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin anoncat
+install -d -m 0755 /Drives/server /Drives/server/vault
+install -d -m 0700 -o anoncat -g anoncat /Drives/server/data
+
+# WireGuard key, made here; only the public half leaves.
+umask 077
+mkdir -p /etc/wireguard
+[ -f /etc/wireguard/$WG_IF.key ] || wg genkey > /etc/wireguard/$WG_IF.key
+wg pubkey < /etc/wireguard/$WG_IF.key > /etc/wireguard/$WG_IF.pub
+umask 022
+
+pub=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+[ -n "$pub" ] || { echo "vps-setup: no default route" >&2; exit 1; }
+
+cat > /etc/nftables.conf <<N
+#!/usr/sbin/nft -f
+# anoncat's main server. Public: 443 (apps, the front page) and 8448
+# (Matrix's server port), both anoncat's own socket, and the WireGuard port
+# for home. SSH is public only until home's tunnel is up; after that, through
+# the tunnel or FlokiNET's console only. Everything else is dropped.
+flush ruleset
+
+define public = "$pub"
+define tunnel = "$WG_IF"
+define wg_port = $WG_PORT
+
+table inet anoncat {
+	chain input {
+		type filter hook input priority filter; policy drop;
+		iif lo accept
+		ct state invalid drop
+		ct state established,related accept
+		meta l4proto { icmp, ipv6-icmp } accept
+		iifname \$public tcp dport { 443, 8448 } accept
+		iifname \$public udp dport \$wg_port accept
+		iifname \$tunnel accept
+		tcp dport 22 accept
+	}
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+	}
+}
+N
+if [ -f /etc/wireguard/$WG_IF.peer ]; then
+	sed -i 's|^\t\ttcp dport 22 accept$|\t\t# SSH only through the tunnel (or the console).|' /etc/nftables.conf
+fi
+nft -c -f /etc/nftables.conf
+systemctl enable nftables.service >/dev/null 2>&1
+systemctl restart nftables.service
+
+cat > /etc/wireguard/$WG_IF.conf <<C
+[Interface]
+Address = $WG_ADDR/32
+ListenPort = $WG_PORT
+MTU = 1340
+PrivateKey = $(cat /etc/wireguard/$WG_IF.key)
+C
+chmod 0600 /etc/wireguard/$WG_IF.conf
+[ -f /etc/wireguard/$WG_IF.peer ] && cat /etc/wireguard/$WG_IF.peer >> /etc/wireguard/$WG_IF.conf
+
+cat > /usr/local/sbin/home-peer <<R
+#!/bin/bash
+# home-peer <home-public-key>: the one machine allowed through the tunnel.
+set -euo pipefail
+[[ \$1 =~ ^[A-Za-z0-9+/]{43}=\$ ]] || { echo "not a WireGuard key: \$1" >&2; exit 1; }
+printf '\n[Peer]\nPublicKey = %s\nAllowedIPs = $HOME_ADDR/32\n' "\$1" > /etc/wireguard/$WG_IF.peer
+sed -i '/^\[Peer\]/,\$d' /etc/wireguard/$WG_IF.conf
+cat /etc/wireguard/$WG_IF.peer >> /etc/wireguard/$WG_IF.conf
+# A restart, not syncconf: wg-quick adds the route back to home only when
+# it brings the interface up.
+systemctl restart wg-quick@$WG_IF.service
+wg show $WG_IF
+R
+chmod 0755 /usr/local/sbin/home-peer
+systemctl enable wg-quick@$WG_IF.service >/dev/null 2>&1
+systemctl restart wg-quick@$WG_IF.service
+
+echo "PUB=$(cat /etc/wireguard/$WG_IF.pub)"
+echo "PORT=$WG_PORT"
