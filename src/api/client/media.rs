@@ -23,7 +23,7 @@ use tuwunel_service::{
 	Services,
 	media::{
 		Animate, CACHE_CONTROL_IMMUTABLE, CACHE_CONTROL_NO_STORE, CORP_CROSS_ORIGIN, Dim, MXC_LENGTH,
-		Media,
+		Media, Upload,
 	},
 };
 
@@ -80,7 +80,11 @@ pub(crate) async fn create_content_route(
 		.check_upload(user, filename)
 		.await?;
 
-	if let Some(why) = services.moderation.known_bad(&body.file).await {
+	let known_bad = match &body.spooled {
+		| Some(spooled) => services.moderation.known_bad_hash(spooled.sha256),
+		| None => services.moderation.known_bad(&body.file).await,
+	};
+	if let Some(why) = known_bad {
 		services.moderation.bad_upload_refused(user, &why).await;
 		return Err!(Request(Forbidden("This file isn't allowed here.")));
 	}
@@ -92,14 +96,26 @@ pub(crate) async fn create_content_route(
 		media_id: &utils::random_string(MXC_LENGTH),
 	};
 
-	services
-		.media
-		.create(mxc, Some(user), Some(&content_disposition), content_type, &body.file)
-		.await?;
+	let size = match &body.spooled {
+		| Some(spooled) => {
+			services
+				.media
+				.create_spooled(mxc, Some(user), Some(&content_disposition), content_type, spooled)
+				.await?;
+			usize::try_from(spooled.len).unwrap_or(usize::MAX)
+		},
+		| None => {
+			services
+				.media
+				.create(mxc, Some(user), Some(&content_disposition), content_type, &body.file)
+				.await?;
+			body.file.len()
+		},
+	};
 
 	services
 		.moderation
-		.notify_upload(user, &mxc.to_string(), content_type, body.file.len());
+		.notify_upload(user, &mxc.to_string(), content_type, size);
 
 	Ok(create_content::v3::Response {
 		content_uri: mxc.to_string().into(),
@@ -177,7 +193,11 @@ pub(crate) async fn create_content_async_route(
 		.check_upload_name(user, filename)
 		.await?;
 
-	if let Some(why) = services.moderation.known_bad(&body.file).await {
+	let known_bad = match &body.spooled {
+		| Some(spooled) => services.moderation.known_bad_hash(spooled.sha256),
+		| None => services.moderation.known_bad(&body.file).await,
+	};
+	if let Some(why) = known_bad {
 		services.moderation.bad_upload_refused(user, &why).await;
 		return Err!(Request(Forbidden("This file isn't allowed here.")));
 	}
@@ -185,14 +205,20 @@ pub(crate) async fn create_content_async_route(
 	let content_type = body.content_type.as_deref();
 	let content_disposition = make_content_disposition(None, content_type, filename);
 
+	let (file, size) = match &body.spooled {
+		| Some(spooled) =>
+			(Upload::Spooled(spooled), usize::try_from(spooled.len).unwrap_or(usize::MAX)),
+		| None => (Upload::Bytes(&body.file), body.file.len()),
+	};
+
 	services
 		.media
-		.upload_pending(&mxc, user, Some(&content_disposition), content_type, &body.file)
+		.upload_pending(&mxc, user, Some(&content_disposition), content_type, file)
 		.await?;
 
 	services
 		.moderation
-		.notify_upload(user, &mxc.to_string(), content_type, body.file.len());
+		.notify_upload(user, &mxc.to_string(), content_type, size);
 
 	Ok(create_content_async::v3::Response {})
 }

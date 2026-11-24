@@ -2119,7 +2119,7 @@
 # so it is the biggest source of files nobody here chose to keep; it is
 # fetched again if someone asks for it later. "0" keeps it forever.
 #
-#cleanup_remote_media_max_age = "30d"
+#cleanup_remote_media_max_age = "5d"
 
 # Delete media uploaded by this server's users this long after upload.
 # Profile and room avatars are kept. "0" keeps it forever.
@@ -2131,6 +2131,37 @@
 # no limit.
 #
 #cleanup_local_media_max_size = 0
+
+# Name of a storage provider (`[global.storage_provider.<name>]`) that old
+# uploads are moved to instead of being deleted: a bigger, slower disk,
+# such as another machine's mounted over WireGuard. New uploads never go
+# there, and it is read after the other providers. It must be listed in
+# `media_storage_providers`, and hold a file named `.anoncat-archive` at
+# its top, or nothing is moved. Set its `startup_check = false`, so the
+# server starts while it's unreachable. Empty turns this off.
+#
+#media_archive_provider = ""
+
+# Uploads older than this are copied to `media_archive_provider`.
+#
+#media_archive_after = "90d"
+
+# Files under this size stay where they are (avatars, thumbnails,
+# stickers): they're opened often and take little room.
+#
+#media_archive_min_size = "1 MiB"
+
+# Old uploads are copied to the archive and also kept here, so either
+# copy can be unreachable without anything going missing. Once the disk
+# holding the database is this full (percent), the originals already in
+# the archive are removed from it.
+#
+#media_archive_evict_percent = 70
+
+# At most this much is copied in one cleanup run, so a first run over a
+# big backlog doesn't hold the connection for hours.
+#
+#media_archive_batch = "4 GiB"
 
 # Delete messages and other non-state events older than this from this
 # server's copy of every room. Room state (membership, names,

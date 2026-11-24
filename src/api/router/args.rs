@@ -20,7 +20,7 @@ use tuwunel_core::{
 	Error, Result, err, implement,
 	utils::{memory_budget::Reservation, string::EMPTY},
 };
-use tuwunel_service::{Services, appservice::RegistrationInfo};
+use tuwunel_service::{Services, appservice::RegistrationInfo, media::spool::Spooled};
 
 use super::{
 	auth::{Auth, AuthDispatch, admin::require_admin, auth},
@@ -57,6 +57,10 @@ pub struct Args<T, const ADMIN: bool = false> {
 
 	/// Memory held for a big upload until the request is done with.
 	pub reservation: Option<Reservation>,
+
+	/// A big upload written to disk as it arrived; the typed body then holds
+	/// no file bytes. Removed from disk when the request is done with.
+	pub spooled: Option<Spooled>,
 }
 
 /// Requires administrator authorization before returning request body errors.
@@ -276,6 +280,7 @@ where
 		appservice_info: auth.appservice_info,
 		json_body,
 		reservation: request.reservation,
+		spooled: request.spooled,
 	})
 }
 

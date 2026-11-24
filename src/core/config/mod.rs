@@ -2524,7 +2524,7 @@ pub struct Config {
 	/// so it is the biggest source of files nobody here chose to keep; it is
 	/// fetched again if someone asks for it later. "0" keeps it forever.
 	///
-	/// default: "30d"
+	/// default: "5d"
 	#[serde(
 		default = "default_cleanup_remote_media_max_age",
 		deserialize_with = "utils::time::deserialize_duration"
@@ -2545,6 +2545,56 @@ pub struct Config {
 	/// default: 0
 	#[serde(default, deserialize_with = "deserialize_bytesize_u64")]
 	pub cleanup_local_media_max_size: u64,
+
+	/// Name of a storage provider (`[global.storage_provider.<name>]`) that old
+	/// uploads are moved to instead of being deleted: a bigger, slower disk,
+	/// such as another machine's mounted over WireGuard. New uploads never go
+	/// there, and it is read after the other providers. It must be listed in
+	/// `media_storage_providers`, and hold a file named `.anoncat-archive` at
+	/// its top, or nothing is moved. Set its `startup_check = false`, so the
+	/// server starts while it's unreachable. Empty turns this off.
+	///
+	/// default: ""
+	#[serde(default)]
+	pub media_archive_provider: String,
+
+	/// Uploads older than this are copied to `media_archive_provider`.
+	///
+	/// default: "90d"
+	#[serde(
+		default = "default_media_archive_after",
+		deserialize_with = "utils::time::deserialize_duration"
+	)]
+	pub media_archive_after: Duration,
+
+	/// Files under this size stay where they are (avatars, thumbnails,
+	/// stickers): they're opened often and take little room.
+	///
+	/// default: "1 MiB"
+	#[serde(
+		default = "default_media_archive_min_size",
+		deserialize_with = "deserialize_bytesize_u64"
+	)]
+	pub media_archive_min_size: u64,
+
+	/// Old uploads are copied to the archive and also kept here, so either
+	/// copy can be unreachable without anything going missing. Once the disk
+	/// holding the database is this full (percent), the originals already in
+	/// the archive are removed from it.
+	///
+	/// default: 70
+	#[serde(default = "default_media_archive_evict_percent")]
+	pub media_archive_evict_percent: u64,
+
+	/// At most this much is copied in one cleanup run, so a first run over a
+	/// big backlog doesn't hold the connection for hours.
+	///
+	/// default: "4 GiB"
+	#[serde(
+		default = "default_media_archive_batch",
+		deserialize_with = "deserialize_bytesize_u64"
+	)]
+	pub media_archive_batch: u64,
 
 	/// Delete messages and other non-state events older than this from this
 	/// server's copy of every room. Room state (membership, names,
@@ -6203,9 +6253,17 @@ fn default_pushrules_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
 
 fn default_cleanup_interval() -> Duration { Duration::from_secs(60 * 60) }
 
-fn default_cleanup_remote_media_max_age() -> Duration { Duration::from_secs(30 * 24 * 60 * 60) }
+fn default_cleanup_remote_media_max_age() -> Duration { Duration::from_secs(5 * 24 * 60 * 60) }
 
 fn default_cleanup_empty_room_max_age() -> Duration { Duration::from_secs(24 * 60 * 60) }
+
+fn default_media_archive_after() -> Duration { Duration::from_secs(90 * 24 * 60 * 60) }
+
+fn default_media_archive_min_size() -> u64 { 1024 * 1024 }
+
+fn default_media_archive_batch() -> u64 { 4 * 1024 * 1024 * 1024 }
+
+fn default_media_archive_evict_percent() -> u64 { 70 }
 
 fn default_cleanup_disk_percent() -> u64 { 90 }
 

@@ -191,6 +191,19 @@ pub fn bad_frames_match(&self, frames: &[([u8; 32], u8)]) -> Option<String> {
 		.then(|| format!("the same video ({matched} of {} frames)", good.len()))
 }
 
+/// Whether a file with this SHA-256 is a known bad file: for a big upload
+/// written to disk, which isn't read whole into memory to be compared any
+/// other way.
+#[implement(Service)]
+#[must_use]
+pub fn known_bad_hash(&self, sha256: [u8; 32]) -> Option<String> {
+	if self.bad_file_count() == 0 {
+		return None;
+	}
+
+	self.bad_match(&Fingerprint { sha256, pdq: None })
+}
+
 /// Whether these bytes are a known bad file; cheap when the list is empty.
 /// A video's frames are only taken when the list has PDQ hashes to compare
 /// them with.

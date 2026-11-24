@@ -13,7 +13,7 @@ use tuwunel_core::{
 	Error, Result, err, smallstr::SmallString, smallvec::SmallVec,
 	utils::memory_budget::Reservation,
 };
-use tuwunel_service::Services;
+use tuwunel_service::{Services, media::spool::Spooled};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct QueryParams {
@@ -47,6 +47,8 @@ pub(super) struct Request {
 	pub(super) parts: Parts,
 	/// Room held in the budget for big files, while the upload is handled.
 	pub(super) reservation: Option<Reservation>,
+	/// A big upload, written to disk as it arrived; `body` is then empty.
+	pub(super) spooled: Option<Spooled>,
 }
 
 pub(super) type PathParams = SmallVec<[PathParam; 8]>;
@@ -85,31 +87,36 @@ pub(super) async fn from(
 		None
 	};
 
-	let (body, reservation) = match owner {
+	let (body, reservation, spooled) = match owner {
 		| Some(owner) => {
 			let reservation = services.server.big_bodies.reserve(&owner);
-			read_reserved(body, &parts, config.upload_limit(), reservation).await?
+			read_reserved(services, body, &parts, config.upload_limit(), reservation).await?
 		},
 		| None => {
 			let body = axum::body::to_bytes(body, config.max_request_size)
 				.await
 				.map_err(|e| err!(Request(TooLarge("Request body too large: {e}"))))?;
 
-			(body, None)
+			(body, None, None)
 		},
 	};
 
-	Ok(Request { cookie, path, query, body, parts, reservation })
+	Ok(Request { cookie, path, query, body, parts, reservation, spooled })
 }
 
 /// Reads an upload, growing its reservation as the bytes arrive. Refused at
 /// once when the budget, or this account's share of it, is used up.
+///
+/// Past the media service's `spool_over` the upload goes to disk instead
+/// (what had arrived, then the rest as it comes), and its reservation
+/// shrinks back: a 2 GiB video costs disk, not memory.
 async fn read_reserved(
+	services: &Services,
 	body: axum::body::Body,
 	parts: &Parts,
 	limit: usize,
 	mut reservation: Reservation,
-) -> Result<(Bytes, Option<Reservation>)> {
+) -> Result<(Bytes, Option<Reservation>, Option<Spooled>)> {
 	let too_large = || err!(Request(TooLarge("Request body too large")));
 
 	let declared = parts
@@ -122,17 +129,44 @@ async fn read_reserved(
 		return Err(too_large());
 	}
 
-	if !reservation.grow_to(declared.unwrap_or(0)) {
+	let spool_over = services.media.spool_over();
+	let mut spool = match declared {
+		| Some(len) if len > spool_over => Some(services.media.spool(len as u64).await?),
+		| _ => None,
+	};
+
+	if spool.is_none() && !reservation.grow_to(declared.unwrap_or(0)) {
 		return Err(busy());
 	}
 
-	let mut buf = BytesMut::with_capacity(declared.unwrap_or(0));
+	let mut buf = BytesMut::with_capacity(if spool.is_some() { 0 } else { declared.unwrap_or(0) });
 	let mut stream = body.into_data_stream();
 	while let Some(chunk) = stream.next().await {
 		let chunk = chunk.map_err(|e| err!(Request(Unknown("Failed to read the body: {e}"))))?;
+		if let Some(spool) = spool.as_mut() {
+			let len = usize::try_from(spool.len())
+				.unwrap_or(usize::MAX)
+				.saturating_add(chunk.len());
+			if len > limit {
+				return Err(too_large());
+			}
+			spool.write(&chunk).await?;
+			continue;
+		}
+
 		let len = buf.len().saturating_add(chunk.len());
 		if len > limit {
 			return Err(too_large());
+		}
+
+		// Sent without a length, and now too big to keep in memory.
+		if len > spool_over {
+			let mut to_disk = services.media.spool(len as u64).await?;
+			to_disk.write(&buf).await?;
+			to_disk.write(&chunk).await?;
+			buf = BytesMut::new();
+			spool = Some(to_disk);
+			continue;
 		}
 
 		if !reservation.grow_to(len) {
@@ -142,7 +176,13 @@ async fn read_reserved(
 		buf.extend_from_slice(&chunk);
 	}
 
-	Ok((buf.freeze(), Some(reservation)))
+	match spool {
+		| Some(spool) => {
+			drop(reservation);
+			Ok((Bytes::new(), None, Some(spool.finish().await?)))
+		},
+		| None => Ok((buf.freeze(), Some(reservation), None)),
+	}
 }
 
 fn busy() -> Error {

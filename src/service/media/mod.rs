@@ -3,7 +3,9 @@ mod data;
 pub(super) mod migrations;
 pub mod strip;
 mod preview;
+pub mod archive;
 pub mod range;
+pub mod spool;
 mod remote;
 mod space;
 mod stand_in;
@@ -53,6 +55,14 @@ pub use self::{
 };
 pub use self::thumbnail::{Fingerprint, Inspected, looks_like_video, pdq_distance};
 pub use self::{cached::CachedMedia, stand_in::CACHE_CONTROL_NO_STORE};
+
+/// An upload's content: in memory, or written to disk as it arrived.
+#[derive(Clone, Copy, Debug)]
+pub enum Upload<'a> {
+	Bytes(&'a [u8]),
+	Spooled(&'a spool::Spooled),
+}
+
 use crate::storage::Provider;
 
 #[derive(Debug)]
@@ -204,6 +214,7 @@ impl crate::Service for Service {
 
 		#[cfg(feature = "media_thumbnail")]
 		sweep_staging_dir(&args.server.config);
+		spool::clear_spool(&args.server.config);
 
 		Ok(service)
 	}
@@ -438,7 +449,7 @@ impl Service {
 		user: &UserId,
 		content_disposition: Option<&ContentDisposition>,
 		content_type: Option<&str>,
-		file: &[u8],
+		file: Upload<'_>,
 	) -> Result {
 		let Ok((owner_id, expires_at)) = self.db.search_pending_mxc(mxc).await else {
 			if self.get_metadata(mxc).await.is_some() {
@@ -457,8 +468,15 @@ impl Service {
 			return Err!(Request(NotFound("Pending media ID expired")));
 		}
 
-		self.create(mxc, Some(user), content_disposition, content_type, file)
-			.await?;
+		match file {
+			| Upload::Bytes(file) =>
+				self.create(mxc, Some(user), content_disposition, content_type, file)
+					.await
+					.map(|_| ())?,
+			| Upload::Spooled(file) =>
+				self.create_spooled(mxc, Some(user), content_disposition, content_type, file)
+					.await?,
+		}
 
 		self.db.remove_pending_mxc(mxc);
 
@@ -511,6 +529,53 @@ impl Service {
 		self.create_media_file(&key, file)
 			.map_ok(|()| walk.animates())
 			.await
+	}
+
+	/// Stores an upload that was written to disk as it arrived (see
+	/// [`spool`]): streamed to the providers, never whole in memory. It is
+	/// bigger than the video worker takes, so it is stored as it is.
+	pub async fn create_spooled(
+		&self,
+		mxc: &Mxc<'_>,
+		user: Option<&UserId>,
+		content_disposition: Option<&ContentDisposition>,
+		content_type: Option<&str>,
+		file: &spool::Spooled,
+	) -> Result {
+		let local = user.is_some_and(|user| self.services.globals.user_is_local(user));
+		if local {
+			let mib = file.len >> 20;
+			warn!("An upload of {mib} MiB was stored with any metadata it has: too big to clean.");
+		}
+
+		let walk = sequence(&file.head);
+		let key = self.db.create_file_metadata(
+			mxc,
+			user,
+			&Dim::default(),
+			content_disposition,
+			walk.stored_type(content_type),
+		)?;
+
+		let path = self.get_media_name_sha256(&key);
+		let mut stored = 0_usize;
+		for provider in self.upload_providers() {
+			let size = usize::try_from(file.len).unwrap_or(usize::MAX);
+			if let Err(e) = provider
+				.put(path.as_str(), Some(size), file.chunks().await?)
+				.await
+			{
+				return Err!(Database(error!(
+					?path,
+					?provider,
+					"Failed to store media on provider: {e:?}"
+				)));
+			}
+			stored = stored.saturating_add(1);
+		}
+		assert!(stored > 0, "Successfully saved to nowhere.");
+
+		Ok(())
 	}
 
 	/// A local upload without its metadata, or `None` when there was none to
@@ -1334,16 +1399,28 @@ impl Service {
 	/// Storage providers a new media file is written to.
 	///
 	/// An empty `store_media_on_providers` selects every media provider.
+	/// Where new files go: never the archive.
 	fn upload_providers(&self) -> impl Iterator<Item = &Arc<Provider>> + Send + '_ {
 		let store_media_on_providers = &self.services.config.store_media_on_providers;
 
-		self.storage_providers().filter(move |provider| {
-			store_media_on_providers.is_empty()
-				|| store_media_on_providers.contains(&provider.name)
+		self.all_storage_providers().filter(move |provider| {
+			!self.is_archive(provider)
+				&& (store_media_on_providers.is_empty()
+					|| store_media_on_providers.contains(&provider.name))
 		})
 	}
 
+	/// Where files are looked for: the archive last, so recent media never
+	/// waits on it.
 	fn storage_providers(&self) -> impl Iterator<Item = &Arc<Provider>> + Send + '_ {
+		let (rest, archive): (Vec<_>, Vec<_>) = self
+			.all_storage_providers()
+			.partition(|provider| !self.is_archive(provider));
+
+		rest.into_iter().chain(archive)
+	}
+
+	fn all_storage_providers(&self) -> impl Iterator<Item = &Arc<Provider>> + Send + '_ {
 		let explicit_providers = &self.services.config.media_storage_providers;
 
 		let or_all_providers = explicit_providers

@@ -2348,6 +2348,8 @@ pages.cleanup = async (main) => {
 		if (rep.events_purged) parts.push(`${rep.events_purged} events from ${rep.rooms_purged} rooms`);
 		if (rep.empty_rooms) parts.push(`${rep.empty_rooms} empty rooms`);
 		if (rep.disk_guard_media) parts.push(`${rep.disk_guard_media} media for the disk guard`);
+		if (rep.archived_files) parts.push(`${rep.archived_files} old uploads copied to the archive (${rep.archived_mib} MiB)`);
+		if (rep.archive_evicted) parts.push(`${rep.archive_evicted} originals removed from this disk (kept in the archive)`);
 		return h("tr", {},
 			h("td", { class: "small" }, date(r.ts)),
 			h("td", { class: "small muted" }, r.trigger),

@@ -46,6 +46,11 @@ const MIB: u64 = 1 << 20;
 const DISK_GUARD_STEPS: [Duration; 4] =
 	[DAY.saturating_mul(7), DAY.saturating_mul(3), DAY, Duration::ZERO];
 
+/// Ages of this server's own uploads the disk guard moves to the archive
+/// after that, oldest first. Never newer than a day: the archive is slower.
+const ARCHIVE_GUARD_STEPS: [Duration; 3] =
+	[DAY.saturating_mul(30), DAY.saturating_mul(7), DAY];
+
 /// Wait after startup before the first run, so it doesn't compete with the
 /// prewarm for the disk.
 const FIRST_RUN_DELAY: Duration = Duration::from_secs(5 * 60);
@@ -143,6 +148,13 @@ pub struct Report {
 	pub empty_rooms: usize,
 	pub disk_guard_media: usize,
 	pub disk_percent: Option<u64>,
+	/// Old uploads moved to the archive (`media_archive_provider`); not
+	/// deleted, so not counted as such.
+	pub archived_files: usize,
+	pub archived_mib: u64,
+	/// Originals removed from this disk because it was filling up; each one
+	/// is still in the archive.
+	pub archive_evicted: usize,
 }
 
 impl Report {
@@ -153,6 +165,8 @@ impl Report {
 			.saturating_add(self.events_purged)
 			.saturating_add(self.empty_rooms)
 			.saturating_add(self.disk_guard_media)
+			.saturating_add(self.archived_files)
+			.saturating_add(self.archive_evicted)
 			> 0
 	}
 }
@@ -389,6 +403,20 @@ async fn run_once(&self) -> Result<Report> {
 			.await;
 	}
 
+	// Old uploads are always copied to the archive; their originals only
+	// leave this disk once it's past `media_archive_evict_percent`.
+	let config = &self.services.config;
+	let evict = disk_used_percent(&config.database_path)
+		.is_some_and(|used| used >= config.media_archive_evict_percent);
+	let moved = self
+		.services
+		.media
+		.archive_older_than(config.media_archive_after, config.media_archive_batch, evict)
+		.await?;
+	report.archived_files = moved.files;
+	report.archived_mib = moved.bytes / MIB;
+	report.archive_evicted = moved.evicted;
+
 	(report.disk_guard_media, report.disk_percent) = self.guard_disk(&limits).await?;
 
 	if report.deleted_anything() {
@@ -613,13 +641,27 @@ async fn guard_disk(&self, limits: &Limits) -> Result<(usize, Option<u64>)> {
 		}
 	}
 
+	// Then this server's own uploads go to the archive, newest last, before
+	// anyone is told: nothing is lost that way.
+	let batch = self.services.config.media_archive_batch;
+	for max_age in ARCHIVE_GUARD_STEPS {
+		self.services
+			.media
+			.archive_older_than(max_age, batch, true)
+			.await?;
+		used = disk_used_percent(path);
+		if used.is_none_or(|used| used < limit) {
+			return Ok((deleted, used));
+		}
+	}
+
 	let used = used.unwrap_or(100);
 	self.services
 		.admin
 		.notify_loud(&format!(
 			"The disk holding the database is {used}% full (limit {limit}%) even after \
-			 deleting all remote media. Free space or lower the cleanup limits before it \
-			 fills."
+			 deleting all remote media and moving what could be moved to the archive. Free \
+			 space or lower the cleanup limits before it fills."
 		))
 		.await;
 
@@ -674,6 +716,12 @@ fn summarize(report: &Report) -> String {
 	add(report.local_media_over_limit, "oldest local uploads deleted to stay under the size limit");
 	add(report.disk_guard_media, "remote media files deleted because the disk was full");
 	add(report.empty_rooms, "empty rooms deleted");
+	add(report.archive_evicted, "originals removed from this disk (kept in the archive)");
+
+	if report.archived_files > 0 {
+		write!(out, " {} old uploads ({} MiB) copied to the archive;", report.archived_files, report.archived_mib)
+			.expect("writes to a string");
+	}
 
 	if report.events_purged > 0 {
 		write!(out, " {} old events purged from {} rooms;", report.events_purged, report.rooms_purged)
