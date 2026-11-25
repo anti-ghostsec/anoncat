@@ -1,0 +1,218 @@
+#!/bin/bash
+# vps-cc: set up anoncat.cc, the second server, beside anoncat.gleeze.com on
+# the VPS. Every anoncat.gleeze.com account gets a twin here (same name and
+# password); nobody signs up here directly. Run on the VPS as root, from a
+# copy of ops/, after vps-router and with the Njalla API token saved at
+# /Drives/server/data/secrets/njalla-token:
+#
+#   sudo ops/vps/vps-cc
+#
+# It points anoncat.cc's DNS at this machine, gets its certificate (DNS-01
+# through Njalla), writes its config, gives it an onion address and starts
+# it. Safe to run again: it keeps the config, keys and database it finds.
+set -euo pipefail
+
+OPS=$(cd "$(dirname "$0")/.." && pwd)
+DOMAIN=anoncat.cc
+DATA=/Drives/server/data
+CC=$DATA/cc
+CONF=$CC/anoncat.toml
+TOKEN=$DATA/secrets/njalla-token
+LIB=/usr/local/lib/anoncat
+ONION_DIR=/var/lib/tor-instances/anoncat/cc
+
+die() { echo "vps-cc: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+mountpoint -q "$DATA" || die "the vault is locked"
+[[ -s $TOKEN ]] || die "no Njalla token at $TOKEN"
+systemctl is-active -q haproxy || die "run vps-router first"
+v4=$(ip -4 -o addr show scope global | awk '{split($4, a, "/"); print a[1]; exit}')
+v6=$(ip -6 -o addr show scope global | awk '{split($4, a, "/"); print a[1]; exit}')
+[[ -n $v4 ]] || die "no public IPv4 address"
+
+step "Folders"
+install -d -m 0700 -o anoncat -g anoncat "$CC" "$CC/db" "$CC/media" "$CC/tls"
+# Shared with anoncat.gleeze.com, which uses it to keep the twins in step.
+if [[ ! -s $CC/twin-secret ]]; then
+	head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > "$CC/twin-secret"
+fi
+chown anoncat:anoncat "$CC/twin-secret"
+chmod 0400 "$CC/twin-secret"
+echo "$CC"
+
+step "DNS: $DOMAIN -> this machine"
+install -m 0755 "$OPS/vps/njalla-dns" "$LIB/"
+records=(A @ "$v4" CAA @ '0 issue "letsencrypt.org"')
+[[ -n $v6 ]] && records+=(AAAA @ "$v6")
+"$LIB/njalla-dns" "$TOKEN" "$DOMAIN" "${records[@]}"
+
+step "Certificate"
+cat > "$LIB/anoncat-cc-tls" <<'SH'
+#!/bin/bash
+# anoncat-cc-tls: keep anoncat.cc's certificate current (DNS-01 through
+# Njalla). Run by anoncat-cc-tls-renew.service.
+set -euo pipefail
+TLS=/Drives/server/data/cc/tls
+export NJALLA_TOKEN_FILE=/Drives/server/data/secrets/njalla-token
+args=(--accept-tos --path "$TLS" --email admin@anoncat.cc --dns njalla --dns.resolvers 1.1.1.1:53 --domains anoncat.cc)
+if [[ -f $TLS/certificates/anoncat.cc.crt ]]; then
+	lego "${args[@]}" renew --days 30 --renew-hook "/usr/bin/touch $TLS/renewed"
+else
+	lego "${args[@]}" run
+	touch "$TLS/renewed"
+fi
+chown -R anoncat:anoncat "$TLS"
+if [[ -f $TLS/renewed ]]; then
+	rm -f "$TLS/renewed"
+	systemctl reload-or-restart anoncat-cc.service || true
+fi
+SH
+chmod 0755 "$LIB/anoncat-cc-tls"
+cat > /etc/systemd/system/anoncat-cc-tls-renew.service <<'UNIT'
+[Unit]
+Description=Renew anoncat.cc's certificate
+RequiresMountsFor=/Drives/server/data
+ConditionPathIsMountPoint=/Drives/server/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/anoncat/anoncat-cc-tls
+ProtectSystem=strict
+ReadWritePaths=/Drives/server/data/cc/tls
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+LimitCORE=0
+UNIT
+cat > /etc/systemd/system/anoncat-cc-tls-renew.timer <<'UNIT'
+[Unit]
+Description=Renew anoncat.cc's certificate daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+if [[ ! -f $CC/tls/certificates/$DOMAIN.crt ]]; then
+	echo "asking Let's Encrypt (a minute or two: DNS has to spread first)..."
+	systemctl start anoncat-cc-tls-renew.service || die "no certificate; see journalctl -u anoncat-cc-tls-renew"
+fi
+systemctl enable --now anoncat-cc-tls-renew.timer >/dev/null
+[[ -f $CC/tls/certificates/$DOMAIN.crt ]] || die "no certificate"
+echo "$CC/tls/certificates/$DOMAIN.crt"
+
+step "Onion address"
+cat > /etc/tor/instances/anoncat/torrc.d/cc.conf <<TORRC
+# anoncat.cc's onion (ops/vps/vps-cc): apps only, like anoncat.gleeze.com's.
+HiddenServiceDir $ONION_DIR
+HiddenServicePort 80 127.0.0.1:9451
+HiddenServicePoWDefensesEnabled 1
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceMaxStreams 64
+HiddenServiceMaxStreamsCloseCircuit 1
+TORRC
+systemctl reload-or-restart tor@anoncat
+for _ in $(seq 60); do
+	[[ -s $ONION_DIR/hostname ]] && break
+	sleep 1
+done
+[[ -s $ONION_DIR/hostname ]] || die "Tor made no onion name; see journalctl -u tor@anoncat"
+ONION=$(<"$ONION_DIR/hostname")
+install -d -m 0700 "$DATA/tor-keys"
+rm -rf "$DATA/tor-keys/cc"
+cp -a "$ONION_DIR" "$DATA/tor-keys/cc"
+echo "http://$ONION"
+
+step "Config"
+if [[ ! -f $CONF ]]; then
+	cat > "$CONF" <<TOML
+# anoncat.cc (ops/vps/vps-cc). Accounts here are twins of anoncat.gleeze.com's,
+# made and kept in step by that server; nobody signs up here directly.
+[global]
+server_name = "$DOMAIN"
+database_path = "$CC/db"
+address = ["127.0.0.1"]
+port = 9449
+admin_panel_address = "127.0.0.1:9450"
+onion_address = "127.0.0.1:9451"
+media_video_thumbnail_command = ["/usr/local/lib/anoncat/anoncat-video", "frame", "{input}"]
+media_video_worker = "/usr/local/lib/anoncat/anoncat-video"
+database_backup_path = "$CC/backups"
+database_backups_to_keep = 2
+ip_source = "connect_info"
+log = "warn"
+
+# The same rules as anoncat.gleeze.com.
+cleanup_message_max_age = "30d"
+cleanup_media_message_max_age = "90d"
+cleanup_local_media_max_age = "90d"
+cleanup_remote_media_max_age = "5d"
+cleanup_disk_percent = 90
+cleanup_min_free_ram = "512 MiB"
+redaction_retention_seconds = 604800
+max_request_size = "24 MiB"
+max_upload_size = "2 GiB"
+big_body_memory = "512 MiB"
+client_request_timeout = 3600
+allow_registration = false
+web_signup = false
+allow_local_presence = false
+allow_incoming_presence = false
+allow_outgoing_presence = false
+require_auth_for_profile_requests = true
+trusted_servers = ["xmr.se"]
+query_trusted_key_servers_first = false
+query_trusted_key_servers_first_on_join = false
+db_cache_capacity_mb = 256.0
+cache_capacity_modifier = 1.0
+
+[global.tls]
+certs = "$CC/tls/certificates/$DOMAIN.crt"
+key = "$CC/tls/certificates/$DOMAIN.key"
+
+[global.registration_terms.rules]
+version = "2"
+
+[global.registration_terms.rules.translations.en]
+name = "Rules and privacy"
+url = "https://anoncat.gleeze.com/rules"
+
+[global.well_known]
+client = "https://$DOMAIN"
+server = "$DOMAIN:443"
+TOML
+	echo "wrote $CONF"
+fi
+install -d -m 0700 -o anoncat -g anoncat "$CC/backups"
+chown anoncat:anoncat "$CONF"
+chmod 0600 "$CONF"
+
+step "Start"
+install -m 0644 "$OPS/vps/systemd/anoncat-cc.service" "$OPS/vps/systemd/anoncat-cc.socket" \
+	"$OPS/vps/systemd/anoncat.service" /etc/systemd/system/
+pub=$(ip -4 route show default | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+if [[ -n $pub && $pub != eth0 ]]; then
+	sed -i "s/^RestrictNetworkInterfaces=lo eth0/RestrictNetworkInterfaces=lo $pub/" \
+		/etc/systemd/system/anoncat.service /etc/systemd/system/anoncat-cc.service
+fi
+systemctl daemon-reload
+systemctl enable anoncat-cc.socket anoncat-cc.service >/dev/null
+systemctl start anoncat-cc.socket
+echo "starting anoncat.cc (its first start makes a new database)..."
+systemctl start anoncat-cc.service || die "anoncat.cc didn't start; see journalctl --namespace=anoncat -u anoncat-cc"
+for _ in $(seq 30); do
+	curl -sf --max-time 5 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/_matrix/client/versions" >/dev/null && break
+	sleep 2
+done
+curl -sf --max-time 5 --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/_matrix/client/versions" >/dev/null \
+	|| die "anoncat.cc doesn't answer through the router"
+
+echo
+echo "anoncat.cc is up: https://$DOMAIN  (onion: http://$ONION)"

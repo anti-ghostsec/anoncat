@@ -1,0 +1,94 @@
+# anoncat.cc, the second server, on the VPS (ops/vps/vps-cc): every
+# anoncat.gleeze.com account has a twin here. Same binary as anoncat, its own
+# config and database (in the vault, /Drives/server/data/cc), and neither
+# server can read the other's.
+#
+# Its data lives in the passphrase-only vault (ops/vault/anoncat-vault), so
+# it can't start until someone unlocks that after a boot; `anoncat-vault
+# unlock` starts it. Install: copy to /etc/systemd/system/, then
+# `systemctl daemon-reload && systemctl enable anoncat`.
+[Unit]
+Description=anoncat.cc homeserver
+After=network-online.target anoncat-cc.socket anoncat.service
+Wants=network-online.target
+Requires=anoncat-cc.socket
+# Video work runs in its own sandboxed unit (ops/video/README.md).
+Wants=anoncat-video.socket
+After=anoncat-video.socket
+RequiresMountsFor=/Drives/server/data
+# Locked vault: skip quietly instead of starting on an empty directory.
+ConditionPathIsMountPoint=/Drives/server/data
+
+[Service]
+# No core dumps: one holds what the process had in memory, decrypted, and
+# would be written outside the vault.
+LimitCORE=0
+# On the VPS: its public interface, and the tunnel to the home PC (the
+# archive and backups). Set by vps-install to the interface in use.
+RestrictNetworkInterfaces=lo eth0 home
+# Logs kept in RAM only (journalctl --namespace=anoncat); see
+# ops/systemd/journald@anoncat.conf.
+LogNamespace=anoncat
+Type=notify-reload
+NotifyAccess=main
+WatchdogSec=30
+Environment="MALLOC_CONF=background_thread:false"
+User=anoncat
+Group=anoncat
+ExecStart=/usr/local/bin/anoncat -c /Drives/server/data/cc/anoncat.toml
+# Reload = restart in place on the installed binary (ops/update/anoncat-update);
+# the socket stays open, so clients wait instead of failing, and
+# `systemctl reload` returns once the new binary is ready. Config only:
+# `systemctl kill -s USR1 anoncat`.
+ReloadSignal=SIGHUP
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=10min
+TimeoutStopSec=2min
+
+# The smaller of the two: twins are quiet until someone needs them.
+MemoryHigh=1G
+MemoryMax=1536M
+MemorySwapMax=512M
+
+# Hardening: nothing outside the vault is writable.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/Drives/server/data/cc
+# The helpers' secrets and state aren't the server's: a compromised server
+# can't repoint DNS or take over the Pages repository, or change its own
+# certificate.
+InaccessiblePaths=-/Drives/server/data/secrets -/Drives/server/data/netd -/Drives/server/data/db -/Drives/server/data/backups -/Drives/server/data/anoncat.toml -/Drives/server/data/anoncat.toml.home -/Drives/server/data/tls
+ReadOnlyPaths=-/Drives/server/data/cc/tls -/Drives/server/data/cc/twin-secret
+ProtectHome=yes
+# Its own /tmp and /var/tmp, both in RAM.
+PrivateTmp=disconnected
+PrivateDevices=yes
+PrivateMounts=yes
+PrivateUsers=yes
+PrivateIPC=yes
+RemoveIPC=yes
+ProtectProc=invisible
+DevicePolicy=closed
+ManagedOOMPreference=avoid
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Plugins are compiled to machine code at load time, which needs this.
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+# Starts with anoncat (after an unlock too).
+WantedBy=anoncat.service

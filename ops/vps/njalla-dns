@@ -1,0 +1,54 @@
+#!/usr/bin/python3 -I
+"""njalla-dns: make a Njalla domain's records match what's given.
+
+    njalla-dns <token-file> <domain> TYPE NAME CONTENT [TYPE NAME CONTENT ...]
+
+NAME is "@" for the domain itself. Each (TYPE, NAME) given ends with exactly
+that one record (TTL 300): added if missing, changed if different, extra
+copies removed. Records not named are left alone. Uses Njalla's API
+(https://njal.la/api/), with the token in the file, never on the command line.
+"""
+import json, sys, urllib.request
+
+API = "https://njal.la/api/1/"
+TTL = 300
+
+
+def call(token, method, **params):
+    req = urllib.request.Request(
+        API,
+        data=json.dumps({"method": method, "params": params, "jsonrpc": "2.0", "id": 1}).encode(),
+        headers={"Authorization": f"Njalla {token}", "Content-Type": "application/json",
+                 "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        reply = json.load(r)
+    if "error" in reply:
+        raise SystemExit(f"njalla-dns: {method}: {reply['error'].get('message', reply['error'])}")
+    return reply.get("result", {})
+
+
+def main():
+    if len(sys.argv) < 6 or (len(sys.argv) - 3) % 3:
+        raise SystemExit(__doc__.strip())
+    with open(sys.argv[1]) as f:
+        token = f.read().strip()
+    domain = sys.argv[2]
+    wanted = [tuple(sys.argv[i:i + 3]) for i in range(3, len(sys.argv), 3)]
+    records = call(token, "list-records", domain=domain).get("records", [])
+    for rtype, name, content in wanted:
+        same = [r for r in records if r["type"] == rtype and r["name"] == name]
+        keep = next((r for r in same if r["content"] == content), None) or (same[0] if same else None)
+        for r in same:
+            if r is not keep:
+                call(token, "remove-record", domain=domain, id=r["id"])
+        if keep is None:
+            call(token, "add-record", domain=domain, type=rtype, name=name, content=content, ttl=TTL)
+            print(f"added {rtype} {name} {content}")
+        elif keep["content"] != content or int(keep.get("ttl", TTL)) != TTL:
+            call(token, "edit-record", domain=domain, id=keep["id"], content=content, ttl=TTL)
+            print(f"changed {rtype} {name} -> {content}")
+        else:
+            print(f"already {rtype} {name} {content}")
+
+
+main()

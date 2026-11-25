@@ -1,0 +1,13 @@
+# anoncat.cc, the second server (twin accounts, ops/vps/vps-cc). The router
+# (ops/vps/router) hands it the connections for anoncat.cc on port 443;
+# other Matrix servers reach it there too.
+[Unit]
+Description=anoncat.cc homeserver socket
+
+[Socket]
+ListenStream=127.0.0.1:9443
+Backlog=1024
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target
