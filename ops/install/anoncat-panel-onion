@@ -11,6 +11,12 @@
 # is opened. To remove a device, delete its file from
 # /var/lib/tor-instances/anoncat/panel/authorized_clients and restart
 # tor@anoncat. The panel still asks for an admin account's sign-in.
+#
+# Tor Browser on Android can't use these keys, and Orbot needs the VPN slot.
+# `anoncat-panel-onion open` turns the keys off instead (moved to
+# /root/panel-keys-off, not deleted): the secret address and the admin
+# sign-in are then the only locks. Running it with a device name turns them
+# back on.
 set -euo pipefail
 
 INSTANCE=anoncat
@@ -47,7 +53,11 @@ install -d -m 0700 -o "$TOR_USER" -g "$TOR_USER" "$DIR" "$DIR/authorized_clients
 step "Key for $DEVICE"
 auth=$DIR/authorized_clients/$DEVICE.auth
 private=
-if [[ -f $auth ]]; then
+if [[ $DEVICE == open ]]; then
+	install -d -m 0700 /root/panel-keys-off
+	find "$DIR/authorized_clients" -name '*.auth' -exec mv -t /root/panel-keys-off/ {} +
+	echo "no keys: anyone with the address reaches the sign-in page"
+elif [[ -f $auth ]]; then
 	echo "$DEVICE already has a key (delete $auth to make a new one)"
 else
 	# An x25519 key pair, in Tor's base32 form: the last 32 bytes of each DER.
