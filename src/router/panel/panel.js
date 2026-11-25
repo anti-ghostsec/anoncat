@@ -488,7 +488,9 @@ pages.rooms = async (main, params) => {
 	for (const r of res.rooms) byId.set(r.room_id, { ...r, on: ["here"] });
 	for (const r of there?.rooms || []) {
 		const known = byId.get(r.room_id);
-		if (known) { known.on.push("twin"); known.joined_local_members += r.joined_local_members; }
+		// Its members there are mostly the backup accounts of people here:
+		// people are counted once.
+		if (known) known.on.push("twin");
 		else byId.set(r.room_id, { ...r, on: ["twin"] });
 	}
 	res.rooms = [...byId.values()].sort((a, b) => b.joined_members - a.joined_members);
@@ -555,13 +557,15 @@ function roomActions(r, refresh) {
 				text: TWIN ? "Removes everyone on anoncat from the room and deletes it from both anoncat servers." : "Removes every local user from the room and deletes it from this server.",
 				fields: [{ name: "block", label: "Block it so nobody here can rejoin", type: "checkbox", value: true }], confirm: "Delete room", danger: true });
 			if (!v) return;
-			const started = await attempt(null, () => Promise.all(on.map((call) => call("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: v.block, purge: true })
-				.then((x) => ({ ...x, call })))));
+			// Here first; the other server's part only warns if it fails.
+			const started = await attempt(null, () => Promise.all(on.map((call, i) => call("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: v.block, purge: true })
+				.then((x) => ({ ...x, call }))
+				.catch((e) => { if (i === 0) throw e; toast(`Not deleted on ${call === twinApi ? TWIN : ourServer()}: ${e.message}`, 8000); return null; }))));
 			if (!started) return;
 			// Blocked on the other server too, though it isn't in it.
 			if (v.block && TWIN && on.length === 1) await (on[0] === api ? twinApi : api)("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: true }).catch(() => null);
 			toast("Deleting the room…");
-			await Promise.all(started.map((s) => roomDeleted(s.delete_id, s.call)));
+			await Promise.all(started.filter(Boolean).map((s) => roomDeleted(s.delete_id, s.call)));
 			refresh();
 		} }, "Delete"),
 	];
