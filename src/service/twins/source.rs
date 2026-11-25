@@ -283,6 +283,13 @@ async fn sync_rooms(&self, api: &Api<'_>) -> Result<(), ()> {
 				continue;
 			}
 
+			// Rooms where only moderators may invite and no one from here is
+			// one: nothing to do until that changes, and they don't use up
+			// this run's turns.
+			if !invited && !self.has_inviter(user, room_id).await {
+				continue;
+			}
+
 			if budget == 0 {
 				*self.cursor.lock().expect("locked") = Some(user.localpart().to_owned());
 				log_rooms(done, failed, &reasons);
@@ -451,6 +458,36 @@ async fn invite_twin(&self, user: &UserId, twin: &UserId, room_id: &RoomId) -> R
 		.await;
 
 	Ok(())
+}
+
+/// Whether someone here may invite to the room: the person, or another
+/// member from this server.
+#[implement(Service)]
+async fn has_inviter(&self, user: &UserId, room_id: &RoomId) -> bool {
+	let services = &self.services;
+	let Ok(power_levels) = services.state_accessor.get_power_levels(room_id).await else {
+		return false;
+	};
+
+	let members: Vec<(OwnedUserId, UserPowerLevel, bool)> = services
+		.state_cache
+		.local_users_in_room(room_id)
+		.map(|member| {
+			let level = power_levels.for_user(member);
+			let can_invite = power_levels.user_can_invite(member);
+			(member.to_owned(), level, can_invite)
+		})
+		.collect()
+		.await;
+
+	pick_inviter(
+		user,
+		power_levels.user_can_invite(user),
+		members
+			.iter()
+			.map(|(member, level, can)| (member.as_ref(), *level, *can)),
+	)
+	.is_some()
 }
 
 /// The twin gets the person's power level, sent as the person, when it is
