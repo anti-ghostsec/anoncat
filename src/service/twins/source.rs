@@ -210,6 +210,8 @@ async fn account_state(&self, user: &UserId) -> Account {
 		password_hash: is_phc_hash(&stored).then_some(stored),
 		deactivated,
 		displayname,
+		locked: !deactivated && services.users.is_locked(user).await,
+		suspended: !deactivated && services.users.is_suspended(user).await,
 		welcome: None,
 	}
 }

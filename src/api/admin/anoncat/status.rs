@@ -11,6 +11,8 @@ use tuwunel_service::cleanup::Limits;
 #[derive(Serialize)]
 pub(crate) struct Response {
 	server_name: String,
+	/// The other anoncat server this panel runs too (its twin side).
+	twin_server: Option<String>,
 	version: String,
 	uptime_secs: u64,
 	disk_total: Option<u64>,
@@ -46,6 +48,7 @@ pub(crate) async fn anoncat_status_route(
 
 	Ok(Json(Response {
 		server_name: services.globals.server_name().to_string(),
+		twin_server: services.twins.twin_server().map(ToString::to_string),
 		version: tuwunel_core::version::version().to_owned(),
 		uptime_secs: services.server.started.elapsed().map_or(0, |d| d.as_secs()),
 		disk_total: total_space(path).ok(),

@@ -28,6 +28,14 @@ pub async fn apply_account(&self, localpart: &str, account: Account) -> Result<A
 		}
 
 		self.create_twin(&user_id, &account).boxed().await?;
+		let server_user: &UserId = &services.globals.server_user;
+		if account.locked {
+			services.users.set_locked(&user_id, server_user);
+		}
+		if account.suspended {
+			services.users.set_suspended(&user_id, server_user);
+		}
+
 		return Ok(AccountResult { created: true, updated: false });
 	}
 
@@ -73,7 +81,28 @@ pub async fn apply_account(&self, localpart: &str, account: Account) -> Result<A
 			.await?;
 	}
 
-	let updated = new_hash.is_some() || new_name.is_some();
+	// Locked and suspended go with the person: a locked account can't be
+	// used from its twin either.
+	let server_user: &UserId = &services.globals.server_user;
+	let lock_changed = services.users.is_locked(&user_id).await != account.locked;
+	if lock_changed {
+		if account.locked {
+			services.users.set_locked(&user_id, server_user);
+		} else {
+			services.users.clear_locked(&user_id);
+		}
+	}
+
+	let suspend_changed = services.users.is_suspended(&user_id).await != account.suspended;
+	if suspend_changed {
+		if account.suspended {
+			services.users.set_suspended(&user_id, server_user);
+		} else {
+			services.users.clear_suspended(&user_id);
+		}
+	}
+
+	let updated = new_hash.is_some() || new_name.is_some() || lock_changed || suspend_changed;
 	Ok(AccountResult { created: false, updated })
 }
 
@@ -191,4 +220,41 @@ fn twin_user_id(&self, localpart: &str) -> Result<OwnedUserId> {
 	}
 
 	Ok(user_id)
+}
+
+/// The device the source's admin panel uses on this side.
+const PANEL_DEVICE: &str = "ANONCATTWINPANEL";
+
+/// How long a panel token lasts; the source asks again before then.
+pub const PANEL_TOKEN_LIFETIME: std::time::Duration = std::time::Duration::from_hours(1);
+
+/// A new token for this server's own account, for the source's admin panel:
+/// the panel on the source runs this server too. The token before it stops
+/// working.
+#[implement(Service)]
+pub async fn panel_token(&self) -> Result<String> {
+	let services = &self.services;
+	let server_user: &UserId = &services.globals.server_user;
+	let device: &ruma::DeviceId = PANEL_DEVICE.into();
+	let token = tuwunel_core::utils::random_string(64);
+
+	if services.users.device_exists(server_user, device).await {
+		services
+			.users
+			.set_access_token(server_user, device, &token, Some(PANEL_TOKEN_LIFETIME), None)
+			.await?;
+	} else {
+		services
+			.users
+			.create_device(
+				server_user,
+				Some(device),
+				(Some(&token), Some(PANEL_TOKEN_LIFETIME)),
+				None,
+				Some("anoncat panel (twin)"),
+			)
+			.await?;
+	}
+
+	Ok(token)
 }

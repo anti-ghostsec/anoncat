@@ -5,9 +5,13 @@
 
 use axum::{
 	Json,
-	body::Bytes,
+	body::{Body, Bytes},
 	extract::{Path, State},
-	http::{HeaderMap, header::AUTHORIZATION},
+	http::{
+		HeaderMap, HeaderValue, Method, StatusCode, Uri,
+		header::{AUTHORIZATION, CONTENT_TYPE},
+	},
+	response::Response,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tuwunel_core::{Err, Error, Result, err};
@@ -50,6 +54,64 @@ pub(crate) async fn join_route(
 		.await?;
 
 	Ok(Json(Joined { joined: true }))
+}
+
+#[derive(Serialize)]
+pub(crate) struct PanelToken {
+	access_token: String,
+	expires_in_ms: u64,
+}
+
+/// `POST /_anoncat/twin/v1/panel-token`: a short-lived token of this
+/// server's own account, for the source's admin panel.
+pub(crate) async fn panel_token_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	body: Bytes,
+) -> Result<Json<PanelToken>> {
+	let _: serde_json::Value = authorized_body(&services, &headers, &body).await?;
+	let access_token = services.twins.panel_token().await?;
+	let lifetime = tuwunel_service::twins::PANEL_TOKEN_LIFETIME;
+
+	Ok(Json(PanelToken {
+		access_token,
+		expires_in_ms: u64::try_from(lifetime.as_millis()).unwrap_or(u64::MAX),
+	}))
+}
+
+/// `/_anoncat/admin/v1/twin/{path}`: the panel's requests for the other
+/// anoncat server (the twin side), passed on to it as they are. Only the
+/// admin APIs, and only for this server's admins.
+pub(crate) async fn forward_route(
+	State(services): State<crate::State>,
+	method: Method,
+	uri: Uri,
+	headers: HeaderMap,
+	body: Bytes,
+) -> Result<Response> {
+	super::require_admin_token(&services, &headers).await?;
+
+	// The path as it came, still percent-encoded, so IDs pass unchanged.
+	let Some(rest) = uri.path().strip_prefix("/_anoncat/admin/v1/twin") else {
+		return Err!(Request(NotFound("Not found.")));
+	};
+
+	let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+	let answer = services
+		.twins
+		.panel_forward(method.as_str(), &format!("{rest}{query}"), body)
+		.await?;
+
+	let mut response = Response::new(Body::from(answer.body));
+	*response.status_mut() = StatusCode::from_u16(answer.status).unwrap_or(StatusCode::BAD_GATEWAY);
+	if let Some(value) = answer
+		.content_type
+		.and_then(|value| HeaderValue::from_str(&value).ok())
+	{
+		response.headers_mut().insert(CONTENT_TYPE, value);
+	}
+
+	Ok(response)
 }
 
 /// The body, once the request is known to come from the source. Nothing is

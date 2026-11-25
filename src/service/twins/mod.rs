@@ -14,12 +14,18 @@
 //! - `PUT /_anoncat/twin/v1/users/{localpart}` makes or updates a twin;
 //! - `POST /_anoncat/twin/v1/users/{localpart}/join` joins it to a room it
 //!   was invited to.
+//! - `POST /_anoncat/twin/v1/panel-token` gives the source's admin panel a
+//!   short-lived token of the twin side's server account, so one panel runs
+//!   both servers.
 //!
 //! Leaving a room doesn't remove the twin from it, and direct chats are left
 //! alone: the person's twin can be invited there like anyone else.
 
+mod panel;
 mod source;
 mod target;
+
+pub use self::{panel::Answer, target::PANEL_TOKEN_LIFETIME};
 
 use std::{
 	collections::HashMap,
@@ -46,6 +52,9 @@ pub struct Service {
 	/// Source side: the localpart the room sync goes on from.
 	cursor: Mutex<Option<String>>,
 	last_quiet_warning: Mutex<Option<Instant>>,
+	/// Source side: the twin side's panel token and when it runs out.
+	panel_token: tokio::sync::Mutex<Option<(String, Instant)>>,
+	panel_client: std::sync::OnceLock<reqwest::Client>,
 }
 
 /// A twin as the source sends it.
@@ -57,6 +66,12 @@ pub struct Account {
 	pub password_hash: Option<String>,
 	#[serde(default)]
 	pub deactivated: bool,
+	/// Locked: can't sign in or use the account (MSC3939).
+	#[serde(default)]
+	pub locked: bool,
+	/// Suspended: can read but not post (MSC3823).
+	#[serde(default)]
+	pub suspended: bool,
 	#[serde(default)]
 	pub displayname: Option<String>,
 	/// Markdown sent to the twin when it is made: the source's welcome
@@ -69,7 +84,13 @@ impl Account {
 	/// What decides whether the twin needs updating; the welcome text isn't
 	/// part of the account.
 	fn digest(&self) -> sha256::Digest {
-		let state = (&self.password_hash, self.deactivated, &self.displayname);
+		let state = (
+			&self.password_hash,
+			self.deactivated,
+			&self.displayname,
+			self.locked,
+			self.suspended,
+		);
 		sha256::hash(serde_json::to_vec(&state).unwrap_or_default())
 	}
 }
@@ -96,6 +117,8 @@ impl crate::Service for Service {
 			pushed: Mutex::default(),
 			cursor: Mutex::default(),
 			last_quiet_warning: Mutex::default(),
+			panel_token: tokio::sync::Mutex::default(),
+			panel_client: std::sync::OnceLock::new(),
 		}))
 	}
 

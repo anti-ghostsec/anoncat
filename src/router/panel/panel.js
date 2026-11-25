@@ -334,14 +334,27 @@ pages.users = async (main, params) => {
 	const showDeactivated = params.get("deactivated") === "1";
 	const query = new URLSearchParams({ from, limit: PAGE_SIZE, guests: "true", deactivated: showDeactivated ? "true" : "false" });
 	if (q) query.set("name", q);
-	const res = await api("GET", `/_synapse/admin/v2/users?${query}`);
+	const [res] = await Promise.all([api("GET", `/_synapse/admin/v2/users?${query}`), twinServer()]);
 	const go = (changes) => navigate("users", { from, q, deactivated: showDeactivated ? "1" : "", ...changes });
 
-	// The list leaves out suspension; the per-user details have it.
-	await Promise.all(res.users.filter((u) => !u.deactivated).map(async (u) => {
-		const details = await api("GET", `/_synapse/admin/v2/users/${enc(u.name)}`).catch(() => null);
+	// The list leaves out suspension; the per-user details have it. Each
+	// person's backup account on the other anoncat server shows with them.
+	await Promise.all(res.users.map(async (u) => {
+		const [details, twin] = await Promise.all([
+			u.deactivated ? null : api("GET", `/_synapse/admin/v2/users/${enc(u.name)}`).catch(() => null),
+			TWIN ? twinApi("GET", `/_synapse/admin/v2/users/${enc(accountsOf(u.name)[1])}`).catch(() => null) : null,
+		]);
 		u.suspended = details?.suspended ?? false;
+		u.twin = twin && { deactivated: Boolean(twin.deactivated), locked: Boolean(twin.locked), suspended: Boolean(twin.suspended) };
 	}));
+	const backupTags = (u) => {
+		if (!TWIN) return null;
+		const t = u.twin;
+		if (!t) return u.deactivated ? null : h("span", { class: "tag", title: `No account on ${TWIN} yet; it's made within a minute or two` }, "backup pending");
+		const differs = !u.deactivated && (t.deactivated || t.locked !== Boolean(u.locked) || t.suspended !== Boolean(u.suspended));
+		return h("span", { class: `tag${differs ? " warn" : ""}`, title: `Their backup account on ${TWIN}` },
+			`backup${t.deactivated ? " deactivated" : t.locked ? " locked" : t.suspended ? " suspended" : ""}`);
+	};
 
 	const search = h("input", { placeholder: "Search users", value: q, onkeydown: (e) => e.key === "Enter" && go({ q: e.target.value, from: 0 }) });
 	const rows = res.users.map((u) => h("tr", {},
@@ -351,7 +364,8 @@ pages.users = async (main, params) => {
 			u.deactivated ? h("span", { class: "tag bad" }, "deactivated") : null,
 			u.locked ? h("span", { class: "tag bad" }, "locked") : null,
 			u.suspended ? h("span", { class: "tag warn" }, "suspended") : null,
-			u.is_guest ? h("span", { class: "tag" }, "guest") : null),
+			u.is_guest ? h("span", { class: "tag" }, "guest") : null,
+			backupTags(u)),
 		h("td", { class: "small muted" }, date(u.last_seen_ts)),
 		h("td", { class: "actions" }, userActions(u, () => go({})))));
 
@@ -359,6 +373,7 @@ pages.users = async (main, params) => {
 		h("h1", {}, "Users"),
 		h("div", { class: "toolbar" }, search,
 			h("label", { class: "small" }, h("input", { type: "checkbox", checked: showDeactivated, onchange: (e) => go({ deactivated: e.target.checked ? "1" : "", from: 0 }) }), " include deactivated")),
+		TWIN ? h("p", { class: "muted small" }, `Each person here has a backup account on ${TWIN} with the same name and password. Suspend, lock, block, removing messages and uploads, and deactivating act on both; password and display name changes reach the backup within a minute.`) : null,
 		table(["User", "Status", "Last seen", ""], rows, "No users match."),
 		pager(from, res.total, (f) => go({ from: f })));
 };
@@ -371,11 +386,11 @@ function userActions(u, refresh) {
 		h("button", { class: "danger small", onclick: async () => { if (await blockTarget(u.name)) refresh(); } }, "Block"),
 		h("button", { class: "ghost small", onclick: async () => {
 			const suspend = !u.suspended;
-			if (await attempt(suspend ? "Suspended" : "Unsuspended", () => api("PUT", `/_synapse/admin/v1/suspend/${id}`, { suspend }))) refresh();
+			if (await attempt(suspend ? "Suspended" : "Unsuspended", () => onBoth(u.name, (call, who) => call("PUT", `/_synapse/admin/v1/suspend/${enc(who)}`, { suspend })))) refresh();
 		} }, u.suspended ? "Unsuspend" : "Suspend"),
 		h("button", { class: "ghost small", onclick: async () => {
 			const locked = !u.locked;
-			if (await attempt(locked ? "Locked" : "Unlocked", () => api("PUT", `/_synapse/admin/v2/users/${id}`, { locked }))) refresh();
+			if (await attempt(locked ? "Locked" : "Unlocked", () => onBoth(u.name, (call, who) => call("PUT", `/_synapse/admin/v2/users/${enc(who)}`, { locked })))) refresh();
 		} }, u.locked ? "Unlock" : "Lock"),
 		h("button", { class: "ghost small", onclick: async () => {
 			const v = await ask(`Reset password for ${u.name}`, { fields: [
@@ -384,38 +399,49 @@ function userActions(u, refresh) {
 			if (v) await attempt("Password reset", () => api("POST", `/_synapse/admin/v1/reset_password/${id}`, { new_password: v.password, logout_devices: v.logout }));
 		} }, "Password"),
 		h("button", { class: "danger small", title: "Deletes every file they uploaded; their account stays", onclick: async () => {
-			const media = await attempt(null, () => api("GET", `/_synapse/admin/v1/users/${id}/media?limit=1`));
-			if (!media) return;
-			if (!media.total) return toast("They haven't uploaded anything");
-			if (!(await ask(`Delete ${u.name}'s uploads?`, { text: `All ${media.total} files they uploaded are deleted for good, for everyone. Their account stays.`,
+			let total = 0;
+			const counted = await attempt(null, () => onBoth(u.name, async (call, who) => {
+				total += (await call("GET", `/_synapse/admin/v1/users/${enc(who)}/media?limit=1`)).total || 0;
+			}).then(() => true));
+			if (!counted) return;
+			if (!total) return toast("They haven't uploaded anything");
+			if (!(await ask(`Delete ${u.name}'s uploads?`, { text: `All ${total} files they uploaded${TWIN ? ", from both accounts," : ""} are deleted for good, for everyone. Their account stays.`,
 				confirm: "Delete uploads", danger: true }))) return;
-			const r = await attempt(null, () => api("DELETE", `/_synapse/admin/v1/users/${id}/media`));
-			if (r) toast(`Deleted ${r.total} file${r.total === 1 ? "" : "s"}`);
+			let deleted = 0;
+			const r = await attempt(null, () => onBoth(u.name, async (call, who) => {
+				deleted += (await call("DELETE", `/_synapse/admin/v1/users/${enc(who)}/media`)).total || 0;
+			}).then(() => true));
+			if (r) toast(`Deleted ${deleted} file${deleted === 1 ? "" : "s"}`);
 		} }, "Delete uploads"),
 		h("button", { class: "danger small", title: "Removes everything they said, in every room they were ever in, and the files they posted", onclick: async () => {
 			if (!(await ask(`Remove ${u.name}'s messages?`, { text: "Everything they said and posted, in every room they were ever in, is removed for everyone, including people on other servers. Files they posted are deleted and show as the stand-in. Their account stays.",
 				confirm: "Remove messages", danger: true }))) return;
-			removeMessages(u.name);
+			for (const who of accountsOf(u.name)) if (who === u.name || u.twin) removeMessages(who);
 		} }, "Remove messages"),
 		h("button", { class: "danger small", onclick: async () => {
-			const v = await ask(`Deactivate ${u.name}?`, { text: "They can't sign in again and the user ID can't be reused. This can't be undone.",
+			const v = await ask(`Deactivate ${u.name}?`, { text: `They can't sign in again and the user ID can't be reused${TWIN ? `, here or on ${TWIN}` : ""}. This can't be undone.`,
 				fields: [{ name: "erase", label: "Also erase their profile and hide their messages from new members", type: "checkbox", value: true },
 					{ name: "media", label: "Also delete all media they uploaded", type: "checkbox", value: true }],
 				confirm: "Deactivate", danger: true });
 			if (!v) return;
-			if (v.media) await attempt(null, () => api("DELETE", `/_synapse/admin/v1/users/${id}/media`));
-			if (await attempt("Deactivated", () => api("POST", `/_synapse/admin/v1/deactivate/${id}`, { erase: v.erase }))) refresh();
+			if (v.media) await attempt(null, () => onBoth(u.name, (call, who) => call("DELETE", `/_synapse/admin/v1/users/${enc(who)}/media`)));
+			if (await attempt("Deactivated", () => onBoth(u.name, (call, who) => call("POST", `/_synapse/admin/v1/deactivate/${enc(who)}`, { erase: v.erase })))) refresh();
 		} }, "Deactivate"),
 	];
 }
 
 async function userDetails(userId) {
-	const id = enc(userId);
-	const [rooms, media] = await Promise.all([
-		attempt(null, () => api("GET", `/_synapse/admin/v1/users/${id}/joined_rooms`)),
-		attempt(null, () => api("GET", `/_synapse/admin/v1/users/${id}/media?limit=1`)),
-	]);
-	await ask(userId, { text: `${rooms?.total ?? "?"} rooms joined · ${media?.total ?? "?"} uploads`, confirm: "Close" });
+	await twinServer();
+	const lines = await Promise.all(accountsOf(userId).map(async (who) => {
+		const call = apiFor(serverOf(who));
+		const [rooms, media] = await Promise.all([
+			call("GET", `/_synapse/admin/v1/users/${enc(who)}/joined_rooms`).catch(() => null),
+			call("GET", `/_synapse/admin/v1/users/${enc(who)}/media?limit=1`).catch(() => null),
+		]);
+		if (!rooms && who !== userId) return `${who}: no backup account yet`;
+		return `${who}: ${rooms?.total ?? "?"} rooms joined \u00B7 ${media?.total ?? "?"} uploads`;
+	}));
+	await ask(userId, { pre: lines.join("\n"), confirm: "Close" });
 }
 
 pages.tokens = async (main) => {
@@ -1303,11 +1329,43 @@ const MOD = "/_anoncat/admin/v1/moderation";
 const serverOf = (userId) => userId.split(":").slice(1).join(":");
 const ourServer = () => serverOf(sessionStorage.getItem(USER_KEY) || "");
 
+// The other anoncat server this panel runs too (the backup accounts live
+// there): its requests go through this server, which passes them on.
+const TWIN_API = "/_anoncat/admin/v1/twin";
+let TWIN = "";
+let twinLoading = null;
+function twinServer() {
+	twinLoading ??= api("GET", "/_anoncat/admin/v1/status")
+		.then((s) => (TWIN = s.twin_server || ""))
+		.catch(() => { twinLoading = null; return ""; });
+	return twinLoading;
+}
+const twinApi = (method, path, body) => api(method, TWIN_API + path, body);
+// The API of the server that holds this user, file or server name.
+const apiFor = (server) => (TWIN && server === TWIN ? twinApi : api);
+const isOurs = (server) => server === ourServer() || (TWIN && server === TWIN);
+// One person's two accounts: here and on the other anoncat server.
+const localpartOf = (userId) => userId.slice(1).split(":")[0];
+const accountsOf = (userId) => {
+	const server = serverOf(userId);
+	if (!TWIN || !isOurs(server)) return [userId];
+	return [`@${localpartOf(userId)}:${ourServer()}`, `@${localpartOf(userId)}:${TWIN}`];
+};
+// Runs one admin call for each of a person's accounts, on the server that
+// holds it; true when the one here worked (the backup may not exist).
+async function onBoth(userId, call) {
+	const [main, ...rest] = accountsOf(userId);
+	await call(apiFor(serverOf(main)), main);
+	await Promise.all(rest.map((id) => call(apiFor(serverOf(id)), id).catch(() => null)));
+}
+
 // Blocks a user or a whole server. Returns true when it went through.
 async function blockTarget(target, { reason = "" } = {}) {
+	await twinServer();
 	target = target.trim();
 	const isUser = target.startsWith("@");
-	const local = isUser && serverOf(target) === ourServer();
+	if (!isUser && isOurs(target)) { toast("That's one of the anoncat servers; block a person instead"); return false; }
+	const local = isUser && isOurs(serverOf(target));
 	const fields = [{ name: "reason", label: "Reason (only admins see it)", value: reason, placeholder: "e.g. spam ads" }];
 	if (local) fields.push({ name: "lock", label: "Lock their account, so they can't sign in or post", type: "checkbox", value: true });
 	if (isUser) fields.push({ name: "redact", label: local
@@ -1319,9 +1377,21 @@ async function blockTarget(target, { reason = "" } = {}) {
 			: "Nobody on that server can reach this one: no messages, joins, invites or media, and what they already sent is hidden here. Nothing is sent to them either. You can unblock it under Blocklist.",
 		fields, confirm: "Block", danger: true });
 	if (!v) return false;
-	const done = await attempt(`Blocked ${target}`, () => api("POST", `${MOD}/blocklist`, { target, reason: v.reason, lock: v.lock ?? false }));
+	// Blocked on both anoncat servers; a person's backup account with them.
+	const targets = isUser ? accountsOf(target) : [target];
+	const servers = TWIN ? [api, twinApi] : [api];
+	const done = await attempt(`Blocked ${target}${targets.length > 1 ? " and their backup account" : ""}`, async () => {
+		for (const call of servers) {
+			for (const t of targets) {
+				const here = serverOf(t) === (call === api ? ourServer() : TWIN);
+				await call("POST", `${MOD}/blocklist`, { target: t, reason: v.reason, lock: here && (v.lock ?? false) })
+					.catch((e) => { if (t === target && call === api) throw e; });
+			}
+		}
+		return true;
+	});
 	if (done && v.redact) {
-		removeMessages(target, v.reason, { blocked: true });
+		for (const t of targets) removeMessages(t, v.reason, { blocked: true });
 	}
 	return Boolean(done);
 }
@@ -1330,6 +1400,7 @@ async function blockTarget(target, { reason = "" } = {}) {
 // the files they posted for the stand-in. Runs in the background; says how it
 // went when it's done.
 async function removeMessages(userId, reason, { blocked = false } = {}) {
+	const api = apiFor(serverOf(userId));
 	const started = await attempt(null, () => api("POST", `/_synapse/admin/v1/user/${enc(userId)}/redact`,
 		{ rooms: [], reason: reason || "Moderation", limit: 100000 }));
 	if (!started) return;
@@ -1375,6 +1446,7 @@ const thenAsk = (fn) => () => {
 };
 
 pages.blocklist = async (main) => {
+	await twinServer();
 	const [res, rooms] = await Promise.all([
 		api("GET", `${MOD}/blocklist`),
 		attempt(null, () => command("rooms moderation list-banned-rooms")),
@@ -1390,7 +1462,15 @@ pages.blocklist = async (main) => {
 		h("td", { class: "small muted" }, `${date(b.ts)}`, h("div", {}, `by ${b.by}`)),
 		h("td", { class: "actions" }, h("button", { class: "ghost small", onclick: async () => {
 			if (!(await ask(`Unblock ${b.target}?`, { text: b.locked ? "Their account is unlocked too. Messages removed while blocked stay removed." : "Their messages show again, and they can reach this server again.", confirm: "Unblock" }))) return;
-			if (await attempt("Unblocked", () => api("DELETE", `${MOD}/blocklist/${enc(b.target)}`))) refresh();
+			const unblock = async () => {
+				await api("DELETE", `${MOD}/blocklist/${enc(b.target)}`);
+				const targets = b.kind === "user" ? accountsOf(b.target) : [b.target];
+				if (TWIN) await Promise.all(targets.flatMap((t) => [
+					t !== b.target ? api("DELETE", `${MOD}/blocklist/${enc(t)}`).catch(() => null) : null,
+					twinApi("DELETE", `${MOD}/blocklist/${enc(t)}`).catch(() => null)]));
+				return true;
+			};
+			if (await attempt("Unblocked", unblock)) refresh();
 		} }, "Unblock"))));
 
 	const roomIds = [...new Set((rooms?.output || "").match(/^!\S+/gm) || [])];
@@ -1402,6 +1482,7 @@ pages.blocklist = async (main) => {
 
 	fill(main,
 		h("h1", {}, "Blocklist"),
+		TWIN ? h("p", { class: "muted small" }, `Blocking and unblocking here covers ${TWIN} too, and a person's backup account with them.`) : null,
 		h("p", { class: "muted" }, "Blocked users' messages are hidden from everyone here, old and new, and they can't join rooms through this server or invite anyone on it. A blocked server can't reach this one at all. Block from a report, a user, or the Look view, or here."),
 		h("div", { class: "toolbar" }, target, h("button", { onclick: add }, "Block…")),
 		table(["Blocked", "Reason", "When", ""], rows, "Nobody is blocked."),
@@ -1504,7 +1585,14 @@ pages.badfiles = async (main) => {
 
 pages.reports = async (main, params) => {
 	const all = params.get("all") === "1";
-	const res = await api("GET", `${MOD}/reports${all ? "?all=true" : ""}`);
+	await twinServer();
+	// Reports from both anoncat servers, newest first; the other server's
+	// carry its name and are acted on there.
+	const [here, there] = await Promise.all([
+		api("GET", `${MOD}/reports${all ? "?all=true" : ""}`),
+		TWIN ? twinApi("GET", `${MOD}/reports${all ? "?all=true" : ""}`).catch(() => null) : null,
+	]);
+	const res = { reports: [...here.reports, ...(there?.reports || []).map((r) => ({ ...r, srv: TWIN }))].sort((a, b) => (b.ts || 0) - (a.ts || 0)) };
 	// Reloads the list where you were: the same spot on the page, and the
 	// report at the same place in the list (the next one, if yours closed).
 	const refresh = async () => {
@@ -1544,7 +1632,8 @@ pages.reports = async (main, params) => {
 	const sevTag = (s) => h("span", { class: `tag ${s === "high" ? "bad" : s === "medium" ? "warn" : ""}` }, s);
 	let items = res.reports.map((r) => {
 		let card;
-		const act = (action, done) => attempt(done, () => api("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => {
+		const call = apiFor(r.srv);
+		const act = (action, done) => attempt(done, () => call("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => {
 			if (x && action === "hide" && r.mxc) blankMedia(r.mxc, "Hidden");
 			if (!x) return;
 			if (CLOSES.has(action) && !all) return drop([card]);
@@ -1576,7 +1665,7 @@ pages.reports = async (main, params) => {
 				buttons.push(h("button", { class: "danger small", onclick: async () => {
 					if (await blockTarget(r.sender, { reason: r.category || "" })) refresh();
 				} }, "Block user"));
-				if (serverOf(r.sender) !== ourServer()) buttons.push(h("button", { class: "ghost small", onclick: async () => {
+				if (!isOurs(serverOf(r.sender))) buttons.push(h("button", { class: "ghost small", onclick: async () => {
 					if (await blockTarget(serverOf(r.sender), { reason: r.category || "" })) refresh();
 				} }, `Block ${serverOf(r.sender)}`));
 			}
@@ -1597,7 +1686,7 @@ pages.reports = async (main, params) => {
 		if (r.mxc) {
 			preview = h("div", {}, h("div", { class: "report-thumb muted small" }, "\u2026"));
 			const [server, mediaId] = r.mxc.replace("mxc://", "").split("/");
-			api("GET", `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`)
+			apiFor(server)("GET", `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`)
 				.catch(() => null)
 				.then((info) => fill(preview,
 					mediaThumb(r.mxc, info?.media_type || null, { cls: "report-thumb", held: r.hidden }),
@@ -1611,6 +1700,7 @@ pages.reports = async (main, params) => {
 			"data-group-sender": r.sender || "", "data-group-server": r.sender ? serverOf(r.sender) || r.sender : "", "data-group-room": r.room_name || r.room_id || "" },
 			h("div", { class: "report-head" },
 				sevTag(r.severity),
+				r.srv ? h("span", { class: "tag", title: `Made on ${r.srv}, by or about a backup account` }, r.srv) : null,
 				h("span", { class: "tag" }, r.category || r.kind),
 				r.hidden ? h("span", { class: "tag warn" }, "hidden") : null,
 				r.status !== "open" ? h("span", { class: "tag" }, r.status) : null,
@@ -1690,6 +1780,7 @@ const reportKeys = {};
 // for a room its details and latest messages. Rooms opens it too; nobody has
 // to join, but only what this server holds shows.
 async function lookAt(r, title) {
+	const api = apiFor(r.srv);
 	const content = h("div", { class: "evidence" }, h("p", { class: "muted" }, "Loading…"));
 	const shown = ask(title || (r.kind === "room" ? "Reported room" : "Reported message"), { content, confirm: "Close", cancel: false });
 	try {
@@ -1790,6 +1881,8 @@ async function blockMediaFrom(server) {
 // `info` skips the lookup when the caller already knows it.
 function mediaActions(mxc, { info, compact = false, onDeleted, onChanged, onSwapped } = {}) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+	// A file uploaded on the other anoncat server is handled there.
+	const api = apiFor(server);
 	const path = `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`;
 	const cls = compact ? "ghost tiny" : "ghost small";
 	const bar = h("div", { class: "toolbar media-actions" });
@@ -2660,9 +2753,12 @@ async function refreshBadges() {
 	if ($("#app").hidden) return;
 	const s = await api("GET", "/_anoncat/admin/v1/status").catch(() => null);
 	if (!s) return;
+	TWIN = s.twin_server || "";
+	const t = TWIN ? await twinApi("GET", "/_anoncat/admin/v1/status").catch(() => null) : null;
+	const open = (s.open_reports || 0) + (t?.open_reports || 0);
 	const reports = $("#badge-reports");
-	reports.hidden = !s.open_reports;
-	reports.textContent = s.open_reports > 99 ? "99+" : String(s.open_reports || "");
+	reports.hidden = !open;
+	reports.textContent = open > 99 ? "99+" : String(open || "");
 	$("#badge-dashboard").hidden = s.reachable?.ok !== false;
 }
 

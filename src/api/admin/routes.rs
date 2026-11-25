@@ -1,6 +1,6 @@
 use axum::{
 	Router,
-	routing::{delete, get, post, put},
+	routing::{any, delete, get, post, put},
 };
 use tuwunel_api::router::RouterExt;
 use tuwunel_core::Server;
@@ -30,6 +30,8 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/admin/v1/welcome", get(a::welcome::get_route).merge(put(a::welcome::put_route)))
 		.route("/_anoncat/twin/v1/users/{localpart}", put(a::twin::put_user_route))
 		.route("/_anoncat/twin/v1/users/{localpart}/join", post(a::twin::join_route))
+		.route("/_anoncat/twin/v1/panel-token", post(a::twin::panel_token_route))
+		.route("/_anoncat/admin/v1/twin/{*rest}", any(a::twin::forward_route))
 		.route("/_anoncat/admin/v1/moderation/settings", get(m::get_settings_route).merge(put(m::put_settings_route)))
 		.route("/_anoncat/admin/v1/moderation/test", post(m::test_route))
 		.route("/_anoncat/admin/v1/moderation/models", get(m::models_route))
