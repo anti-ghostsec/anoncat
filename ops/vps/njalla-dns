@@ -5,13 +5,16 @@
 
 NAME is "@" for the domain itself. Each (TYPE, NAME) given ends with exactly
 that one record (TTL 300): added if missing, changed if different, extra
-copies removed. Records not named are left alone. Uses Njalla's API
+copies removed; for CAA, TXT and MX, the exact record is added if missing
+and the others are left alone. Records not named are left alone. Uses Njalla's API
 (https://njal.la/api/), with the token in the file, never on the command line.
 """
 import json, sys, urllib.request
 
 API = "https://njal.la/api/1/"
 TTL = 300
+# Types where one name has several records side by side.
+MULTI = {"CAA", "TXT", "MX"}
 
 
 def call(token, method, **params):
@@ -37,6 +40,15 @@ def main():
     records = call(token, "list-records", domain=domain).get("records", [])
     for rtype, name, content in wanted:
         same = [r for r in records if r["type"] == rtype and r["name"] == name]
+        if rtype in MULTI:
+            # Several records of this type belong together (CAA: issue and
+            # issuewild): only an exact one counts, and the others stay.
+            if not any(r["content"] == content for r in same):
+                call(token, "add-record", domain=domain, type=rtype, name=name, content=content, ttl=TTL)
+                print(f"added {rtype} {name} {content}")
+            else:
+                print(f"already {rtype} {name} {content}")
+            continue
         keep = next((r for r in same if r["content"] == content), None) or (same[0] if same else None)
         for r in same:
             if r is not keep:
