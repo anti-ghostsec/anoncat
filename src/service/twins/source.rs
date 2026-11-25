@@ -125,6 +125,7 @@ async fn sync_accounts(&self, api: &Api<'_>) -> Result<(), ()> {
 		.users
 		.stream()
 		.ready_filter(|user| *user != server_user && services.globals.user_is_local(user))
+		.ready_filter(|user| chosen(&services.server.config.twin_only_users, user))
 		.map(ToOwned::to_owned)
 		.collect()
 		.await;
@@ -226,6 +227,7 @@ async fn sync_rooms(&self, api: &Api<'_>) -> Result<(), ()> {
 		.users
 		.list_local_users()
 		.ready_filter(|user| *user != server_user)
+		.ready_filter(|user| chosen(&config.twin_only_users, user))
 		.map(ToOwned::to_owned)
 		.collect()
 		.await;
@@ -575,11 +577,26 @@ fn can_grant(user_level: UserPowerLevel, level: Int, may_change: bool) -> bool {
 	may_change && user_level >= UserPowerLevel::Int(level)
 }
 
+
+/// Whether the account gets a twin: everyone, unless `twin_only_users`
+/// names some.
+fn chosen(only: &[String], user: &UserId) -> bool {
+	only.is_empty() || only.iter().any(|name| name == user.localpart())
+}
+
 #[cfg(test)]
 mod tests {
 	use ruma::{Int, events::room::power_levels::UserPowerLevel, user_id};
 
-	use super::{RoomFacts, can_grant, is_admin, pick_inviter, room_qualifies, twin_level};
+	use super::{RoomFacts, can_grant, chosen, is_admin, pick_inviter, room_qualifies, twin_level};
+
+	#[test]
+	fn an_empty_list_means_everyone() {
+		let user = user_id!("@cat:example.com");
+		assert!(chosen(&[], user));
+		assert!(chosen(&["cat".to_owned()], user));
+		assert!(!chosen(&["dog".to_owned()], user));
+	}
 
 	fn private_room() -> RoomFacts { RoomFacts { federates: true, ..RoomFacts::default() } }
 

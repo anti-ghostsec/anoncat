@@ -2164,6 +2164,12 @@
 #
 #twin_room_joins_per_run = 25
 
+# Source side: when not empty, only these user names (the part before
+# the colon) get twins, to try twins out on a few accounts first.
+# Everyone else is left alone until it's emptied.
+#
+#twin_only_users = []
+
 # How often the cleanup runs. Each run applies the `cleanup_*` limits
 # below and posts what it deleted to the admin room. Durations take
 # suffixes: "90s", "30m", "1h", "7d".

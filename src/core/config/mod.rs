@@ -2569,6 +2569,14 @@ pub struct Config {
 	#[serde(default = "default_twin_room_joins_per_run")]
 	pub twin_room_joins_per_run: usize,
 
+	/// Source side: when not empty, only these user names (the part before
+	/// the colon) get twins, to try twins out on a few accounts first.
+	/// Everyone else is left alone until it's emptied.
+	///
+	/// default: []
+	#[serde(default)]
+	pub twin_only_users: Vec<String>,
+
 	/// How often the cleanup runs. Each run applies the `cleanup_*` limits
 	/// below and posts what it deleted to the admin room. Durations take
 	/// suffixes: "90s", "30m", "1h", "7d".

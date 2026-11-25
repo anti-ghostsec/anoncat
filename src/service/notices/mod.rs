@@ -66,10 +66,19 @@ impl crate::Service for Service {
 }
 
 /// Sends Markdown, as people would type it in their app, to one person.
+/// `{name}` in it becomes the person's user name (the part before the
+/// colon), so a message can show each person their own accounts.
 #[implement(Service)]
 pub async fn send(&self, target: &UserId, markdown: &str) -> Result {
-	self.send_content(target, &RoomMessageEventContent::text_markdown(markdown))
+	let markdown = personalize(markdown, target);
+	self.send_content(target, &RoomMessageEventContent::text_markdown(&markdown))
 		.await
+}
+
+/// `{name}` replaced by the person's user name.
+#[must_use]
+pub fn personalize(markdown: &str, target: &UserId) -> String {
+	markdown.replace("{name}", target.localpart())
 }
 
 /// Sends a message to one person, making their notices room the first time
@@ -302,7 +311,14 @@ fn notice_power_levels(server_user: &UserId) -> RoomPowerLevelsEventContent {
 mod tests {
 	use ruma::{Int, events::tag::TagName, user_id};
 
-	use super::{is_notice_creator, notice_power_levels, notice_tag};
+	use super::{is_notice_creator, notice_power_levels, notice_tag, personalize};
+
+	#[test]
+	fn each_person_sees_their_own_name() {
+		let user = user_id!("@cat:example.com");
+		assert_eq!(personalize("`@{name}:a` and `@{name}:b`", user), "`@cat:a` and `@cat:b`");
+		assert_eq!(personalize("no name here", user), "no name here");
+	}
 
 	#[test]
 	fn people_cant_write_in_notices_rooms() {
