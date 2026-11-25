@@ -1,11 +1,12 @@
-# anoncat on the VPS: systemd holds the public sockets, so connections queue
-# instead of being refused while the server restarts or updates. 443 for apps
-# and the front page, 8448 for other Matrix servers.
+# anoncat on the VPS: systemd holds its sockets, so connections queue
+# instead of being refused while the server restarts or updates. Port 443
+# belongs to the router (ops/vps/router), which hands anoncat.gleeze.com's
+# connections to 8443 here; 8448 is for other Matrix servers, directly.
 [Unit]
 Description=anoncat Matrix homeserver socket
 
 [Socket]
-ListenStream=443
+ListenStream=127.0.0.1:8443
 ListenStream=8448
 BindIPv6Only=both
 Backlog=1024

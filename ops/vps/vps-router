@@ -1,0 +1,58 @@
+#!/bin/bash
+# vps-router: share the VPS's port 443 between anoncat.gleeze.com and
+# anoncat.cc. haproxy takes 443 and passes each connection, still encrypted,
+# to the server whose name it asks for; anoncat.gleeze.com moves to
+# 127.0.0.1:8443 (its socket unit), anoncat.cc listens on 127.0.0.1:9443.
+# Run on the VPS as root, from a copy of ops/:
+#
+#   sudo ops/vps/vps-router
+#
+# anoncat restarts once (a minute or two; connections wait meanwhile).
+# Safe to run again.
+set -euo pipefail
+
+OPS=$(cd "$(dirname "$0")/.." && pwd)
+
+die() { echo "vps-router: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+mountpoint -q /Drives/server/data || die "the vault is locked"
+
+step "haproxy"
+command -v haproxy >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -q haproxy >/dev/null
+systemctl stop haproxy 2>/dev/null || true
+install -m 0644 "$OPS/vps/router/haproxy.cfg" /etc/haproxy/haproxy.cfg
+haproxy -c -q -f /etc/haproxy/haproxy.cfg || die "haproxy refuses the config"
+install -d -m 0755 /etc/systemd/system/haproxy.service.d
+cat > /etc/systemd/system/haproxy.service.d/anoncat.conf <<'UNIT'
+# Started by anoncat's socket switch (ops/vps/vps-router), and kept running.
+[Unit]
+After=anoncat.socket
+[Service]
+Restart=always
+RestartSec=2
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+LimitCORE=0
+UNIT
+echo "config checked"
+
+step "anoncat's socket: 127.0.0.1:8443 and 8448"
+install -m 0644 "$OPS/vps/systemd/anoncat.socket" /etc/systemd/system/anoncat.socket
+systemctl daemon-reload
+# The socket can't change while it's open: stop it and the server, then
+# bring up haproxy and the new socket, then the server.
+systemctl stop anoncat.service anoncat.socket
+systemctl enable --now haproxy
+systemctl start anoncat.socket
+echo "starting anoncat..."
+systemctl start anoncat.service
+systemctl is-active -q haproxy anoncat.socket anoncat.service || die "something didn't start; see systemctl status haproxy anoncat"
+echo "router on 443, anoncat on 127.0.0.1:8443 and 8448"

@@ -110,6 +110,11 @@ TOML
 	grep -q '^media_archive_provider = "archive"' "$CONF" || die "couldn't add the archive settings to $CONF"
 	echo "config: media not here yet is read from home; old uploads copied there after 30 days"
 fi
+# Sized for this machine (6 GB of RAM), not home's 30 GB; and the user's
+# choice of 5 days for other servers' media.
+sed -i -E -e 's/^db_cache_capacity_mb = .*/db_cache_capacity_mb = 1024.0/' \
+	-e 's/^cache_capacity_modifier = .*/cache_capacity_modifier = 2.0/' \
+	-e 's/^cleanup_remote_media_max_age = .*/cleanup_remote_media_max_age = "5d"/' "$CONF"
 chown "$USER_:$USER_" "$CONF"
 
 step "Start"
