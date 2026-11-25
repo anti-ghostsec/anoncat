@@ -1,0 +1,107 @@
+#!/bin/bash
+# anoncat-vps-pull: keep this (home) PC a current standby for the VPS. Every
+# 15 minutes it fetches, over the tunnel, the VPS's newest database backups,
+# the media uploaded there, and its config, keys and certificates. Run as
+# root, with the vault unlocked and the VPS tunnel up:
+#
+#   sudo anoncat-vps-pull <vps-public-address>
+#
+# The key it makes can only read from the VPS's vault (rrsync -ro); nothing
+# here listens. Where things land, in this PC's vault:
+#   backups/        the VPS's database backups, mirrored (restore from here)
+#   db/media/       uploads, added to what's here (nothing deleted)
+#   vps/            the VPS's config, secrets, certificates, onion keys and
+#                   anoncat.cc's backups, apart from this PC's own
+# Prints the key line for the VPS at the end; safe to run again.
+set -euo pipefail
+
+DATA=/Drives/server/data
+KEY=/etc/anoncat/pull-key
+LIB=/usr/local/lib/anoncat
+VPS_ADDR=10.78.0.1
+
+die() { echo "anoncat-vps-pull: $*" >&2; exit 1; }
+step() { echo; echo "== $*"; }
+
+[[ $EUID -eq 0 ]] || die "run as root"
+[[ $# -eq 1 && $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "usage: $0 <vps-public-address>"
+VPS_HOST_ALIAS=$1
+mountpoint -q "$DATA" || die "$DATA isn't mounted; run: anoncat-vault unlock"
+[[ -f /etc/anoncat/known_hosts_vps ]] || die "run anoncat-archive-serve first (it saves the VPS's host key)"
+
+step "Key"
+install -d -m 0755 /etc/anoncat
+[[ -f $KEY ]] || ssh-keygen -q -t ed25519 -N "" -C anoncat-pull -f "$KEY"
+chmod 0600 "$KEY"
+
+step "Pull script"
+install -d -m 0755 "$LIB"
+cat > "$LIB/vps-pull" <<SH
+#!/bin/bash
+# Fetches the VPS's backups, new media and config into this PC's vault
+# (anoncat-vps-pull). Run by anoncat-vps-pull.service.
+set -euo pipefail
+DATA=$DATA
+SSH="ssh -F /dev/null -i $KEY -o IdentitiesOnly=yes -o BatchMode=yes -o ServerAliveInterval=15 -o UserKnownHostsFile=/etc/anoncat/known_hosts_vps -o HostKeyAlias=$VPS_HOST_ALIAS"
+R="op@$VPS_ADDR"
+pull() { rsync -aHX --chown=anoncat:anoncat --partial-dir=.rsync-partial -e "\$SSH" "\$@"; }
+# The database backups: the newest few, exactly.
+pull --delete "\$R:backups/" "\$DATA/backups/"
+# Uploads: added here, never deleted here (this PC is also the archive).
+pull --exclude=.rsync-partial "\$R:db/media/" "\$DATA/db/media/"
+# Everything small: config, secrets, certificates, onion keys, anoncat.cc's
+# config and backups. Not the live databases (backups cover those).
+install -d -m 0700 -o anoncat -g anoncat "\$DATA/vps"
+pull --delete --exclude=/db/ --exclude=/cc/db/ --exclude=/cc/media/ --exclude=/backups/ \\
+	--exclude=/lost+found/ --exclude=/vps/ "\$R:" "\$DATA/vps/"
+date +%s > "\$DATA/vps/.pulled"
+chown anoncat:anoncat "\$DATA/vps/.pulled"
+SH
+chmod 0755 "$LIB/vps-pull"
+
+step "Service and timer"
+cat > /etc/systemd/system/anoncat-vps-pull.service <<UNIT
+[Unit]
+Description=Fetch the VPS's anoncat backups, media and config
+After=wg-quick@anoncat-vps.service
+Wants=wg-quick@anoncat-vps.service
+RequiresMountsFor=$DATA
+ConditionPathIsMountPoint=$DATA
+
+[Service]
+Type=oneshot
+ExecStart=$LIB/vps-pull
+# The tunnel to the VPS only.
+RestrictNetworkInterfaces=lo anoncat-vps
+ProtectSystem=strict
+ReadWritePaths=$DATA
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+LimitCORE=0
+CPUAffinity=0-3
+Nice=10
+IOSchedulingClass=idle
+UNIT
+cat > /etc/systemd/system/anoncat-vps-pull.timer <<'UNIT'
+[Unit]
+Description=Fetch the VPS's anoncat backups every 15 minutes
+
+[Timer]
+# Five minutes after each of the VPS's backups (on the quarter hour).
+OnCalendar=*:05/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable anoncat-vps-pull.timer >/dev/null
+
+echo
+echo "On the VPS, this key may only read from the vault (add it to op's"
+echo "~/.ssh/authorized_keys):"
+echo "command=\"sudo --preserve-env=SSH_ORIGINAL_COMMAND /usr/bin/rrsync -ro /Drives/server/data/\",restrict $(cat "$KEY.pub")"
+echo
+echo "Then: sudo systemctl start anoncat-vps-pull.timer anoncat-vps-pull.service"

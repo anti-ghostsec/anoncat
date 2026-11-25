@@ -71,6 +71,15 @@ if [[ -n $pub && $pub != eth0 ]]; then
 	sed -i "s/^RestrictNetworkInterfaces=lo eth0/RestrictNetworkInterfaces=lo $pub/" \
 		/etc/systemd/system/anoncat.service /etc/systemd/system/anoncat-tls-renew.service
 fi
+# A database backup every 15 minutes (the home PC fetches each one, with
+# anoncat-vps-pull), not once a night as at home.
+install -d -m 0755 /etc/systemd/system/anoncat-backup.timer.d
+cat > /etc/systemd/system/anoncat-backup.timer.d/vps.conf <<'UNIT'
+[Timer]
+OnCalendar=
+OnCalendar=*:00/15
+RandomizedDelaySec=0
+UNIT
 systemctl daemon-reload
 echo "anoncat, its socket (443, 8448) and ${#UNITS[@]} helper units"
 
@@ -114,7 +123,8 @@ fi
 # choice of 5 days for other servers' media.
 sed -i -E -e 's/^db_cache_capacity_mb = .*/db_cache_capacity_mb = 1024.0/' \
 	-e 's/^cache_capacity_modifier = .*/cache_capacity_modifier = 2.0/' \
-	-e 's/^cleanup_remote_media_max_age = .*/cleanup_remote_media_max_age = "5d"/' "$CONF"
+	-e 's/^cleanup_remote_media_max_age = .*/cleanup_remote_media_max_age = "5d"/' \
+	-e 's/^database_backups_to_keep = .*/database_backups_to_keep = 4/' "$CONF"
 chown "$USER_:$USER_" "$CONF"
 
 step "Start"
