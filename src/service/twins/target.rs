@@ -238,6 +238,19 @@ pub async fn panel_token(&self) -> Result<String> {
 	let device: &ruma::DeviceId = PANEL_DEVICE.into();
 	let token = tuwunel_core::utils::random_string(64);
 
+	// A server that never made its admin room has no account row for its
+	// server account yet; made as the admin room would.
+	if !services.users.exists(server_user).await {
+		services
+			.users
+			.create(server_user, None, None)
+			.await?;
+		services
+			.profile
+			.set_displayname(server_user, Some("anoncat"), Some(Propagation::None))
+			.await?;
+	}
+
 	if services.users.device_exists(server_user, device).await {
 		services
 			.users
