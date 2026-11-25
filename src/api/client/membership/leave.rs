@@ -3,7 +3,7 @@ use futures::FutureExt;
 use ruma::api::client::membership::leave_room::v3::{Request, Response};
 use tuwunel_core::{Err, Result};
 
-use crate::{Ruma, notice::is_notice_room};
+use crate::Ruma;
 
 /// Leaves a room through `POST /_matrix/client/v3/rooms/{roomId}/leave`.
 ///
@@ -22,7 +22,10 @@ pub(crate) async fn leave_room_route(
 		.state_cache
 		.is_invited(sender, &body.room_id)
 		.await
-		&& is_notice_room(&services, sender, &body.room_id).await?
+		&& services
+			.notices
+			.is_notice_room(sender, &body.room_id)
+			.await?
 	{
 		return Err!(Request(CannotLeaveServerNoticeRoom("You cannot reject this invite")));
 	}

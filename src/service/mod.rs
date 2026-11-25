@@ -26,6 +26,7 @@ pub mod logs;
 pub mod media;
 pub mod membership;
 pub mod moderation;
+pub mod notices;
 pub mod oauth;
 pub mod plugins;
 pub mod presence;
@@ -44,6 +45,7 @@ pub mod sync;
 pub mod tasks;
 pub mod threepid;
 pub mod transaction_ids;
+pub mod twins;
 pub mod uiaa;
 pub mod users;
 

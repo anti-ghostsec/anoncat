@@ -6314,7 +6314,7 @@ fn default_pushrules_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
 
 fn default_cleanup_interval() -> Duration { Duration::from_secs(60 * 60) }
 
-fn default_twin_sync_interval() -> Duration { Duration::from_secs(60) }
+fn default_twin_sync_interval() -> Duration { Duration::from_mins(1) }
 
 fn default_twin_room_joins_per_run() -> usize { 25 }
 
