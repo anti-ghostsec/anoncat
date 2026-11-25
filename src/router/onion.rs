@@ -51,7 +51,7 @@ pub(crate) fn onion_router(app: Router) -> Router {
 }
 
 /// A v3 onion name, optionally with a port: 56 base32 letters then `.onion`.
-fn is_onion(host: &str) -> bool {
+pub(crate) fn is_onion(host: &str) -> bool {
 	let name = host
 		.rsplit_once(':')
 		.filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit()))

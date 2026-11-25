@@ -2448,6 +2448,17 @@ pub struct Config {
 	/// example: "127.0.0.1:8450"
 	pub admin_panel_address: Option<std::net::SocketAddr>,
 
+	/// Other names the admin panel answers to, besides its loopback address:
+	/// its own onion name (with Tor's client authorization, so only browsers
+	/// holding the key reach it), e.g. ["abc...xyz.onion"]. Tor hands those
+	/// connections to `admin_panel_address`. Each must be a v3 onion name;
+	/// anything else is refused at startup, so the panel is never offered
+	/// under a name that DNS could point elsewhere.
+	///
+	/// default: []
+	#[serde(default)]
+	pub admin_panel_hosts: Vec<String>,
+
 	/// Loopback address where Tor on this machine hands over the connections
 	/// to the server's onion address, for people's apps and the web pages.
 	/// Plain HTTP: Tor encrypts the whole way. Nothing is forwarded or

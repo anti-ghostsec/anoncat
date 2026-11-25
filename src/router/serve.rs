@@ -58,7 +58,7 @@ pub(super) async fn serve(services: Arc<Services>, handle: ServerHandle) -> Resu
 	// (public port, unix socket) gets the router without them.
 	let panel_app = config
 		.admin_panel_address
-		.map(|addr| super::panel::panel_router(app.clone(), addr));
+		.map(|addr| super::panel::panel_router(app.clone(), addr, &config.admin_panel_hosts));
 	let app = super::panel::public_router(app, panel_app.is_some());
 
 	let mut join_set = JoinSet::new();
@@ -159,6 +159,17 @@ pub(super) async fn serve(services: Arc<Services>, handle: ServerHandle) -> Resu
 			return Err!(Config(
 				"admin_panel_address",
 				"The admin panel is plain HTTP and must listen on a loopback address."
+			));
+		}
+		if let Some(name) = config
+			.admin_panel_hosts
+			.iter()
+			.find(|name| name.contains(':') || !super::onion::is_onion(name))
+		{
+			return Err!(Config(
+				"admin_panel_hosts",
+				"{name:?} isn't an onion name; the panel answers only to its loopback address and \
+				 its own onion names."
 			));
 		}
 

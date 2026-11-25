@@ -26,9 +26,12 @@ const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-
 /// The panel listener: the panel's files plus the whole app, for requests that
 /// name the loopback address in `Host`. Anything else is a page elsewhere that
 /// rebound its own hostname to this port (DNS rebinding), so it's refused.
-pub(crate) fn panel_router(app: Router, addr: SocketAddr) -> Router {
+/// `onions` are the panel's own onion names (`admin_panel_hosts`), checked at
+/// startup to be v3 onion names.
+pub(crate) fn panel_router(app: Router, addr: SocketAddr, onions: &[String]) -> Router {
 	let port = addr.port();
-	let allowed: [String; 3] = [addr.to_string(), format!("localhost:{port}"), format!("[::1]:{port}")];
+	let mut allowed: Vec<String> = vec![addr.to_string(), format!("localhost:{port}"), format!("[::1]:{port}")];
+	allowed.extend(onions.iter().map(|name| name.to_ascii_lowercase()));
 	let allowed = std::sync::Arc::new(allowed);
 
 	routes().merge(app).layer(middleware::from_fn(move |req: Request, next: Next| {
