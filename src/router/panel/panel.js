@@ -1240,8 +1240,34 @@ pages.announce = async (main) => {
 		h("div", { class: "toolbar" },
 			h("button", { class: "ghost", onclick: () => send(me), title: "See how it looks before everyone gets it" }, "Send to me first"),
 			h("button", { onclick: () => send(null) }, `Send to everyone (${people})`)),
-		result);
+		result,
+		await welcomeSection());
 };
+
+// The welcome message every new account gets by itself.
+async function welcomeSection() {
+	const WELCOME = "/_anoncat/admin/v1/welcome";
+	const { text } = await api("GET", WELCOME);
+	const box = h("textarea", { class: "announce-text", rows: 8, placeholder: "Sent once to each account made from now on. Markdown works." });
+	box.value = text || "";
+	const state = h("p", { class: "small muted" });
+	const show = (current) => { state.textContent = current ? "On: new accounts get this." : "Off: new accounts get nothing."; };
+	show(text);
+	const save = async (value) => {
+		const r = await attempt(value ? "Welcome message saved" : "Welcome message cleared", () => api("PUT", WELCOME, { text: value }));
+		if (!r) return;
+		box.value = r.text || "";
+		show(r.text);
+	};
+	return h("section", {},
+		h("h2", {}, "Welcome message for new accounts"),
+		h("p", { class: "muted" }, "Goes to each new account's notices room. People who already have an account don't get it; use Announce for them."),
+		box,
+		state,
+		h("div", { class: "toolbar" },
+			h("button", { class: "ghost", onclick: () => save(null) }, "Clear"),
+			h("button", { onclick: () => save(box.value.trim() || null) }, "Save")));
+}
 
 pages.notices = async (main) => {
 	const res = await api("GET", "/_anoncat/admin/v1/notices");
