@@ -43,6 +43,9 @@ pub use self::welcome::MAX_WELCOME;
 /// How the server's account shows in the notices rooms.
 const SENDER_NAME: &str = "anoncat";
 
+/// The notices room's name, the same on every anoncat server.
+const ROOM_NAME: &str = "Notices from the anoncat server";
+
 pub struct Service {
 	services: Arc<crate::services::OnceServices>,
 	settings: Arc<tuwunel_database::Map>,
@@ -123,6 +126,20 @@ pub async fn send_content(&self, target: &UserId, content: &RoomMessageEventCont
 		.await
 		.ok()
 		.map(|member| member.membership);
+
+	// Rooms made before the name changed take the current one.
+	if services.state_accessor.get_name(&room_id).await.ok().as_deref() != Some(ROOM_NAME) {
+		services
+			.timeline
+			.build_and_append_pdu(
+				PduBuilder::state(String::new(), &RoomNameEventContent::new(ROOM_NAME.to_owned())),
+				server_user,
+				&room_id,
+				&state_lock,
+			)
+			.boxed()
+			.await?;
+	}
 
 	if !matches!(membership, Some(MembershipState::Join | MembershipState::Invite)) {
 		services
@@ -288,8 +305,6 @@ async fn create_notice_room(&self, target: &UserId) -> Result<OwnedRoomId> {
 		..RoomCreateEventContent::new_v11()
 	};
 
-	let name = format!("Notices from {}", services.globals.server_name());
-
 	[
 		PduBuilder::state(String::new(), &create),
 		PduBuilder::state(server_user.as_str(), &RoomMemberEventContent {
@@ -302,7 +317,7 @@ async fn create_notice_room(&self, target: &UserId) -> Result<OwnedRoomId> {
 			String::new(),
 			&RoomHistoryVisibilityEventContent::new(HistoryVisibility::Invited),
 		),
-		PduBuilder::state(String::new(), &RoomNameEventContent::new(name)),
+		PduBuilder::state(String::new(), &RoomNameEventContent::new(ROOM_NAME.to_owned())),
 	]
 	.into_iter()
 	.try_stream()
