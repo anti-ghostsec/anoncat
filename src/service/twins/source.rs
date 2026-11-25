@@ -38,7 +38,7 @@ const FIRST_RUN_DELAY: Duration = Duration::from_secs(30);
 const ADMIN_LEVEL: u8 = 100;
 
 /// Why a call to the twin side didn't work.
-enum CallError {
+pub(super) enum CallError {
 	/// Nothing answered: the twin server is down. The run stops there.
 	Unreachable,
 	/// It said no to this one request (4xx); asking again won't help until
@@ -49,7 +49,7 @@ enum CallError {
 }
 
 /// The twin side's address and secret, for one run.
-struct Api<'a> {
+pub(super) struct Api<'a> {
 	client: &'a Client,
 	base: &'a Url,
 	secret: String,
@@ -113,7 +113,10 @@ async fn sync(&self, client: &Client) {
 	};
 
 	let api = Api { client, base, secret };
-	if self.sync_accounts(&api).await.is_err() || self.sync_rooms(&api).await.is_err() {
+	if self.sync_accounts(&api).await.is_err()
+		|| self.sync_moderation(&api).await.is_err()
+		|| self.sync_rooms(&api).await.is_err()
+	{
 		self.warn_quietly("Twin server unreachable; trying again quietly");
 	}
 }
@@ -545,7 +548,7 @@ async fn grant_level(
 }
 
 /// One request to the twin side, JSON both ways.
-async fn call<B, R>(api: &Api<'_>, method: Method, path: &[&str], body: &B) -> Result<R, CallError>
+pub(super) async fn call<B, R>(api: &Api<'_>, method: Method, path: &[&str], body: &B) -> Result<R, CallError>
 where
 	B: Serialize + Sync,
 	R: DeserializeOwned,

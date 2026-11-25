@@ -31,6 +31,7 @@ pub fn build(server: &Server) -> Router<State> {
 		.route("/_anoncat/twin/v1/users/{localpart}", put(a::twin::put_user_route))
 		.route("/_anoncat/twin/v1/users/{localpart}/join", post(a::twin::join_route))
 		.route("/_anoncat/twin/v1/panel-token", post(a::twin::panel_token_route))
+		.route("/_anoncat/twin/v1/moderation", get(a::twin::moderation_state_route).merge(put(a::twin::moderation_route)))
 		.route("/_anoncat/admin/v1/twin/{*rest}", any(a::twin::forward_route))
 		.route("/_anoncat/admin/v1/moderation/settings", get(m::get_settings_route).merge(put(m::put_settings_route)))
 		.route("/_anoncat/admin/v1/moderation/test", post(m::test_route))

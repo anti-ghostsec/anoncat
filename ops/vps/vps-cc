@@ -163,6 +163,8 @@ big_body_memory = "512 MiB"
 client_request_timeout = 3600
 allow_registration = false
 web_signup = false
+# The AI key, as anoncat.gleeze.com sends it with its moderation settings.
+ai_key_file = "$CC/secrets/venice"
 allow_local_presence = false
 allow_incoming_presence = false
 allow_outgoing_presence = false
@@ -190,7 +192,9 @@ server = "$DOMAIN:443"
 TOML
 	echo "wrote $CONF"
 fi
-install -d -m 0700 -o anoncat -g anoncat "$CC/backups"
+install -d -m 0700 -o anoncat -g anoncat "$CC/backups" "$CC/secrets"
+# Older configs: where the AI key from anoncat.gleeze.com is kept.
+grep -q '^ai_key_file' "$CONF" || sed -i "/^web_signup = /a ai_key_file = \"$CC/secrets/venice\"" "$CONF"
 chown anoncat:anoncat "$CONF"
 chmod 0600 "$CONF"
 

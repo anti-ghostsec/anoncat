@@ -180,7 +180,7 @@ pub(super) async fn check_pending_rooms(&self) -> Result {
 
 	let mut failed = 0_usize;
 	for (room_id, pending) in pending {
-		if !pending.force && !settings.check_rooms {
+		if !pending.force && (!settings.check_rooms || self.source_covers(&room_id).await) {
 			continue;
 		}
 		if let Err(e) = self

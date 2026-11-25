@@ -21,6 +21,9 @@ const RENEW_BEFORE: Duration = Duration::from_mins(10);
 pub struct Answer {
 	pub status: u16,
 	pub content_type: Option<String>,
+	/// anoncat's own `x-anoncat-*` headers (a preview's size and frames),
+	/// and a partial answer's range.
+	pub headers: Vec<(String, String)>,
 	pub body: Bytes,
 }
 
@@ -54,7 +57,14 @@ impl Service {
 /// Passes one admin request on to the twin side and returns its answer as
 /// it is. `path_and_query` starts with `/`.
 #[implement(Service)]
-pub async fn panel_forward(&self, method: &str, path_and_query: &str, body: Bytes) -> Result<Answer> {
+pub async fn panel_forward(
+	&self,
+	method: &str,
+	path_and_query: &str,
+	content_type: Option<&str>,
+	range: Option<&str>,
+	body: Bytes,
+) -> Result<Answer> {
 	let method = match method {
 		| "GET" => Method::GET,
 		| "POST" => Method::POST,
@@ -78,9 +88,13 @@ pub async fn panel_forward(&self, method: &str, path_and_query: &str, body: Byte
 		.request(method, url)
 		.bearer_auth(&token);
 
+	if let Some(range) = range {
+		request = request.header(reqwest::header::RANGE, range);
+	}
+
 	if !body.is_empty() {
 		request = request
-			.header(CONTENT_TYPE, "application/json")
+			.header(CONTENT_TYPE, content_type.unwrap_or("application/json"))
 			.body(body);
 	}
 
@@ -102,12 +116,22 @@ pub async fn panel_forward(&self, method: &str, path_and_query: &str, body: Byte
 		.and_then(|value| value.to_str().ok())
 		.map(ToOwned::to_owned);
 
+	let headers = response
+		.headers()
+		.iter()
+		.filter(|(name, _)| {
+			let name = name.as_str();
+			name.starts_with("x-anoncat-") || matches!(name, "content-range" | "accept-ranges")
+		})
+		.filter_map(|(name, value)| Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned())))
+		.collect();
+
 	let body = response
 		.bytes()
 		.await
 		.map_err(|e| err!(Request(Unknown("{}", e.without_url()))))?;
 
-	Ok(Answer { status, content_type, body })
+	Ok(Answer { status, content_type, headers, body })
 }
 
 /// A token of the twin side's server account, asked for when there is none

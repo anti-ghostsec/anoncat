@@ -14,6 +14,8 @@
 //! - `PUT /_anoncat/twin/v1/users/{localpart}` makes or updates a twin;
 //! - `POST /_anoncat/twin/v1/users/{localpart}/join` joins it to a room it
 //!   was invited to.
+//! - `GET` and `PUT /_anoncat/twin/v1/moderation` share the moderation
+//!   settings, AI key and known bad files (see `moderation`);
 //! - `POST /_anoncat/twin/v1/panel-token` gives the source's admin panel a
 //!   short-lived token of the twin side's server account, so one panel runs
 //!   both servers.
@@ -21,11 +23,16 @@
 //! Leaving a room doesn't remove the twin from it, and direct chats are left
 //! alone: the person's twin can be invited there like anyone else.
 
+mod moderation;
 mod panel;
 mod source;
 mod target;
 
-pub use self::{panel::Answer, target::PANEL_TOKEN_LIFETIME};
+pub use self::{
+	moderation::{Mirror, MirrorAnswer, MirrorState},
+	panel::Answer,
+	target::PANEL_TOKEN_LIFETIME,
+};
 
 use std::{
 	collections::HashMap,
@@ -55,6 +62,8 @@ pub struct Service {
 	/// Source side: the twin side's panel token and when it runs out.
 	panel_token: tokio::sync::Mutex<Option<(String, Instant)>>,
 	panel_client: std::sync::OnceLock<reqwest::Client>,
+	/// Source side: the moderation state last sent to the twin side.
+	moderation_pushed: Mutex<Option<sha256::Digest>>,
 }
 
 /// A twin as the source sends it.
@@ -119,6 +128,7 @@ impl crate::Service for Service {
 			last_quiet_warning: Mutex::default(),
 			panel_token: tokio::sync::Mutex::default(),
 			panel_client: std::sync::OnceLock::new(),
+			moderation_pushed: Mutex::default(),
 		}))
 	}
 

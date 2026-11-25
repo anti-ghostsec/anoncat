@@ -754,11 +754,26 @@ pub fn notify(&self, pdu: &PduEvent) {
 	}
 }
 
+/// On the twin side of a twin pair: whether the source server is in the
+/// room too. It checks the room with the same settings, so this side leaves
+/// it to it rather than pay for every check twice.
+#[implement(Service)]
+pub(crate) async fn source_covers(&self, room_id: &RoomId) -> bool {
+	let Some(source) = &self.services.config.twin_of else {
+		return false;
+	};
+
+	self.services
+		.state_cache
+		.server_in_room(source, room_id)
+		.await
+}
+
 /// Whether the settings cover the room. Encrypted rooms are never watched.
 #[implement(Service)]
 async fn watched(&self, settings: &Settings, room_id: &RoomId) -> bool {
 	let state = &self.services.state_accessor;
-	if state.is_encrypted_room(room_id).await {
+	if state.is_encrypted_room(room_id).await || self.source_covers(room_id).await {
 		return false;
 	}
 
@@ -1057,6 +1072,11 @@ pub fn notify_fetched(self: &Arc<Self>, mxc: &str, mime: Option<&str>, size: usi
 		return;
 	};
 	if self.server_blocked(parts.server_name) {
+		return;
+	}
+
+	// The source of a twin pair checked its own uploads already.
+	if self.services.config.twin_of.as_deref() == Some(parts.server_name) {
 		return;
 	}
 

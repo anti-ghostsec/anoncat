@@ -15,7 +15,7 @@ use axum::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tuwunel_core::{Err, Error, Result, err};
-use tuwunel_service::twins::{Account, AccountResult, JoinRequest};
+use tuwunel_service::twins::{Account, AccountResult, JoinRequest, Mirror, MirrorAnswer, MirrorState};
 
 #[derive(Serialize)]
 pub(crate) struct Joined {
@@ -89,17 +89,30 @@ pub(crate) async fn forward_route(
 	headers: HeaderMap,
 	body: Bytes,
 ) -> Result<Response> {
-	super::require_admin_token(&services, &headers).await?;
-
 	// The path as it came, still percent-encoded, so IDs pass unchanged.
 	let Some(rest) = uri.path().strip_prefix("/_anoncat/admin/v1/twin") else {
 		return Err!(Request(NotFound("Not found.")));
 	};
 
+	// A play link is its own key, as on the other server itself: a video
+	// player can't send the panel's token.
+	let play_link = method == Method::GET && rest.starts_with("/_anoncat/admin/v1/moderation/play/");
+	if !play_link {
+		super::require_admin_token(&services, &headers).await?;
+	}
+
 	let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
+	let content_type = headers
+		.get(CONTENT_TYPE)
+		.and_then(|value| value.to_str().ok());
+
+	let range = headers
+		.get(axum::http::header::RANGE)
+		.and_then(|value| value.to_str().ok());
+
 	let answer = services
 		.twins
-		.panel_forward(method.as_str(), &format!("{rest}{query}"), body)
+		.panel_forward(method.as_str(), &format!("{rest}{query}"), content_type, range, body)
 		.await?;
 
 	let mut response = Response::new(Body::from(answer.body));
@@ -111,7 +124,40 @@ pub(crate) async fn forward_route(
 		response.headers_mut().insert(CONTENT_TYPE, value);
 	}
 
+	for (name, value) in answer.headers {
+		if let (Ok(name), Ok(value)) = (
+			axum::http::HeaderName::from_bytes(name.as_bytes()),
+			HeaderValue::from_str(&value),
+		) {
+			response.headers_mut().insert(name, value);
+		}
+	}
+
 	Ok(response)
+}
+
+/// `GET /_anoncat/twin/v1/moderation`: this side's bad-files count.
+pub(crate) async fn moderation_state_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+) -> Result<Json<MirrorState>> {
+	let _: serde_json::Value = authorized_body(&services, &headers, b"null").await?;
+	Ok(Json(services.twins.moderation_state()))
+}
+
+/// `PUT /_anoncat/twin/v1/moderation`: the source's moderation settings,
+/// AI key and known bad files.
+pub(crate) async fn moderation_route(
+	State(services): State<crate::State>,
+	headers: HeaderMap,
+	body: Bytes,
+) -> Result<Json<MirrorAnswer>> {
+	let mirror: Mirror = authorized_body(&services, &headers, &body).await?;
+	services
+		.twins
+		.apply_moderation(mirror)
+		.await
+		.map(Json)
 }
 
 /// The body, once the request is known to come from the source. Nothing is

@@ -478,22 +478,37 @@ pages.rooms = async (main, params) => {
 	const q = params.get("q") || "";
 	const query = new URLSearchParams({ from, limit: PAGE_SIZE, order_by: "joined_members", dir: "b" });
 	if (q) query.set("search_term", q);
-	const res = await api("GET", `/_synapse/admin/v1/rooms?${query}`);
+	await twinServer();
+	// Both anoncat servers' rooms; a room both are in shows once.
+	const [res, there] = await Promise.all([
+		api("GET", `/_synapse/admin/v1/rooms?${query}`),
+		TWIN ? twinApi("GET", `/_synapse/admin/v1/rooms?${query}`).catch(() => null) : null,
+	]);
+	const byId = new Map();
+	for (const r of res.rooms) byId.set(r.room_id, { ...r, on: ["here"] });
+	for (const r of there?.rooms || []) {
+		const known = byId.get(r.room_id);
+		if (known) { known.on.push("twin"); known.joined_local_members += r.joined_local_members; }
+		else byId.set(r.room_id, { ...r, on: ["twin"] });
+	}
+	res.rooms = [...byId.values()].sort((a, b) => b.joined_members - a.joined_members);
+	res.total_rooms = Math.max(res.total_rooms, there?.total_rooms || 0);
 	const go = (changes) => navigate("rooms", { from, q, ...changes });
 
 	const rows = res.rooms.map((r) => h("tr", {},
 		h("td", {}, h("div", {}, r.name || r.canonical_alias || "(unnamed)"), h("div", { class: "mono muted" }, r.room_id)),
-		h("td", {}, `${r.joined_members}`, h("span", { class: "muted small" }, ` (${r.joined_local_members} here)`)),
+		h("td", {}, `${r.joined_members}`, h("span", { class: "muted small" }, ` (${r.joined_local_members} on anoncat)`)),
 		h("td", {},
 			r.public ? h("span", { class: "tag" }, "public") : null,
 			r.encryption ? h("span", { class: "tag ok" }, "encrypted") : h("span", { class: "tag warn" }, "unencrypted"),
-			r.federatable === false ? h("span", { class: "tag" }, "local only") : null),
+			r.federatable === false ? h("span", { class: "tag" }, "local only") : null,
+			TWIN && !r.on.includes("here") ? h("span", { class: "tag", title: `Only ${TWIN} is in this room` }, `only on ${TWIN}`) : null),
 		h("td", { class: "actions" }, roomActions(r, () => go({})))));
 
 	fill(main, 
 		h("h1", {}, "Rooms"),
 		h("div", { class: "toolbar" }, h("input", { placeholder: "Search rooms", value: q, onkeydown: (e) => e.key === "Enter" && go({ q: e.target.value, from: 0 }) }),
-			h("span", { class: "muted small" }, "\u201cList publicly\u201d puts a room on this server's public list. For a room not shown here, paste its #address or !ID into Look up.")),
+			h("span", { class: "muted small" }, `\u201cList publicly\u201d puts a room on this server's public list. ${TWIN ? `Rooms on ${TWIN} show here too; blocking, deleting and purging act on both servers. ` : ""}For a room not shown here, paste its #address or !ID into Look up.`)),
 		table(["Room", "Members", "", ""], rows, "No rooms match."),
 		pager(from, res.total_rooms, (f) => go({ from: f })));
 };
@@ -519,9 +534,12 @@ function listButton(roomId, listed, name, refresh) {
 
 function roomActions(r, refresh) {
 	const id = enc(r.room_id);
+	// The anoncat servers in the room.
+	const on = (r.on || ["here"]).map((w) => (w === "twin" ? twinApi : api));
+	const here = !r.on || r.on.includes("here");
 	return [
-		h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: r.room_id }, r.name || r.canonical_alias || "Room") }, "Look"),
-		listButton(r.room_id, r.public, r.name || r.canonical_alias, refresh),
+		h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: r.room_id, srv: here ? "" : TWIN }, r.name || r.canonical_alias || "Room") }, "Look"),
+		here ? listButton(r.room_id, r.public, r.name || r.canonical_alias, refresh) : null,
 		h("button", { class: "ghost small", onclick: () => navigate("media", { room: r.room_id }) }, "Media"),
 		h("button", { class: "ghost small", onclick: async () => {
 			const v = await ask(`Delete history in ${r.name || r.room_id}`, {
@@ -529,28 +547,31 @@ function roomActions(r, refresh) {
 				fields: [{ name: "days", label: "Older than days", type: "number", value: "30", required: true }], confirm: "Delete history", danger: true });
 			if (!v) return;
 			const ts = Date.now() - Number(v.days) * 86400000;
-			await attempt("History purge started", () => api("POST", `/_synapse/admin/v1/purge_history/${id}`, { purge_up_to_ts: ts, delete_local_events: true }));
+			await attempt("History purge started", () => Promise.all(on.map((call) => call("POST", `/_synapse/admin/v1/purge_history/${id}`, { purge_up_to_ts: ts, delete_local_events: true }))));
 		} }, "Purge history"),
 		h("button", { class: "ghost small", onclick: async () => { if (await blockRoom(r.room_id, r.name)) setTimeout(refresh, 1000); } }, "Block…"),
 		h("button", { class: "danger small", onclick: async () => {
 			const v = await ask(`Delete ${r.name || r.room_id}?`, {
-				text: "Removes every local user from the room and deletes it from this server.",
+				text: TWIN ? "Removes everyone on anoncat from the room and deletes it from both anoncat servers." : "Removes every local user from the room and deletes it from this server.",
 				fields: [{ name: "block", label: "Block it so nobody here can rejoin", type: "checkbox", value: true }], confirm: "Delete room", danger: true });
 			if (!v) return;
-			const started = await attempt(null, () => api("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: v.block, purge: true }));
+			const started = await attempt(null, () => Promise.all(on.map((call) => call("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: v.block, purge: true })
+				.then((x) => ({ ...x, call })))));
 			if (!started) return;
+			// Blocked on the other server too, though it isn't in it.
+			if (v.block && TWIN && on.length === 1) await (on[0] === api ? twinApi : api)("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: true }).catch(() => null);
 			toast("Deleting the room…");
-			await roomDeleted(started.delete_id);
+			await Promise.all(started.map((s) => roomDeleted(s.delete_id, s.call)));
 			refresh();
 		} }, "Delete"),
 	];
 }
 
 // Waits up to two minutes for a room delete to finish, and says how it went.
-async function roomDeleted(deleteId) {
+async function roomDeleted(deleteId, call = api) {
 	for (let i = 0; i < 120; i++) {
 		await new Promise((done) => setTimeout(done, 1000));
-		const s = await api("GET", `/_synapse/admin/v2/rooms/delete_status/${enc(deleteId)}`).catch(() => null);
+		const s = await call("GET", `/_synapse/admin/v2/rooms/delete_status/${enc(deleteId)}`).catch(() => null);
 		if (s?.status === "complete") return toast("Room deleted");
 		if (s?.status === "failed") return toast(`Room delete failed${s.error ? `: ${s.error}` : ""}`);
 	}
@@ -565,13 +586,19 @@ pages.media = async (main, params) => {
 	const items = [];
 	let title = "Media";
 
+	await twinServer();
 	if (room) {
+		// What either anoncat server knows was posted in it.
 		title = `Media in ${room}`;
-		const res = await api("GET", `/_synapse/admin/v1/room/${enc(room)}/media`);
-		for (const mxc of [...res.local, ...res.remote]) items.push({ mxc });
+		const lists = await Promise.all(servers().map((call) => call("GET", `/_synapse/admin/v1/room/${enc(room)}/media`).catch(() => null)));
+		if (!lists.some(Boolean)) throw new Error("Neither anoncat server is in that room.");
+		const seenMxc = new Set();
+		for (const res of lists.filter(Boolean)) {
+			for (const mxc of [...res.local, ...res.remote]) if (!seenMxc.has(mxc)) { seenMxc.add(mxc); items.push({ mxc }); }
+		}
 	} else if (user) {
 		title = `Uploads by ${user}`;
-		const res = await api("GET", `/_synapse/admin/v1/users/${enc(user)}/media?limit=200&order_by=created_ts&dir=b`);
+		const res = await apiFor(serverOf(user))("GET", `/_synapse/admin/v1/users/${enc(user)}/media?limit=200&order_by=created_ts&dir=b`);
 		for (const m of res.media) items.push({ mxc: `mxc://${user.split(":").slice(1).join(":")}/${m.media_id}`, type: m.media_type, size: m.media_length, name: m.upload_name, created: m.created_ts });
 	}
 
@@ -638,7 +665,8 @@ function bulkBar(grid, { remote, onDone, show, onShow }) {
 			for (let el = queue.shift(); el; el = queue.shift()) {
 				const [server, mediaId] = el.dataset.mxc.replace("mxc://", "").split("/");
 				const path = `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`;
-				try { await fn(path); done++; blankMedia(el.dataset.mxc, label === "Swap" ? "Swapped for the stand-in" : "Deleted"); } catch { failed++; }
+				const call = el.dataset.via === "twin" ? twinApi : apiFor(server);
+				try { await fn(path, call); done++; blankMedia(el.dataset.mxc, label === "Swap" ? "Swapped for the stand-in" : "Deleted"); } catch { failed++; }
 				count.textContent = `${done + failed} of ${chosen.length}\u2026`;
 			}
 		};
@@ -647,10 +675,10 @@ function bulkBar(grid, { remote, onDone, show, onShow }) {
 		onDone?.();
 	};
 	const buttons = [
-		h("button", { type: "button", class: "danger small", onclick: thenAsk(() => run("Swap", "Each file is deleted for good; everyone, here and on other servers, gets the stand-in picture instead.", (p) => api("POST", `${p}/hide`))) }, "Swap for stand-in"),
+		h("button", { type: "button", class: "danger small", onclick: thenAsk(() => run("Swap", "Each file is deleted for good; everyone, here and on other servers, gets the stand-in picture instead.", (p, call) => call("POST", `${p}/hide`))) }, "Swap for stand-in"),
 		h("button", { type: "button", class: "ghost small", onclick: thenAsk(() => run("Delete", remote
 			? "Only this server's copies go. Anything someone here opens again is fetched again, unless it's swapped or its server is blocked."
-			: "These uploads are deleted for good, for everyone.", (p) => api("DELETE", p))) }, remote ? "Delete copies" : "Delete"),
+			: "These uploads are deleted for good, for everyone.", (p, call) => call("DELETE", p))) }, remote ? "Delete copies" : "Delete"),
 	];
 	const FILTERS = [["", "All"], ["image", "Pictures"], ["video", "Videos"], ["notinroom", "Not seen in a room"], ["hidden", "Hidden"], ["swapped", "Swapped"]];
 	const filter = h("select", { "aria-label": "Show", onchange: () => {
@@ -679,18 +707,27 @@ function bulkBar(grid, { remote, onDone, show, onShow }) {
 	return h("div", { class: "toolbar bulk" }, filter, all, count, ...buttons, size);
 }
 
-function mediaTabs(current) {
+function mediaTabs(current, on = "") {
 	const tab = (key, label, params) => h("button", { type: "button", class: key === current ? "small" : "ghost small",
-		onclick: () => navigate("media", params) }, label);
+		onclick: () => navigate("media", { ...params, ...(on ? { on } : {}) }) }, label);
+	// Copies from other servers and the storage check are each server's own:
+	// which one's is shown.
+	const which = TWIN && current !== "here" ? h("span", { class: "segmented" },
+		h("button", { type: "button", class: on ? "ghost small" : "small", onclick: () => navigate("media", { view: current }) }, ourServer()),
+		h("button", { type: "button", class: on ? "small" : "ghost small", onclick: () => navigate("media", { view: current, on: "twin" }) }, TWIN)) : null;
 	return h("div", { class: "toolbar" },
 		tab("here", "Uploaded here", {}),
 		tab("remote", "From other servers", { view: "remote" }),
-		tab("storage", "Storage check", { view: "storage" }));
+		tab("storage", "Storage check", { view: "storage" }),
+		which);
 }
 
 // Accounts here using the server as file storage: uploading far more than
 // they post, or uploading pieces of split-up files.
 async function storageCheck(main, params) {
+	await twinServer();
+	const on = TWIN && params.get("on") === "twin" ? "twin" : "";
+	const api = on ? twinApi : window.api;
 	const res = await api("GET", "/_anoncat/admin/v1/media/storage");
 	const reload = () => storageCheck(main, params);
 	const all = params.get("all") === "1";
@@ -725,8 +762,8 @@ async function storageCheck(main, params) {
 			u.user_id !== sessionStorage.getItem(USER_KEY) ? h("button", { class: "ghost small", onclick: thenAsk(async () => { if (await blockTarget(u.user_id)) reload(); }) }, "Block") : null))));
 
 	fill(main,
-		h("h1", {}, "Storage check"),
-		mediaTabs("storage"),
+		h("h1", {}, on ? `Storage check on ${TWIN}` : "Storage check"),
+		mediaTabs("storage", on),
 		h("p", { class: "muted small" },
 			"Some tools cut a file into encrypted pieces and upload them to any homeserver without ever posting them, so the server becomes free, invisible storage. ",
 			"Real attachments get posted: one message per file, even in encrypted rooms. Accounts that upload far more than they post are listed here."),
@@ -745,14 +782,17 @@ async function storageCheck(main, params) {
 						if (await attempt("Reading past messages", () => api("POST", "/_anoncat/admin/v1/media/storage/reindex"))) setTimeout(reload, 1500);
 					} }, "Read past messages again"))),
 		h("div", { class: "toolbar" },
-			h("button", { class: all ? "ghost small" : "small", onclick: () => navigate("media", { view: "storage" }) }, `Suspicious (${flagged.length})`),
-			h("button", { class: all ? "small" : "ghost small", onclick: () => navigate("media", { view: "storage", all: "1" }) }, `Everyone who uploaded (${res.uploaders.length})`)),
+			h("button", { class: all ? "ghost small" : "small", onclick: () => navigate("media", { view: "storage", on }) }, `Suspicious (${flagged.length})`),
+			h("button", { class: all ? "small" : "ghost small", onclick: () => navigate("media", { view: "storage", all: "1", on }) }, `Everyone who uploaded (${res.uploaders.length})`)),
 		table(["Account", "Files", "Size", "In rooms", "Posts", "Pieces", "Newest", ""], rows,
 			all ? "Nobody here has uploaded anything." : "Nothing suspicious: everyone's uploads match what they post."));
 }
 
 // Copies of other servers' media, kept here because someone here viewed it.
 async function remoteMedia(main, params) {
+	await twinServer();
+	const on = TWIN && params.get("on") === "twin" ? "twin" : "";
+	const api = on ? twinApi : window.api;
 	const only = params.get("server") || "";
 	const from = Math.max(0, Number(params.get("from")) || 0);
 	const show = params.get("show") || "";
@@ -761,7 +801,7 @@ async function remoteMedia(main, params) {
 	// The list comes a page at a time, biggest first.
 	const listed = res.listed ?? res.items;
 	const shown = res.media.filter((m) => m.bytes).length;
-	const turn = (to, kind = show) => navigate("media", { view: "remote", ...(only ? { server: only } : {}), ...(to ? { from: String(to) } : {}), ...(kind ? { show: kind } : {}) });
+	const turn = (to, kind = show) => navigate("media", { view: "remote", on, ...(only ? { server: only } : {}), ...(to ? { from: String(to) } : {}), ...(kind ? { show: kind } : {}) });
 	const SHOWN = { image: "pictures", video: "videos", notinroom: "files not seen in a room", hidden: "hidden files", swapped: "swapped files" };
 	const paging = listed > shown || from ? h("div", { class: "toolbar" },
 		h("button", { class: "ghost small", disabled: from === 0, onclick: () => turn(Math.max(0, from - 300)) }, "Bigger ones"),
@@ -770,7 +810,7 @@ async function remoteMedia(main, params) {
 	const reload = () => remoteMedia(main, params);
 
 	const serverRows = res.servers.map((s) => h("tr", { "data-server": s.server },
-		h("td", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); navigate("media", { view: "remote", server: s.server }); } }, s.server),
+		h("td", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); navigate("media", { view: "remote", server: s.server, on }); } }, s.server),
 			s.blocked ? h("span", { class: "tag warn" }, "blocked") : null),
 		h("td", {}, String(s.items)),
 		h("td", {}, bytes(s.bytes)),
@@ -785,7 +825,7 @@ async function remoteMedia(main, params) {
 			s.blocked ? null : h("button", { class: "ghost small", onclick: thenAsk(async () => { if (await blockTarget(s.server)) reload(); }) }, "Block server")))));
 
 	const grid = res.media.length
-		? h("div", { class: "media-grid" }, res.media.map((m) => cachedItem(m, res.servers.some((s) => s.server === m.server && s.blocked))))
+		? h("div", { class: "media-grid" }, res.media.map((m) => cachedItem(m, res.servers.some((s) => s.server === m.server && s.blocked), on)))
 		: h("p", { class: "muted" }, only ? "Nothing cached from this server." : "Nothing cached from other servers.");
 	// The filter picks pages from everything the server has, not only this page.
 	const bulk = res.media.length || show ? bulkBar(grid, { remote: true, onDone: reload, show, onShow: (kind) => turn(0, kind) }) : null;
@@ -811,8 +851,8 @@ async function remoteMedia(main, params) {
 	pollAi();
 
 	fill(main,
-		h("h1", {}, only ? `Media from ${only}` : "Media from other servers"),
-		mediaTabs("remote"),
+		h("h1", {}, `${only ? `Media from ${only}` : "Media from other servers"}${on ? ` on ${TWIN}` : ""}`),
+		mediaTabs("remote", on),
 		h("p", { class: "muted small" },
 			`${res.items} files, ${bytes(res.bytes)} in all. These are copies kept here after someone on this server viewed them. `,
 			"Deleting a copy frees the space, but it's fetched again if someone opens it, unless its server is blocked. ",
@@ -820,7 +860,7 @@ async function remoteMedia(main, params) {
 				? "Hidden media and media from blocked servers show up for people here as the stand-in picture chosen in Settings."
 				: "Stand-in pictures are off in Settings, so hidden and blocked media shows as a broken image."),
 		h("div", { class: "toolbar" },
-			only ? h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote" }) }, "All servers") : null,
+			only ? h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote", on }) }, "All servers") : null,
 			aiButton, aiLine),
 		only ? null : h("h2", {}, "By server"),
 		only || res.servers.length < 2 ? null : h("div", { class: "toolbar" }, h("input", { type: "search", placeholder: "Search servers, e.g. cloud", "aria-label": "Search servers",
@@ -836,23 +876,26 @@ async function remoteMedia(main, params) {
 		paging && from + shown < listed ? h("div", { class: "toolbar" }, h("button", { class: "ghost small", onclick: () => turn(from + 300) }, "Next 300")) : null);
 }
 
-function cachedItem(m, blocked) {
+function cachedItem(m, blocked, via = "") {
 	const [server, mediaId] = m.mxc.replace("mxc://", "").split("/");
-	const thumb = mediaThumb(m.mxc, m.media_type);
+	const thumb = mediaThumb(m.mxc, m.media_type, { via });
 	const kindOf = (t) => !t ? "" : t.startsWith("image/") ? "image" : t.startsWith("video/") ? "video" : "other";
 	const flags = [m.swapped ? "swapped" : "", m.hidden ? "hidden" : "", m.in_room === false ? "notinroom" : "", kindOf(m.media_type)].filter(Boolean).join(" ");
-	const item = h("div", { class: "media-item", "data-mxc": m.mxc, "data-flags": flags, "data-remote": "1" },
+	const item = h("div", { class: "media-item", "data-mxc": m.mxc, "data-flags": flags, "data-remote": "1", "data-via": via },
 		thumb,
 		h("div", { class: "mono muted" }, mediaId),
 		h("div", { class: "small muted" }, [server, bytes(m.bytes), m.fetched_ts ? date(m.fetched_ts) : null].filter(Boolean).join(" · ")),
 		m.in_room === false ? h("div", {}, h("span", { class: "tag warn", title: "Nobody posted it in a room here that isn't encrypted. Someone here asked for it directly, or it was posted in an encrypted room." }, "not seen in a room")) : null,
-		mediaActions(m.mxc, { info: { local: false, stored: true, hidden: m.hidden, server_blocked: blocked }, onDeleted: () => item.remove() }));
+		mediaActions(m.mxc, { info: { local: false, stored: true, hidden: m.hidden, server_blocked: blocked }, via, onDeleted: () => item.remove() }));
 	return item;
 }
 
 // Everyone here who uploaded something, biggest first.
 async function uploaders() {
-	const res = await api("GET", "/_synapse/admin/v1/statistics/users/media?order_by=media_length&dir=b&limit=500");
+	await twinServer();
+	const lists = await Promise.all(servers().map((call) => call("GET", "/_synapse/admin/v1/statistics/users/media?order_by=media_length&dir=b&limit=500").catch(() => null)));
+	if (!lists[0]) throw new Error("Couldn't load who uploaded what.");
+	const res = { users: lists.flatMap((l) => l?.users || []).sort((a, b) => (b.media_length || 0) - (a.media_length || 0)) };
 	const rows = (res.users || []).map((u) => h("tr", {},
 		h("td", {}, h("a", { href: "#", onclick: (e) => { e.preventDefault(); navigate("media", { user: u.user_id }); } }, u.user_id)),
 		h("td", {}, String(u.media_count)),
@@ -879,12 +922,12 @@ const RASTER = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "i
 // A blurred preview of any media: a small still (a frame, for a video),
 // fetched once it scrolls into view and only a few at a time, so long lists
 // stay quick. Videos and audio play in place.
-function mediaThumb(mxc, type, { still = mxc, cls = "", held = false } = {}) {
+function mediaThumb(mxc, type, { still = mxc, cls = "", held = false, via = "" } = {}) {
 	const kind = !type || RASTER.has(type) ? "image"
 		: type.startsWith("video/") ? "video"
 		: type.startsWith("audio/") ? "audio" : "file";
 	const label = h("span", { class: "thumb-label" }, { image: type || "media", video: "video", audio: "audio" }[kind] || type);
-	const el = h("div", { class: `media-thumb ${kind}${cls ? ` ${cls}` : ""}`, title: "Click to reveal", "data-mxc": mxc }, label);
+	const el = h("div", { class: `media-thumb ${kind}${cls ? ` ${cls}` : ""}`, title: "Click to reveal", "data-mxc": mxc, "data-via": via }, label);
 	el.addEventListener("click", (e) => {
 		if (!e.target.closest("video, audio, .play, .vbox")) el.classList.toggle("revealed");
 	});
@@ -899,7 +942,7 @@ function mediaThumb(mxc, type, { still = mxc, cls = "", held = false } = {}) {
 	}
 	if (kind === "video") {
 		el.append(h("button", { class: "full", type: "button", title: "Play it full size", "aria-label": "Play full size",
-			onclick: (e) => { e.stopPropagation(); openFullVideo(mxc); } }, "\u2922"));
+			onclick: (e) => { e.stopPropagation(); openFullVideo(mxc, via); } }, "\u2922"));
 	}
 	return el;
 }
@@ -950,7 +993,7 @@ async function loadPreview(el, mxc) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
 	const got = await queued(async () => {
 		if (!el.isConnected) return null;
-		const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}?thumb=1`, authed());
+		const res = await fetch(`${viaBase(mxc, el.dataset.via)}${MOD}/media/${enc(server)}/${enc(mediaId)}?thumb=1`, authed());
 		// Why there's none, as the server says it: encrypted, not stored...
 		if (!res.ok) return { why: await res.json().then((b) => b.error).catch(() => null) };
 		const num = (name) => Number(res.headers.get(name)) || 0;
@@ -980,7 +1023,7 @@ async function loadPreview(el, mxc) {
 			el.append(h("button", { class: "play", type: "button", title: "Play the video here", "aria-label": "Play the video",
 				onclick: () => playInline(el, mxc, "video") }, "▶"));
 			el.append(h("button", { class: "full", type: "button", title: "Play it full size", "aria-label": "Play full size",
-				onclick: (e) => { e.stopPropagation(); openFullVideo(mxc); } }, "⤢"));
+				onclick: (e) => { e.stopPropagation(); openFullVideo(mxc, el.dataset.via); } }, "⤢"));
 		}
 	}
 	if (got.width && got.height) {
@@ -991,15 +1034,15 @@ async function loadPreview(el, mxc) {
 		el.append(h("span", { class: `thumb-badge${got.frames > 1 || long ? " warn" : ""}`,
 			title: got.frames > 1 || long ? "The small preview can't show all of this. Open it full size before deciding." : "" }, badges.join(" \u00B7 ")));
 		if (!got.sheet) el.append(h("button", { class: "full", type: "button", title: "Open the whole file, full size", "aria-label": "Open full size",
-			onclick: (e) => { e.stopPropagation(); openFull(mxc); } }, "\u2922"));
+			onclick: (e) => { e.stopPropagation(); openFull(mxc, el.dataset.via); } }, "\u2922"));
 	}
 }
 
 // The file itself, at full size and moving if it moves, in a scrollable
 // window: what someone sees when they open it in an app.
-async function openFull(mxc) {
+async function openFull(mxc, via = "") {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
-	const res = await fetch(`${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed()).catch(() => null);
+	const res = await fetch(`${viaBase(mxc, via)}${MOD}/media/${enc(server)}/${enc(mediaId)}`, authed()).catch(() => null);
 	if (!res?.ok) return toast("Couldn't load the file.");
 	const blob = await res.blob();
 	if (!RASTER.has(blob.type)) return toast("Not a picture the panel can show.");
@@ -1017,10 +1060,13 @@ async function openFull(mxc) {
 // once; `converted` asks the server's video worker for a WebM copy (VP8 and
 // Opus) every browser decodes, for a video in a codec this browser can't
 // play (HEVC from phones, often), at the cost of a wait while it's made.
-async function playableVideo(server, mediaId, converted = false) {
-	const r = await api("POST", `${MOD}/media/${enc(server)}/${enc(mediaId)}/play`, { convert: converted });
+async function playableVideo(server, mediaId, converted = false, via = "") {
+	const base = viaBase(`mxc://${server}/${mediaId}`, via);
+	const r = await api("POST", `${base}${MOD}/media/${enc(server)}/${enc(mediaId)}/play`, { convert: converted });
 	if (!r.bytes) throw new Error("the server sent nothing");
-	return { url: r.url, converted: r.converted, type: r.media_type || "no type", size: r.bytes };
+	// The other server's link, through this one.
+	const url = base && r.url?.startsWith("/") ? `${base}${r.url}` : r.url;
+	return { url, converted: r.converted, type: r.media_type || "no type", size: r.bytes, via };
 }
 
 // A player that starts silent: what a video is shows before anything plays
@@ -1093,7 +1139,7 @@ async function useConverted(player, status, server, mediaId) {
 	status.dataset.converting = "1";
 	status.firstChild.textContent = "Making a copy any browser can play\u2026";
 	try {
-		const got = await playableVideo(server, mediaId, true);
+		const got = await playableVideo(server, mediaId, true, status._got?.via || "");
 		player.src = got.url;
 		player.muted = true;
 		status._got = got;
@@ -1106,6 +1152,7 @@ async function useConverted(player, status, server, mediaId) {
 
 async function playInline(el, mxc, kind) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
+	const via = el.dataset.via || "";
 	const button = el.querySelector(".play");
 	button.disabled = true;
 	button.textContent = "\u2026";
@@ -1113,12 +1160,12 @@ async function playInline(el, mxc, kind) {
 		let player;
 		let note = null;
 		if (kind === "video") {
-			const got = await playableVideo(server, mediaId);
+			const got = await playableVideo(server, mediaId, false, via);
 			const video = videoPlayer(got.url);
 			note = playerStatus(video, got, server, mediaId);
 			player = videoBox(video);
 		} else {
-			const got = await playableVideo(server, mediaId);
+			const got = await playableVideo(server, mediaId, false, via);
 			player = h(kind, { src: got.url, controls: true, autoplay: true, preload: "metadata" });
 			player.muted = player.defaultMuted = true;
 		}
@@ -1161,11 +1208,11 @@ function playerStatus(player, got, server, mediaId) {
 
 // A video at full size, playing, in a window: what someone sees when they
 // open it in an app.
-async function openFullVideo(mxc) {
+async function openFullVideo(mxc, via = "") {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
 	let got;
 	try {
-		got = await playableVideo(server, mediaId);
+		got = await playableVideo(server, mediaId, false, via);
 	} catch (e) {
 		return toast(`Couldn't play it: ${e.message}`);
 	}
@@ -1351,6 +1398,25 @@ const accountsOf = (userId) => {
 	if (!TWIN || !isOurs(server)) return [userId];
 	return [`@${localpartOf(userId)}:${ourServer()}`, `@${localpartOf(userId)}:${TWIN}`];
 };
+// Every anoncat server: this one, then the other.
+const servers = () => (TWIN ? [api, twinApi] : [api]);
+// Where a file's preview, full view and player come from: the server that
+// holds it, or the one whose copy is being looked at (`via`).
+const viaBase = (mxc, via) => {
+	const server = mxc.replace("mxc://", "").split("/")[0];
+	return via === "twin" || (TWIN && server === TWIN) ? TWIN_API : "";
+};
+// A room on whichever anoncat server has it: here first. Its details and
+// that server's API, or nulls.
+async function roomOnEither(roomId) {
+	await twinServer();
+	for (const call of servers()) {
+		const details = await call("GET", `/_synapse/admin/v1/rooms/${enc(roomId)}`).catch(() => null);
+		if (details) return { details, call, srv: call === api ? "" : TWIN };
+	}
+	return { details: null, call: api, srv: "" };
+}
+
 // Runs one admin call for each of a person's accounts, on the server that
 // holds it; true when the one here worked (the backup may not exist).
 async function onBoth(userId, call) {
@@ -1379,9 +1445,8 @@ async function blockTarget(target, { reason = "" } = {}) {
 	if (!v) return false;
 	// Blocked on both anoncat servers; a person's backup account with them.
 	const targets = isUser ? accountsOf(target) : [target];
-	const servers = TWIN ? [api, twinApi] : [api];
 	const done = await attempt(`Blocked ${target}${targets.length > 1 ? " and their backup account" : ""}`, async () => {
-		for (const call of servers) {
+		for (const call of servers()) {
 			for (const t of targets) {
 				const here = serverOf(t) === (call === api ? ourServer() : TWIN);
 				await call("POST", `${MOD}/blocklist`, { target: t, reason: v.reason, lock: here && (v.lock ?? false) })
@@ -1421,19 +1486,25 @@ async function removeMessages(userId, reason, { blocked = false } = {}) {
 
 // Blocks a room: nobody here can join it; optionally everyone here leaves.
 async function blockRoom(roomId, name) {
+	await twinServer();
 	const id = enc(roomId);
 	const state = await attempt(null, () => api("GET", `/_synapse/admin/v1/rooms/${id}/block`));
+	// Blocked and unblocked on both anoncat servers.
+	const both = (fn) => Promise.all(servers().map((call, i) => fn(call).catch((e) => { if (i === 0) throw e; return null; })));
 	if (state?.block) {
-		if (!(await ask(`Unblock ${name || roomId}?`, { text: "People on this server can join it again.", confirm: "Unblock" }))) return false;
-		return Boolean(await attempt("Unblocked", () => api("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: false })));
+		if (!(await ask(`Unblock ${name || roomId}?`, { text: "People on anoncat can join it again.", confirm: "Unblock" }))) return false;
+		return Boolean(await attempt("Unblocked", () => both((call) => call("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: false }))));
 	}
 	const v = await ask(`Block ${name || roomId}?`, {
 		text: "Nobody on this server can join it, and invites to it are refused.",
 		fields: [{ name: "leave", label: "Also make everyone here leave it now", type: "checkbox", value: true }],
 		confirm: "Block room", danger: true });
 	if (!v) return false;
-	if (v.leave) return Boolean(await attempt("Blocked; everyone here is leaving it", () => api("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: true, purge: false })));
-	return Boolean(await attempt("Blocked", () => api("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: true })));
+	if (v.leave) return Boolean(await attempt("Blocked; everyone on anoncat is leaving it", () => both(async (call) => {
+		const inIt = await call("GET", `/_synapse/admin/v1/rooms/${id}`).then(() => true).catch(() => false);
+		return inIt ? call("DELETE", `/_synapse/admin/v2/rooms/${id}`, { block: true, purge: false }) : call("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: true });
+	})));
+	return Boolean(await attempt("Blocked", () => both((call) => call("PUT", `/_synapse/admin/v1/rooms/${id}/block`, { block: true }))));
 }
 
 // Closes the open dialog first: there is only one, and the next action asks.
@@ -1500,13 +1571,17 @@ async function teachAi(r) {
 	const note = v?.note?.trim();
 	if (!note) return false;
 	toast("Adding the note; the AI is merging it with the others\u2026", 8000);
-	return Boolean(await attempt("Note added and merged with the others", () => api("POST", `${MOD}/notes`, { note, report: r.id })));
+	// Notes live here and reach the other server with the settings; a report
+	// from there goes along as words, since its number means nothing here.
+	const body = r.srv ? { note: `${note} (About a report: ${r.reason})` } : { note, report: r.id };
+	return Boolean(await attempt("Note added and merged with the others", () => api("POST", `${MOD}/notes`, body)));
 }
 
 // Fingerprints of files that must never come in again. Swapping media adds
 // its own; lists can be shared between servers' admins, since a hash can't
 // be turned back into a picture.
 pages.badfiles = async (main) => {
+	await twinServer();
 	const BASE = "/_anoncat/admin/v1/badfiles";
 	const res = await api("GET", BASE);
 	const reload = () => pages.badfiles(main);
@@ -1556,14 +1631,17 @@ pages.badfiles = async (main) => {
 		h("td", { class: "small muted" }, `${{ swap: "swapped", import: "imported", admin: "added" }[e.source] || e.source} · ${date(e.added_ts)}`),
 		h("td", { class: "actions" }, h("button", { class: "ghost small", onclick: async () => {
 			if (!(await ask("Take this off the list?", { text: "Files matching it are let in again. Anything already swapped stays swapped.", confirm: "Remove", danger: true }))) return;
-			if (await attempt("Removed", () => api("POST", `${BASE}/remove`, { kind: e.kind, hash: e.hash }))) reload();
+			// Off both servers' lists, or the other would hand it back.
+			const off = () => Promise.all(servers().map((call, i) => call("POST", `${BASE}/remove`, { kind: e.kind, hash: e.hash }).catch((err) => { if (i === 0) throw err; return null; })));
+			if (await attempt("Removed", off)) reload();
 		} }, "Remove"))));
 
 	fill(main,
 		h("h1", {}, "Known bad files"),
 		h("p", { class: "muted" },
 			"Fingerprints of files that must never come in again. A matching upload from someone here is refused; a matching file from another server is swapped for the stand-in before anyone sees it, and reported. ",
-			"Swapping media adds its fingerprints here by itself."),
+			"Swapping media adds its fingerprints here by itself.",
+			TWIN ? ` The list is shared with ${TWIN} within a minute, both ways.` : ""),
 		h("p", { class: "muted small" },
 			"Two kinds: SHA-256 matches only the very same file; PDQ (Meta's open perceptual hash, the usual format for shared lists) matches the same picture resized, re-encoded or lightly edited. ",
 			"A fingerprint is 32 bytes that countless pictures share; no picture can be rebuilt from it, which is why hash lists are what services share instead of files. ",
@@ -1633,7 +1711,17 @@ pages.reports = async (main, params) => {
 	let items = res.reports.map((r) => {
 		let card;
 		const call = apiFor(r.srv);
-		const act = (action, done) => attempt(done, () => call("POST", `${MOD}/reports/${r.id}`, { action })).then((x) => {
+		const act = (action, done) => attempt(done, async () => {
+			const x = await call("POST", `${MOD}/reports/${r.id}`, { action });
+			// The settings live here: a room trusted from the other server's
+			// report is trusted here too, and goes back with them.
+			if (action === "trust_room" && r.srv && r.room_id) {
+				const cur = await api("GET", `${MOD}/settings`);
+				const trusted = cur.settings.trusted_rooms || [];
+				if (!trusted.includes(r.room_id)) await api("PUT", `${MOD}/settings`, { trusted_rooms: [...trusted, r.room_id] });
+			}
+			return x;
+		}).then((x) => {
 			if (x && action === "hide" && r.mxc) blankMedia(r.mxc, "Hidden");
 			if (!x) return;
 			if (CLOSES.has(action) && !all) return drop([card]);
@@ -1780,7 +1868,13 @@ const reportKeys = {};
 // for a room its details and latest messages. Rooms opens it too; nobody has
 // to join, but only what this server holds shows.
 async function lookAt(r, title) {
-	const api = apiFor(r.srv);
+	// The server the report came from, else whichever anoncat server is in
+	// the room.
+	let api = apiFor(r.srv);
+	if (!r.srv && TWIN) {
+		const known = await window.api("GET", `/_synapse/admin/v1/rooms/${enc(r.room_id)}`).then(() => true).catch(() => false);
+		if (!known) api = twinApi;
+	}
 	const content = h("div", { class: "evidence" }, h("p", { class: "muted" }, "Loading…"));
 	const shown = ask(title || (r.kind === "room" ? "Reported room" : "Reported message"), { content, confirm: "Close", cancel: false });
 	try {
@@ -1879,10 +1973,11 @@ async function blockMediaFrom(server) {
 // What can be done to one media item, wherever it shows: copy its link,
 // swap it for the stand-in (hide), delete it, block its server or uploader.
 // `info` skips the lookup when the caller already knows it.
-function mediaActions(mxc, { info, compact = false, onDeleted, onChanged, onSwapped } = {}) {
+function mediaActions(mxc, { info, compact = false, onDeleted, onChanged, onSwapped, via = "" } = {}) {
 	const [server, mediaId] = mxc.replace("mxc://", "").split("/");
-	// A file uploaded on the other anoncat server is handled there.
-	const api = apiFor(server);
+	// A file uploaded on the other anoncat server is handled there, and so
+	// is that server's copy of a file from elsewhere (`via`).
+	const api = via === "twin" ? twinApi : apiFor(server);
 	const path = `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`;
 	const cls = compact ? "ghost tiny" : "ghost small";
 	const bar = h("div", { class: "toolbar media-actions" });
@@ -2184,7 +2279,11 @@ pages.settings = async (main) => {
 	};
 	for (const [id, label] of TABS) bar.append(h("button", { type: "button", role: "tab", "data-tab": id, class: "tab", onclick: () => show(id) }, label));
 	show(TABS.some(([id]) => id === current) ? current : "general");
-	fill(main, h("h1", {}, "Settings"), bar, form);
+	await twinServer();
+	const shared = TWIN ? h("p", { class: "muted small" },
+		`These settings, the AI key and the notes for the AI cover ${TWIN} too: it gets them within a minute of saving. `,
+		`It leaves rooms this server is also in to this one, so nothing is checked or paid for twice.`) : null;
+	fill(main, h("h1", {}, "Settings"), shared, bar, form);
 };
 
 // What people here see in place of hidden media and media from blocked
@@ -2218,10 +2317,16 @@ function standInCard(s) {
 		file.value = "";
 		if (!f) return;
 		const done = await attempt("Picture saved, without its metadata", async () => {
-			const res = await fetch(BASE, { method: "PUT", headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}`, "Content-Type": "application/octet-stream" },
-				body: f, credentials: "omit", cache: "no-store" });
-			const json = await res.json().catch(() => ({}));
-			if (!res.ok) throw new ApiError(res.status, json);
+			// Saved on both anoncat servers.
+			const put = async (base) => {
+				const res = await fetch(`${base}${BASE}`, { method: "PUT", headers: { Authorization: `Bearer ${sessionStorage.getItem(TOKEN_KEY)}`, "Content-Type": "application/octet-stream" },
+					body: f, credentials: "omit", cache: "no-store" });
+				const json = await res.json().catch(() => ({}));
+				if (!res.ok) throw new ApiError(res.status, json);
+				return json;
+			};
+			const json = await put("");
+			if (TWIN) await put(TWIN_API).catch(() => toast(`Saved here, but not on ${TWIN}; upload it again`, 8000));
 			return json;
 		});
 		if (done) { s.stand_in_image = "custom"; drawChoices(); }
@@ -2236,7 +2341,7 @@ function standInCard(s) {
 		h("div", { class: "toolbar" },
 			h("button", { type: "button", class: "ghost small", onclick: () => file.click() }, "Upload your own…"),
 			h("button", { type: "button", class: "ghost small", onclick: async () => {
-				if (await attempt("Removed", () => api("DELETE", BASE))) {
+				if (await attempt("Removed", () => Promise.all(servers().map((call, i) => call("DELETE", BASE).catch((e) => { if (i === 0) throw e; return null; }))))) {
 					if (s.stand_in_image === "custom") s.stand_in_image = "orange";
 					drawChoices();
 				}
@@ -2633,7 +2738,7 @@ pages.lookup = async (main, params) => {
 		: new Set();
 	fill(main,
 		h("h1", {}, "Look up"),
-		h("p", { class: "muted" }, "Use your client's Copy link on a picture, message, person or room, paste it here and act on it. Several at once work too, one per line."),
+		h("p", { class: "muted" }, "Use your client's Copy link on a picture, message, person or room, paste it here and act on it. Several at once work too, one per line. Both anoncat servers are looked in."),
 		input,
 		h("div", { class: "toolbar" }, h("button", { onclick: go }, "Look up")),
 		h("div", { class: "lookup-results" }, items.map((i) => lookupCard(i, blocked))));
@@ -2647,12 +2752,13 @@ function lookupCard(item, blocked) {
 	(async () => {
 		try {
 			if (item.kind === "media") {
+				await twinServer();
 				const [server, mediaId] = item.id.replace("mxc://", "").split("/");
-				const info = await api("GET", `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`);
+				const info = await apiFor(server)("GET", `/_anoncat/admin/v1/media/item/${enc(server)}/${enc(mediaId)}`);
 				const thumb = mediaThumb(item.id, info.media_type);
 				body(
 					h("p", { class: "small muted" }, [
-						info.local ? `uploaded here${info.uploader ? ` by ${info.uploader}` : ""}` : `from ${server}${info.server_blocked ? " (blocked)" : ""}`,
+						info.local ? `uploaded on ${server}${info.uploader ? ` by ${info.uploader}` : ""}` : `from ${server}${info.server_blocked ? " (blocked)" : ""}`,
 						info.stored ? null : info.local ? "not on this server" : "no copy here yet",
 						info.media_type, info.bytes ? bytes(info.bytes) : null, info.created_ts ? date(info.created_ts) : null,
 					].filter(Boolean).join(" · ")),
@@ -2668,42 +2774,56 @@ function lookupCard(item, blocked) {
 						: h("p", { class: "muted small" }, "No room here that isn't encrypted has posted it. Someone here asked for it directly, or it was posted in an encrypted room, where the server can't read which file a message carries."),
 					info.stored ? null : h("p", { class: "muted small" }, "Swapping it now means nobody here ever loads it, even before anyone has opened it."));
 			} else if (item.kind === "user") {
-				const local = serverOf(item.id) === ourServer();
-				const details = local ? await api("GET", `/_synapse/admin/v2/users/${enc(item.id)}`).catch(() => null) : null;
+				await twinServer();
+				const local = isOurs(serverOf(item.id));
+				const details = local ? await apiFor(serverOf(item.id))("GET", `/_synapse/admin/v2/users/${enc(item.id)}`).catch(() => null) : null;
+				const backup = TWIN && serverOf(item.id) === TWIN;
 				body(
 					h("p", {}, blockedTag(item.id), blocked.has(serverOf(item.id)) ? h("span", { class: "tag bad" }, "server blocked") : null,
-						local ? (details ? `${details.displayname || ""} · account here` : "No such account here.") : `On ${serverOf(item.id)}`),
+						local ? (details ? `${details.displayname || ""} · ${backup ? `backup account on ${TWIN}` : "account here"}` : `No such account on ${serverOf(item.id)}.`) : `On ${serverOf(item.id)}`),
 					h("div", { class: "toolbar" },
 						h("button", { class: "ghost small", onclick: () => copyText(item.id) }, "Copy"),
 						blocked.has(item.id) ? h("button", { class: "ghost small", onclick: () => navigate("blocklist") }, "In the blocklist") :
 							h("button", { class: "danger small", onclick: async () => { if (await blockTarget(item.id)) render(); } }, "Block"),
 						!local && !blocked.has(serverOf(item.id)) ? h("button", { class: "ghost small", onclick: async () => { if (await blockTarget(serverOf(item.id))) render(); } }, `Block ${serverOf(item.id)}`) : null,
 						local && details ? h("button", { class: "ghost small", onclick: () => navigate("media", { user: item.id }) }, "Their uploads") : null,
-						local && details ? h("button", { class: "ghost small", onclick: () => navigate("users", { q: item.id.slice(1).split(":")[0] }) }, "In Users") : null));
+						local && details ? h("button", { class: "ghost small", onclick: () => navigate("users", { q: localpartOf(item.id) }) }, "In Users") : null));
 			} else if (item.kind === "room" || item.kind === "alias") {
 				const roomId = item.kind === "alias"
 					? (await api("GET", `/_matrix/client/v3/directory/room/${enc(item.id)}`)).room_id
 					: item.id;
-				const details = await api("GET", `/_synapse/admin/v1/rooms/${enc(roomId)}`).catch(() => null);
+				const { details, srv } = await roomOnEither(roomId);
 				body(
-					details ? h("div", { class: "evidence" }, roomFacts(details)) : h("p", { class: "muted" }, "This server isn't in that room, so it knows nothing about it."),
+					details ? h("div", { class: "evidence" }, roomFacts(details)) : h("p", { class: "muted" }, "No anoncat server is in that room, so they know nothing about it."),
+					srv ? h("p", { class: "small muted" }, `Only ${srv} is in it.`) : null,
 					item.kind === "alias" ? h("p", { class: "small muted mono" }, roomId) : null,
 					h("div", { class: "toolbar" },
-						details ? h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: roomId }, details.name || roomId) }, "Look at room") : null,
-						details && item.event ? h("button", { class: "small", onclick: () => lookAt({ kind: "message", room_id: roomId, event_id: item.event }, "Linked message") }, "Look at message") : null,
+						details ? h("button", { class: "small", onclick: () => lookAt({ kind: "room", room_id: roomId, srv }, details.name || roomId) }, "Look at room") : null,
+						details && item.event ? h("button", { class: "small", onclick: () => lookAt({ kind: "message", room_id: roomId, event_id: item.event, srv }, "Linked message") }, "Look at message") : null,
 						details ? h("button", { class: "ghost small", onclick: () => navigate("media", { room: roomId }) }, "Media in it") : null,
-						details ? listButton(roomId, details.public, details.name, () => render()) : null,
+						details && !srv ? listButton(roomId, details.public, details.name, () => render()) : null,
 						h("button", { class: "ghost small", onclick: () => copyText(roomId) }, "Copy room ID"),
 						h("button", { class: "danger small", onclick: () => blockRoom(roomId, details?.name) }, "Block room")));
 			} else if (item.kind === "server") {
-				const cached = await api("GET", `/_anoncat/admin/v1/media/cached?server=${enc(item.id)}`).catch(() => null);
-				const mine = cached?.servers.find((s) => s.server === item.id);
+				await twinServer();
+				if (isOurs(item.id)) {
+					body(h("p", { class: "muted" }, "One of the anoncat servers."));
+					return;
+				}
+				const counts = await Promise.all(servers().map(async (call) => {
+					const cached = await call("GET", `/_anoncat/admin/v1/media/cached?server=${enc(item.id)}`).catch(() => null);
+					return cached?.servers.find((s) => s.server === item.id) || null;
+				}));
+				const [mine, theirs] = counts;
+				const line = [mine ? `${mine.items} files cached here, ${bytes(mine.bytes)}` : null,
+					theirs ? `${theirs.items} on ${TWIN}, ${bytes(theirs.bytes)}` : null].filter(Boolean).join(" · ");
 				body(
-					h("p", {}, blockedTag(item.id), mine ? `${mine.items} files cached here, ${bytes(mine.bytes)}` : "Nothing cached from it."),
+					h("p", {}, blockedTag(item.id), line || "Nothing cached from it."),
 					h("div", { class: "toolbar" },
 						blocked.has(item.id) ? h("button", { class: "ghost small", onclick: () => navigate("blocklist") }, "In the blocklist") :
 							h("button", { class: "danger small", onclick: async () => { if (await blockTarget(item.id)) render(); } }, "Block server"),
-						mine ? h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote", server: item.id }) }, "Its media") : null));
+						mine ? h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote", server: item.id }) }, "Its media") : null,
+						theirs ? h("button", { class: "ghost small", onclick: () => navigate("media", { view: "remote", server: item.id, on: "twin" }) }, `Its media on ${TWIN}`) : null));
 			} else if (item.kind === "event") {
 				body(h("p", { class: "muted" }, "A message ID alone doesn't say which room it's in. Copy the message's link in your client instead; that has both."));
 			} else {
