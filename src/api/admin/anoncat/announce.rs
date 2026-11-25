@@ -4,7 +4,7 @@
 
 use axum::{Json, extract::State, http::HeaderMap};
 use futures::{FutureExt, StreamExt};
-use ruma::{OwnedUserId, UserId, events::room::message::RoomMessageEventContent};
+use ruma::{OwnedUserId, UserId};
 use serde::{Deserialize, Serialize};
 use tuwunel_core::{Err, Result, utils::stream::ReadyExt};
 use tuwunel_service::Services;
@@ -74,11 +74,11 @@ pub(crate) async fn announce_route(
 		| None => recipients(&services).await,
 	};
 
-	let content = RoomMessageEventContent::text_markdown(text);
 	let mut sent = 0_usize;
 	let mut failed = Vec::new();
 	for user in &targets {
-		match services.notices.send_content(user, &content).boxed().await {
+		// `{name}` becomes each person's own user name.
+		match services.notices.send(user, text).boxed().await {
 			| Ok(()) => sent = sent.saturating_add(1),
 			| Err(e) => failed.push(Failed { user: user.to_string(), error: e.sanitized_message() }),
 		}

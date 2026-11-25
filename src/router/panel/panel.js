@@ -1216,14 +1216,29 @@ pages.announce = async (main) => {
 		h("option", { value: "onion" }, "New onion address"),
 		h("option", { value: "downtime" }, "Planned maintenance"));
 	const result = h("div", { class: "announce-result" });
+	let sending = false;
 	const send = async (to) => {
+		if (sending) return;
 		const text = input.value.trim();
 		if (!text) return toast("Write the message first");
 		if (!to && !(await ask(`Send this to all ${people} people?`, {
 			pre: text.length > 600 ? `${text.slice(0, 600)}…` : text,
 			text: "Each person gets it in their own notices room, which their app keeps at the bottom of the room list. It can't be taken back.",
 			confirm: `Send to ${people}` }))) return;
-		const r = await attempt(null, () => api("POST", ANNOUNCE, to ? { text, to } : { text }));
+		// One send at a time: over Tor it can take a while, and a second tap
+		// would send it again.
+		if (sending) return;
+		sending = true;
+		const buttons = [mine, all];
+		const labels = buttons.map((b) => b.textContent);
+		buttons.forEach((b) => { b.disabled = true; b.textContent = "Sending…"; });
+		let r;
+		try {
+			r = await attempt(null, () => api("POST", ANNOUNCE, to ? { text, to } : { text }));
+		} finally {
+			sending = false;
+			buttons.forEach((b, i) => { b.disabled = false; b.textContent = labels[i]; });
+		}
 		if (!r) return;
 		fill(result,
 			h("p", {}, to ? (r.sent ? `Sent to you (${to}). Look in your app for the notices room.` : "Not sent.")
@@ -1232,14 +1247,14 @@ pages.announce = async (main) => {
 				table(["Person", "Why"], r.failed.map((f) => h("tr", {}, h("td", { class: "mono" }, f.user), h("td", { class: "small" }, f.error))))) : null);
 		if (!to && r.sent) { try { sessionStorage.removeItem(DRAFT); } catch {} }
 	};
+	const mine = h("button", { class: "ghost", onclick: () => send(me), title: "See how it looks before everyone gets it" }, "Send to me first");
+	const all = h("button", { onclick: () => send(null) }, `Send to everyone (${people})`);
 	fill(main,
 		h("h1", {}, "Announce"),
-		h("p", { class: "muted" }, `A message from the server to everyone with an account here (${people} people). Each person gets it in their own notices room, which only the server writes in; the first one comes as an invite. These rooms stay on this server.`),
+		h("p", { class: "muted" }, `A message from the server to everyone with an account here (${people} people). Each person gets it in their own notices room, which only the server writes in; they are put in it the first time, and can leave it. These rooms stay on this server.`),
 		h("div", { class: "toolbar" }, start),
 		input,
-		h("div", { class: "toolbar" },
-			h("button", { class: "ghost", onclick: () => send(me), title: "See how it looks before everyone gets it" }, "Send to me first"),
-			h("button", { onclick: () => send(null) }, `Send to everyone (${people})`)),
+		h("div", { class: "toolbar" }, mine, all),
 		result,
 		await welcomeSection());
 };

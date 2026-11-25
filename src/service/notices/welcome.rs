@@ -29,6 +29,8 @@ pub const MAX_WELCOME: usize = 20_000;
 
 #[implement(Service)]
 pub(super) async fn welcome_worker(self: Arc<Self>) -> Result {
+	self.name_server_account().await;
+
 	loop {
 		tokio::select! {
 			() = tokio::time::sleep(INTERVAL) => {},

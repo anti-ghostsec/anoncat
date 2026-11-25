@@ -65,6 +65,26 @@ impl crate::Service for Service {
 	fn name(&self) -> &str { crate::service::make_name(std::module_path!()) }
 }
 
+/// The server's account shows as "anoncat" in apps that look at its profile
+/// rather than its name in the room. Its user ID can't change after the
+/// first start; this is the name people see.
+#[implement(Service)]
+pub(super) async fn name_server_account(&self) {
+	let services = &self.services;
+	let server_user: &UserId = &services.globals.server_user;
+	if services.profile.displayname(server_user).await.ok().as_deref() == Some(SENDER_NAME) {
+		return;
+	}
+
+	if let Err(e) = services
+		.profile
+		.set_displayname(server_user, Some(SENDER_NAME), Some(crate::profile::Propagation::None))
+		.await
+	{
+		tuwunel_core::debug_warn!("Couldn't name the server's account: {e}");
+	}
+}
+
 /// Sends Markdown, as people would type it in their app, to one person.
 /// `{name}` in it becomes the person's user name (the part before the
 /// colon), so a message can show each person their own accounts.
@@ -82,7 +102,7 @@ pub fn personalize(markdown: &str, target: &UserId) -> String {
 }
 
 /// Sends a message to one person, making their notices room the first time
-/// and inviting them again if they left it.
+/// and putting them in it (again, if they left).
 #[implement(Service)]
 pub async fn send_content(&self, target: &UserId, content: &RoomMessageEventContent) -> Result {
 	let services = &self.services;
@@ -94,18 +114,35 @@ pub async fn send_content(&self, target: &UserId, content: &RoomMessageEventCont
 	let server_user: &UserId = &services.globals.server_user;
 	let state_lock = services.state.mutex.lock(&room_id).await;
 
-	// Invited again if they left; a pending invite stays as it is.
-	let joined = services.state_cache.is_joined(target, &room_id).await;
-	let invited = services.state_cache.is_invited(target, &room_id).await;
-	if !joined && !invited {
+	// Put straight in the first time, so the message is simply there in their
+	// room list (an invite from a server account looks like spam). Someone who
+	// left, or declined, is only invited again: they can leave for good.
+	let membership = services
+		.state_accessor
+		.get_member(&room_id, target)
+		.await
+		.ok()
+		.map(|member| member.membership);
+
+	if !matches!(membership, Some(MembershipState::Join | MembershipState::Invite)) {
 		services
 			.timeline
 			.build_and_append_pdu(
-				PduBuilder::state(
-					target.as_str(),
-					&RoomMemberEventContent::new(MembershipState::Invite),
-				),
+				PduBuilder::state(target.as_str(), &RoomMemberEventContent::new(MembershipState::Invite)),
 				server_user,
+				&room_id,
+				&state_lock,
+			)
+			.boxed()
+			.await?;
+	}
+
+	if puts_in(membership.as_ref()) {
+		services
+			.timeline
+			.build_and_append_pdu(
+				PduBuilder::state(target.as_str(), &RoomMemberEventContent::new(MembershipState::Join)),
+				target,
 				&room_id,
 				&state_lock,
 			)
@@ -120,6 +157,13 @@ pub async fn send_content(&self, target: &UserId, content: &RoomMessageEventCont
 		.await?;
 
 	Ok(())
+}
+
+/// Whether a message puts the person in their notices room: the first time,
+/// and while an invite from before is still waiting, but never after they
+/// left or declined.
+fn puts_in(membership: Option<&MembershipState>) -> bool {
+	matches!(membership, None | Some(MembershipState::Invite))
 }
 
 /// Tests whether a room is the target user's server-notice room.
@@ -311,7 +355,17 @@ fn notice_power_levels(server_user: &UserId) -> RoomPowerLevelsEventContent {
 mod tests {
 	use ruma::{Int, events::tag::TagName, user_id};
 
-	use super::{is_notice_creator, notice_power_levels, notice_tag, personalize};
+	use ruma::events::room::member::MembershipState;
+
+	use super::{is_notice_creator, notice_power_levels, notice_tag, personalize, puts_in};
+
+	#[test]
+	fn people_who_left_are_only_invited() {
+		assert!(puts_in(None));
+		assert!(puts_in(Some(&MembershipState::Invite)));
+		assert!(!puts_in(Some(&MembershipState::Leave)));
+		assert!(!puts_in(Some(&MembershipState::Join)));
+	}
 
 	#[test]
 	fn each_person_sees_their_own_name() {
