@@ -1,6 +1,9 @@
 //! The source side: keeping the twins of this server's accounts in step.
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+	collections::{BTreeMap, HashSet},
+	time::Duration,
+};
 
 use futures::{FutureExt, StreamExt};
 use reqwest::{Client, Method, header::CONTENT_TYPE, redirect::Policy};
@@ -19,7 +22,7 @@ use ruma::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use tuwunel_core::{
-	Result, debug, debug_info, debug_warn, implement,
+	Result, debug, debug_info, debug_warn, implement, info,
 	utils::{hash::is_phc_hash, stream::ReadyExt},
 	warn,
 };
@@ -243,6 +246,7 @@ async fn sync_rooms(&self, api: &Api<'_>) -> Result<(), ()> {
 
 	let mut budget = config.twin_room_joins_per_run;
 	let (mut done, mut failed) = (0_usize, 0_usize);
+	let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
 	for user in users[start..].iter().chain(&users[..start]) {
 		let Ok(twin) = UserId::parse_with_server_name(user.localpart(), twin_server) else {
 			continue;
@@ -281,7 +285,7 @@ async fn sync_rooms(&self, api: &Api<'_>) -> Result<(), ()> {
 
 			if budget == 0 {
 				*self.cursor.lock().expect("locked") = Some(user.localpart().to_owned());
-				log_rooms(done, failed);
+				log_rooms(done, failed, &reasons);
 				return Ok(());
 			}
 
@@ -294,30 +298,49 @@ async fn sync_rooms(&self, api: &Api<'_>) -> Result<(), ()> {
 				| Ok(()) => done = done.saturating_add(1),
 				| Err(CallError::Unreachable) => {
 					*self.cursor.lock().expect("locked") = Some(user.localpart().to_owned());
-					log_rooms(done, failed);
+					log_rooms(done, failed, &reasons);
 					return Err(());
 				},
 				| Err(CallError::Refused(e) | CallError::Failed(e)) => {
-					debug_warn!("Twin not added to a room: {e}");
+					let reason = reasons.entry(without_ids(&e)).or_default();
+					*reason = reason.saturating_add(1);
 					failed = failed.saturating_add(1);
 				},
 			}
 		}
 	}
 
-	log_rooms(done, failed);
+	log_rooms(done, failed, &reasons);
 
 	Ok(())
 }
 
-fn log_rooms(done: usize, failed: usize) {
+fn log_rooms(done: usize, failed: usize, reasons: &BTreeMap<String, usize>) {
 	if done > 0 {
-		debug_info!(done, "Twins added to rooms");
+		info!(done, "Twins added to rooms");
 	}
 
 	if failed > 0 {
 		warn!(failed, "Twins not added to some rooms; trying again next run");
+		for (reason, count) in reasons.iter().take(5) {
+			warn!(count, "Twin not added to a room: {reason}");
+		}
 	}
+}
+
+/// An error's text without the user, room and event IDs in it, so the log
+/// says why without saying who or where.
+fn without_ids(text: &str) -> String {
+	text.split_inclusive(char::is_whitespace)
+		.map(|word| match word.trim_start_matches(['"', '\'', '(', '`']).chars().next() {
+			| Some('@' | '!' | '$' | '#') => "… ",
+			| _ => word,
+		})
+		.collect::<String>()
+		.trim_end()
+		.chars()
+		.take(300)
+		.collect()
 }
 
 /// The rooms in the person's `m.direct`.
@@ -589,6 +612,14 @@ mod tests {
 	use ruma::{Int, events::room::power_levels::UserPowerLevel, user_id};
 
 	use super::{RoomFacts, can_grant, chosen, is_admin, pick_inviter, room_qualifies, twin_level};
+
+	#[test]
+	fn reasons_keep_no_ids() {
+		assert_eq!(
+			super::without_ids("User @cat:example.com can't join !abc:example.com now"),
+			"User … can't join … now"
+		);
+	}
 
 	#[test]
 	fn an_empty_list_means_everyone() {
