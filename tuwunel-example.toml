@@ -2047,6 +2047,15 @@
 #
 #admin_panel_address =
 
+# Other names the admin panel answers to, besides its loopback address:
+# its own onion name (with Tor's client authorization, so only browsers
+# holding the key reach it), e.g. ["abc...xyz.onion"]. Tor hands those
+# connections to `admin_panel_address`. Each must be a v3 onion name;
+# anything else is refused at startup, so the panel is never offered
+# under a name that DNS could point elsewhere.
+#
+#admin_panel_hosts = []
+
 # Loopback address where Tor on this machine hands over the connections
 # to the server's onion address, for people's apps and the web pages.
 # Plain HTTP: Tor encrypts the whole way. Nothing is forwarded or
@@ -2107,6 +2116,53 @@
 # reloadable: yes
 #
 #signup_captchas_per_hour = 300
+
+# File holding the secret shared with a twin server (64 hex characters),
+# used on both sides of a twin pair. Every account on the source server
+# gets a twin on the other one with the same name and password. Which
+# side is which is set by `twin_server_name` and `twin_api` (source) or
+# `twin_of` (twin); swapping them later swaps the roles. Read each time
+# it's needed. Unset turns twins off.
+#
+# example: "/Drives/server/data/cc/twin-secret"
+#
+#twin_secret_file =
+
+# Source side: the server name of the twin server, e.g. "anoncat.cc".
+# With `twin_api` and `twin_secret_file` set, this server keeps a twin of
+# each of its accounts there and joins it to the person's private rooms
+# and the rooms they run.
+#
+# example: "anoncat.cc"
+#
+#twin_server_name =
+
+# Source side: where the twin server's admin panel listens on this
+# machine, e.g. "http://127.0.0.1:9450". Must be plain HTTP to a
+# loopback address; anything else is refused at startup, so account
+# details never leave the machine.
+#
+# example: "http://127.0.0.1:9450"
+#
+#twin_api =
+
+# Twin side: the server name of the source server, e.g.
+# "anoncat.gleeze.com". With `twin_secret_file` set, the admin panel
+# listener accepts the source's account and room updates.
+#
+# example: "anoncat.gleeze.com"
+#
+#twin_of =
+
+# Source side: how often accounts and rooms are brought in step with
+# the twin server.
+#
+#twin_sync_interval = "60s"
+
+# Source side: most rooms a twin is invited to or joined in one sync
+# run, so the first catch-up is spread out.
+#
+#twin_room_joins_per_run = 25
 
 # How often the cleanup runs. Each run applies the `cleanup_*` limits
 # below and posts what it deleted to the admin room. Durations take

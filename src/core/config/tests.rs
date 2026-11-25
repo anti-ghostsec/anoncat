@@ -1488,3 +1488,24 @@ fn int_literal(token: &str) -> Option<u64> {
 		.contains(&suffix)
 		.and_then(|| digits.parse().ok())
 }
+
+#[test]
+fn twin_api_must_be_loopback_http() {
+	use super::check::is_loopback_http;
+
+	let ok = ["http://127.0.0.1:9450", "http://[::1]:9450/", "http://localhost:9450"];
+	let refused = [
+		"https://127.0.0.1:9450",
+		"http://192.0.2.1:9450",
+		"http://example.com:9450",
+		"http://user:pw@127.0.0.1:9450",
+	];
+
+	for url in ok {
+		assert!(is_loopback_http(&Url::parse(url).expect("url")), "{url}");
+	}
+
+	for url in refused {
+		assert!(!is_loopback_http(&Url::parse(url).expect("url")), "{url}");
+	}
+}

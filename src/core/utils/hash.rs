@@ -7,4 +7,4 @@ mod argon;
 
 pub mod sha256;
 
-pub use self::argon::{Cost, PhcString, password, verify_password};
+pub use self::argon::{Cost, PhcString, is_phc_hash, password, verify_password};

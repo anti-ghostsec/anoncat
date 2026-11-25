@@ -91,8 +91,60 @@ pub fn check(config: &Config) -> Result {
 	check_media_providers(config)?;
 	check_well_known_support_contact_validity(config)?;
 	check_email(config)?;
+	check_twins(config)?;
 
 	Ok(())
+}
+
+/// Twin sync talks only to a twin on this machine, over loopback, and a
+/// server can't be its own twin.
+fn check_twins(config: &Config) -> Result {
+	if let Some(api) = &config.twin_api
+		&& !is_loopback_http(api)
+	{
+		return Err!(Config(
+			"twin_api",
+			"Must be plain HTTP to a loopback address, e.g. \"http://127.0.0.1:9450\"."
+		));
+	}
+
+	if config.twin_server_name.as_ref() == Some(&config.server_name)
+		|| config.twin_of.as_ref() == Some(&config.server_name)
+	{
+		return Err!(Config("twin_server_name", "A server can't be its own twin."));
+	}
+
+	let source = config.twin_server_name.is_some() || config.twin_api.is_some();
+	if source && (config.twin_server_name.is_none() || config.twin_api.is_none()) {
+		warn!("Twin sync needs both twin_server_name and twin_api; it stays off.");
+	}
+
+	if (source || config.twin_of.is_some()) && config.twin_secret_file.is_none() {
+		warn!("Twins need twin_secret_file; they stay off.");
+	}
+
+	if config.twin_room_joins_per_run == 0 {
+		return Err!(Config("twin_room_joins_per_run", "Must be at least 1."));
+	}
+
+	if config.twin_sync_interval < Duration::from_secs(10) {
+		return Err!(Config("twin_sync_interval", "Must be at least 10 seconds."));
+	}
+
+	Ok(())
+}
+
+/// Whether a URL is plain HTTP to a loopback address, with nothing else in
+/// it that could send it elsewhere.
+pub(super) fn is_loopback_http(url: &Url) -> bool {
+	let loopback = match url.host() {
+		| Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+		| Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+		| Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+		| None => false,
+	};
+
+	url.scheme() == "http" && loopback && url.username().is_empty() && url.password().is_none()
 }
 
 fn warn_legacy_state_local(config: &Config) {

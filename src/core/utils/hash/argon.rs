@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use argon2::{
 	Algorithm, Argon2, Error as Argon2Error, Params, PasswordHasher, PasswordVerifier, Version,
-	password_hash::phc::Salt,
+	password_hash::phc::{PasswordHash, Salt},
 };
 use rand::random;
 use smallstr::SmallString;
@@ -58,6 +58,21 @@ pub fn verify_password(password: &str, password_hash: &str) -> Result {
 		.map_err(map_err)
 }
 
+/// Whether a string is a complete Argon2 hash in the PHC format, as
+/// [`password`] makes them: algorithm, parameters Argon2 accepts, salt and
+/// hash. Used before storing a hash made elsewhere.
+#[must_use]
+pub fn is_phc_hash(value: &str) -> bool {
+	let Ok(hash) = PasswordHash::new(value) else {
+		return false;
+	};
+
+	matches!(hash.algorithm.as_str(), "argon2id" | "argon2i" | "argon2d")
+		&& hash.salt.is_some()
+		&& hash.hash.is_some()
+		&& Params::try_from(&hash).is_ok()
+}
+
 /// Rejects a cost Argon2id cannot accept.
 ///
 /// The parameters are interdependent: `m_cost` has a floor of eight blocks and
@@ -99,7 +114,7 @@ fn map_err<E: Display>(e: E) -> Error { err!("{e}") }
 mod tests {
 	use argon2::Params;
 
-	use super::{Cost, password, verify_password};
+	use super::{Cost, is_phc_hash, password, verify_password};
 
 	// The OWASP cost the shipped configuration also defaults to.
 	const COST: Cost = Cost {
@@ -139,5 +154,17 @@ mod tests {
 		let digest = password(preimage, COST).expect("digest");
 
 		verify_password(fakeimage, &digest).expect("unverified");
+	}
+
+	#[test]
+	fn only_complete_argon2_hashes_are_phc_hashes() {
+		let digest = password("temp123", COST).expect("digest");
+		assert!(is_phc_hash(&digest));
+
+		let without_hash = digest.rsplit_once('$').expect("fields").0;
+		for value in ["", "*", "temp123", "$argon2id$", without_hash, "$pbkdf2$i=1$c2FsdA$aGFzaA"]
+		{
+			assert!(!is_phc_hash(value), "{value}");
+		}
 	}
 }

@@ -2519,6 +2519,56 @@ pub struct Config {
 	#[serde(default = "default_signup_captchas_per_hour")]
 	pub signup_captchas_per_hour: u32,
 
+	/// File holding the secret shared with a twin server (64 hex characters),
+	/// used on both sides of a twin pair. Every account on the source server
+	/// gets a twin on the other one with the same name and password. Which
+	/// side is which is set by `twin_server_name` and `twin_api` (source) or
+	/// `twin_of` (twin); swapping them later swaps the roles. Read each time
+	/// it's needed. Unset turns twins off.
+	///
+	/// example: "/Drives/server/data/cc/twin-secret"
+	pub twin_secret_file: Option<PathBuf>,
+
+	/// Source side: the server name of the twin server, e.g. "anoncat.cc".
+	/// With `twin_api` and `twin_secret_file` set, this server keeps a twin of
+	/// each of its accounts there and joins it to the person's private rooms
+	/// and the rooms they run.
+	///
+	/// example: "anoncat.cc"
+	pub twin_server_name: Option<OwnedServerName>,
+
+	/// Source side: where the twin server's admin panel listens on this
+	/// machine, e.g. "http://127.0.0.1:9450". Must be plain HTTP to a
+	/// loopback address; anything else is refused at startup, so account
+	/// details never leave the machine.
+	///
+	/// example: "http://127.0.0.1:9450"
+	pub twin_api: Option<Url>,
+
+	/// Twin side: the server name of the source server, e.g.
+	/// "anoncat.gleeze.com". With `twin_secret_file` set, the admin panel
+	/// listener accepts the source's account and room updates.
+	///
+	/// example: "anoncat.gleeze.com"
+	pub twin_of: Option<OwnedServerName>,
+
+	/// Source side: how often accounts and rooms are brought in step with
+	/// the twin server.
+	///
+	/// default: "60s"
+	#[serde(
+		default = "default_twin_sync_interval",
+		deserialize_with = "utils::time::deserialize_duration"
+	)]
+	pub twin_sync_interval: Duration,
+
+	/// Source side: most rooms a twin is invited to or joined in one sync
+	/// run, so the first catch-up is spread out.
+	///
+	/// default: 25
+	#[serde(default = "default_twin_room_joins_per_run")]
+	pub twin_room_joins_per_run: usize,
+
 	/// How often the cleanup runs. Each run applies the `cleanup_*` limits
 	/// below and posts what it deleted to the admin room. Durations take
 	/// suffixes: "90s", "30m", "1h", "7d".
@@ -6263,6 +6313,10 @@ fn default_stateinfo_cache_capacity() -> u32 { parallelism_scaled_u32(100) }
 fn default_pushrules_cache_capacity() -> u32 { parallelism_scaled_u32(1000) }
 
 fn default_cleanup_interval() -> Duration { Duration::from_secs(60 * 60) }
+
+fn default_twin_sync_interval() -> Duration { Duration::from_secs(60) }
+
+fn default_twin_room_joins_per_run() -> usize { 25 }
 
 fn default_cleanup_remote_media_max_age() -> Duration { Duration::from_secs(5 * 24 * 60 * 60) }
 
